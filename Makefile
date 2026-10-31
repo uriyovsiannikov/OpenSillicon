@@ -23,11 +23,15 @@ all: kernel
 kernel: $(BUILD_DIR)/kernel.elf
 
 $(BUILD_DIR)/main.o: kernel/main.c include/kernel/boot.h include/kernel/log.h \
-		include/arch/x86_64/interrupts.h \
+		include/kernel/pmm.h include/arch/x86_64/interrupts.h \
 		limine/limine.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/boot.o: kernel/boot.c include/kernel/boot.h limine/limine.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/pmm.o: kernel/mm/pmm.c include/kernel/pmm.h \
+		include/kernel/boot.h limine/limine.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/log.o: kernel/log.c include/kernel/log.h | $(BUILD_DIR)
@@ -47,7 +51,7 @@ $(BUILD_DIR)/gdt_asm.o: kernel/arch/x86_64/gdt.S | $(BUILD_DIR)
 $(BUILD_DIR)/interrupts_asm.o: kernel/arch/x86_64/interrupts.S | $(BUILD_DIR)
 	$(CC) $(KERNEL_ASFLAGS) -c $< -o $@
 
-KERNEL_OBJECTS := $(BUILD_DIR)/main.o $(BUILD_DIR)/boot.o $(BUILD_DIR)/log.o \
+KERNEL_OBJECTS := $(BUILD_DIR)/main.o $(BUILD_DIR)/boot.o $(BUILD_DIR)/pmm.o $(BUILD_DIR)/log.o \
 	$(BUILD_DIR)/gdt.o $(BUILD_DIR)/interrupts.o $(BUILD_DIR)/gdt_asm.o \
 	$(BUILD_DIR)/interrupts_asm.o
 
@@ -77,7 +81,7 @@ run: iso
 
 test: | $(BUILD_DIR)
 	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Ilimine \
-		kernel/boot.c tests/boot_test.c -o $(BUILD_DIR)/boot_test
+		kernel/boot.c kernel/mm/pmm.c tests/boot_test.c -o $(BUILD_DIR)/boot_test
 	$(BUILD_DIR)/boot_test
 
 fault-test:

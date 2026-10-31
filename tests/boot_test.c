@@ -3,6 +3,7 @@
 #include <stdio.h>
 
 #include "kernel/boot.h"
+#include "kernel/pmm.h"
 
 #define PHYS_BASE 0x100000ULL
 #define TEST_MEMORY_SIZE 8192U
@@ -10,7 +11,9 @@
 static _Alignas(4096) unsigned char test_memory[TEST_MEMORY_SIZE];
 static struct limine_memmap_entry usable;
 static struct limine_memmap_entry reserved;
-static struct limine_memmap_entry *entries[2];
+static struct limine_memmap_entry usable_high;
+static struct limine_memmap_entry reserved_tail;
+static struct limine_memmap_entry *entries[4];
 static struct limine_memmap_response memmap;
 static struct limine_firmware_type_response firmware;
 static struct limine_hhdm_response hhdm;
@@ -162,6 +165,57 @@ test_bootstrap_allocator(void)
 	assert(bootstrap_alloc(&allocator, 16, 16) == NULL);
 }
 
+static void
+test_physical_memory_manager(void)
+{
+	struct boot_info info;
+	struct bootstrap_allocator allocator;
+	uint64_t physical_address = 0;
+
+	setup();
+	usable.length = 4096;
+	reserved.base = PHYS_BASE + 4096;
+	reserved.length = 4096;
+	usable_high = (struct limine_memmap_entry){
+		.base = PHYS_BASE + 8192,
+		.length = 4096,
+		.type = LIMINE_MEMMAP_USABLE
+	};
+	reserved_tail = (struct limine_memmap_entry){
+		.base = PHYS_BASE + 12288,
+		.length = 4096,
+		.type = LIMINE_MEMMAP_RESERVED
+	};
+	entries[0] = &usable;
+	entries[1] = &reserved;
+	entries[2] = &usable_high;
+	entries[3] = &reserved_tail;
+	memmap.entry_count = 4;
+	info = parse_valid();
+	assert(bootstrap_allocator_init(&allocator, &info));
+	assert(pmm_init(&info, &allocator));
+	assert(pmm_total_pages() == (PHYS_BASE + 12288) / 4096);
+	assert(pmm_free_pages() == 1);
+	assert(!pmm_alloc_page(NULL));
+	assert(pmm_alloc_page(&physical_address));
+	assert(physical_address == PHYS_BASE + 8192);
+	assert(pmm_free_pages() == 0);
+	assert(pmm_free_page(physical_address));
+	assert(!pmm_free_page(physical_address));
+	assert(!pmm_free_page(physical_address + 1));
+	assert(!pmm_free_page(PHYS_BASE));
+	assert(!pmm_free_page(PHYS_BASE + 4096));
+	assert(pmm_free_pages() == 1);
+
+	setup();
+	usable.length = 4096;
+	info = parse_valid();
+	assert(bootstrap_allocator_init(&allocator, &info));
+	assert(pmm_init(&info, &allocator));
+	assert(pmm_free_pages() == 0);
+	assert(!pmm_alloc_page(&physical_address));
+}
+
 int
 main(void)
 {
@@ -170,6 +224,7 @@ main(void)
 	test_memmap_validation();
 	test_framebuffer_validation();
 	test_bootstrap_allocator();
-	puts("boot information and bootstrap allocator tests passed");
+	test_physical_memory_manager();
+	puts("boot information, bootstrap allocator, and PMM tests passed");
 	return 0;
 }

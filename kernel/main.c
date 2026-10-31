@@ -2,6 +2,7 @@
 #include "limine.h"
 #include "kernel/boot.h"
 #include "kernel/log.h"
+#include "kernel/pmm.h"
 #include "arch/x86_64/interrupts.h"
 
 __attribute__((used, section(".limine_requests_start")))
@@ -38,7 +39,7 @@ _start(void)
 {
 	struct boot_info info;
 	struct bootstrap_allocator allocator;
-	void *allocation;
+	uint64_t test_page;
 	enum boot_info_error error;
 
 	serial_init();
@@ -48,15 +49,6 @@ _start(void)
 		klog("OpenSillicon: invalid boot information, error ");
 		klog_u64((uint64_t)error);
 		klog("\n");
-		kernel_halt();
-	}
-	if (!bootstrap_allocator_init(&allocator, &info)) {
-		klog("OpenSillicon: bootstrap allocator initialization failed\n");
-		kernel_halt();
-	}
-	allocation = bootstrap_alloc(&allocator, 16, 16);
-	if (allocation == NULL) {
-		klog("OpenSillicon: bootstrap allocation failed\n");
 		kernel_halt();
 	}
 	idt_init();
@@ -70,6 +62,18 @@ _start(void)
 		*(volatile uint64_t *)test_address = 1;
 	}
 #endif
+	if (!bootstrap_allocator_init(&allocator, &info)) {
+		klog("OpenSillicon: bootstrap allocator initialization failed\n");
+		kernel_halt();
+	}
+	if (!pmm_init(&info, &allocator)) {
+		klog("OpenSillicon: physical memory manager initialization failed\n");
+		kernel_halt();
+	}
+	if (!pmm_alloc_page(&test_page) || !pmm_free_page(test_page)) {
+		klog("OpenSillicon: physical page allocation smoke test failed\n");
+		kernel_halt();
+	}
 	klog("OpenSillicon: UEFI boot information parsed\n");
 	klog("OpenSillicon: memory map entries ");
 	klog_u64(info.memmap->entry_count);
@@ -85,6 +89,10 @@ _start(void)
 	} else {
 		klog("OpenSillicon: no framebuffer available\n");
 	}
-	klog("OpenSillicon: bootstrap allocator ready\n");
+	klog("OpenSillicon: physical frame slots ");
+	klog_u64(pmm_total_pages());
+	klog(" free ");
+	klog_u64(pmm_free_pages());
+	klog("\nOpenSillicon: physical memory manager ready\n");
 	kernel_halt();
 }
