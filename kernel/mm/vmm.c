@@ -3,6 +3,7 @@
 
 #include "kernel/log.h"
 #include "kernel/errno.h"
+#include "kernel/heap.h"
 #include "kernel/pmm.h"
 #include "kernel/vmm.h"
 
@@ -14,8 +15,10 @@
 #define PTE_PCD 0x010ULL
 #define PTE_LARGE 0x080ULL
 #define PTE_SHARED 0x200ULL
+#define PTE_PRIVATE 0x400ULL
 #define PTE_NX (1ULL << 63)
 #define PTE_ADDRESS 0x000ffffffffff000ULL
+#define VMM_PRIVATE 0x10U
 #define USER_BASE 0x0000000000010000ULL
 #define USER_END 0x00007ffffffff000ULL
 #define KERNEL_BASE 0xffff800000000000ULL
@@ -28,13 +31,25 @@ extern char __kernel_start[];
 extern char __kernel_end[];
 
 static uint64_t hhdm_offset;
+static const struct limine_memmap_response *physical_memory_map;
 static struct address_space kernel_space;
 static struct address_space *active_space;
 static struct address_space *address_spaces;
 static bool initialized;
+static bool unmap_user_page(struct address_space *space,
+	uint64_t virtual_address, uint64_t *physical_address, bool allow_private);
 #ifdef KERNEL_TEST_SHM_FORK_FAILURE
 static bool test_shm_fork_failure_armed;
 static size_t test_shm_fork_mapped_pages;
+#endif
+#ifdef KERNEL_TEST_PRIVATE_MAPPING_FAILURE
+static unsigned int test_private_map_fail_after;
+static unsigned int test_private_fork_fail_after;
+static unsigned int test_private_map_page_count;
+static unsigned int test_private_fork_page_count;
+static unsigned int test_private_metadata_fail_at;
+static unsigned int test_private_metadata_allocations;
+static uint64_t test_private_collision_physical;
 #endif
 
 static bool
@@ -167,6 +182,7 @@ vmm_init(const struct boot_info *info)
 		return false;
 	}
 	hhdm_offset = info->hhdm_offset;
+	physical_memory_map = info->memmap;
 	__asm__ volatile ("rdmsr" : "=a" (efer_low), "=d" (efer_high) :
 	    "c" (0xc0000080U));
 	efer_low |= 1U << 11;
@@ -201,6 +217,8 @@ map_in_root(uint64_t root_physical, uint64_t virtual_address,
 		entry_flags |= PTE_USER;
 	if ((flags & VMM_UNCACHED) != 0)
 		entry_flags |= PTE_PCD | PTE_PWT;
+	if ((flags & VMM_PRIVATE) != 0)
+		entry_flags |= PTE_PRIVATE;
 	if ((flags & VMM_EXEC) == 0)
 		entry_flags |= PTE_NX;
 	for (i = 0; i < sizeof(shifts) / sizeof(shifts[0]); i++) {
@@ -273,7 +291,7 @@ bool
 vmm_map_page(struct address_space *space, uint64_t virtual_address,
 	uint64_t physical_address, unsigned int flags)
 {
-	if (!initialized || !address_space_valid(space) || (flags & ~0x0fU) != 0 ||
+	if (!initialized || !address_space_valid(space) || (flags & ~0x1fU) != 0 ||
 	    (flags & (VMM_WRITE | VMM_EXEC)) == (VMM_WRITE | VMM_EXEC) ||
 	    (virtual_address & (PAGE_SIZE - 1)) != 0 ||
 	    (physical_address & (PAGE_SIZE - 1)) != 0 ||
@@ -282,6 +300,15 @@ vmm_map_page(struct address_space *space, uint64_t virtual_address,
 	if ((flags & VMM_USER) != 0 &&
 	    (space == &kernel_space || virtual_address < USER_BASE ||
 	    virtual_address >= USER_END))
+		return false;
+	if ((flags & VMM_PRIVATE) != 0 &&
+	    ((flags & (VMM_USER | VMM_EXEC)) != VMM_USER ||
+	    virtual_address < PRIVATE_MAP_USABLE_START ||
+	    virtual_address >= PRIVATE_MAP_USABLE_END))
+		return false;
+	if ((flags & VMM_USER) != 0 && (flags & VMM_PRIVATE) == 0 &&
+	    virtual_address >= PRIVATE_MAP_ARENA_START &&
+	    virtual_address < PRIVATE_MAP_ARENA_END)
 		return false;
 	if ((flags & VMM_USER) == 0 &&
 	    (virtual_address < KERNEL_BASE ||
@@ -318,7 +345,8 @@ user_leaf_entry(const struct address_space *space, uint64_t virtual_address,
 		uint64_t entry = table[index];
 
 		if ((entry & (PTE_PRESENT | PTE_USER)) !=
-		    (PTE_PRESENT | PTE_USER) || (entry & PTE_LARGE) != 0)
+		    (PTE_PRESENT | PTE_USER) || (entry & PTE_LARGE) != 0 ||
+		    (entry & (PTE_SHARED | PTE_PRIVATE)) != 0)
 			return false;
 		table = table_virtual(entry & PTE_ADDRESS);
 		if (table == NULL)
@@ -481,9 +509,9 @@ vmm_shm_detach(struct address_space *space, uint64_t base)
 	return 0;
 }
 
-bool
-vmm_unmap_page(struct address_space *space, uint64_t virtual_address,
-	uint64_t *physical_address)
+static bool
+unmap_user_page(struct address_space *space, uint64_t virtual_address,
+	uint64_t *physical_address, bool allow_private)
 {
 	static const unsigned int shifts[] = {39, 30, 21};
 	uint64_t *table;
@@ -508,7 +536,7 @@ vmm_unmap_page(struct address_space *space, uint64_t virtual_address,
 		uint64_t entry = table[index];
 
 		if ((entry & PTE_PRESENT) == 0 || (entry & PTE_LARGE) != 0 ||
-		    (entry & PTE_SHARED) != 0)
+		    (entry & (PTE_SHARED | PTE_PRIVATE)) != 0)
 			return false;
 		table = table_virtual(entry & PTE_ADDRESS);
 		if (table == NULL)
@@ -518,7 +546,9 @@ vmm_unmap_page(struct address_space *space, uint64_t virtual_address,
 		unsigned int index = (unsigned int)((virtual_address >> 12) & 0x1ff);
 		uint64_t entry = table[index];
 
-		if ((entry & PTE_PRESENT) == 0 || (entry & PTE_SHARED) != 0)
+		if ((entry & PTE_PRESENT) == 0 || (entry & PTE_SHARED) != 0 ||
+		    (!allow_private && (entry & PTE_PRIVATE) != 0) ||
+		    (allow_private && (entry & PTE_PRIVATE) == 0))
 			return false;
 		*physical_address = entry & PTE_ADDRESS;
 		table[index] = 0;
@@ -527,6 +557,537 @@ vmm_unmap_page(struct address_space *space, uint64_t virtual_address,
 	    : "memory");
 	return true;
 }
+
+static bool
+reclaim_empty_user_tables(struct address_space *space, uint64_t virtual_address)
+{
+	static const unsigned int shifts[] = {39, 30, 21};
+	uint64_t *parents[3];
+	uint64_t *children[3];
+	unsigned int indices[3];
+	uint64_t *table = table_virtual(space->root_physical);
+	unsigned int i;
+
+	if (table == NULL)
+		return false;
+	for (i = 0; i < 3; i++) {
+		uint64_t entry;
+
+		indices[i] = (unsigned int)((virtual_address >> shifts[i]) & 0x1ff);
+		entry = table[indices[i]];
+		if ((entry & PTE_PRESENT) == 0 || (entry & PTE_LARGE) != 0)
+			return false;
+		parents[i] = table;
+		table = table_virtual(entry & PTE_ADDRESS);
+		if (table == NULL)
+			return false;
+		children[i] = table;
+	}
+	for (i = 3; i != 0; i--) {
+		uint64_t physical;
+		unsigned int j;
+
+		for (j = 0; j < 512; j++) {
+			if ((children[i - 1][j] & PTE_PRESENT) != 0)
+				break;
+		}
+		if (j != 512)
+			break;
+		physical = parents[i - 1][indices[i - 1]] & PTE_ADDRESS;
+		parents[i - 1][indices[i - 1]] = 0;
+		__asm__ volatile ("" : : : "memory");
+		if (!pmm_free_page(physical))
+			return false;
+	}
+	return true;
+}
+
+bool
+vmm_unmap_page(struct address_space *space, uint64_t virtual_address,
+	uint64_t *physical_address)
+{
+	return unmap_user_page(space, virtual_address, physical_address, false);
+}
+
+static struct private_mapping *
+private_mapping_find(struct address_space *space, uint64_t base,
+	struct private_mapping ***link_out)
+{
+	struct private_mapping **link = &space->private_mappings;
+
+	while (*link != NULL && (*link)->base != base)
+		link = &(*link)->next;
+	if (link_out != NULL)
+		*link_out = link;
+	return *link;
+}
+
+static void
+private_mapping_metadata_destroy(struct private_mapping *mapping)
+{
+	while (mapping != NULL) {
+		struct private_mapping *next = mapping->next;
+
+		if (!kheap_free(mapping->page_protections) ||
+		    !kheap_free(mapping->physical_pages) || !kheap_free(mapping)) {
+			klog("OpenSillicon panic: failed to release private mapping metadata\n");
+			kernel_halt();
+		}
+		mapping = next;
+	}
+}
+
+#ifdef KERNEL_TEST_PRIVATE_MAPPING_FAILURE
+static bool
+private_metadata_allocation_fails(void)
+{
+	test_private_metadata_allocations++;
+	if (test_private_metadata_fail_at == 0 ||
+	    test_private_metadata_allocations != test_private_metadata_fail_at)
+		return false;
+	test_private_metadata_fail_at = 0;
+	klog("OpenSillicon test: injected private mapping metadata failure\n");
+	return true;
+}
+#endif
+
+static bool
+zero_physical_page(uint64_t physical)
+{
+	volatile uint8_t *page;
+	uint64_t offset = vmm_hhdm_offset();
+	uint64_t i;
+
+	if (offset > UINT64_MAX - physical ||
+	    PAGE_SIZE - 1 > UINT64_MAX - (offset + physical))
+		return false;
+	page = (volatile uint8_t *)(uintptr_t)(offset + physical);
+	for (i = 0; i < PAGE_SIZE; i++)
+		page[i] = 0;
+	return true;
+}
+
+static bool
+private_mapping_append(struct address_space *space,
+	struct private_mapping *mapping)
+{
+	struct private_mapping **link = &space->private_mappings;
+
+	while (*link != NULL) {
+		uint64_t previous_end;
+
+		if ((*link)->mapped_size > UINT64_MAX - (*link)->base)
+			return false;
+		previous_end = (*link)->base + (*link)->mapped_size;
+		if ((*link)->base >= mapping->base || previous_end > mapping->base)
+			return false;
+		link = &(*link)->next;
+	}
+	*link = mapping;
+	return true;
+}
+
+int
+vmm_private_map(struct address_space *space, uint64_t size,
+	uint64_t *base_out)
+{
+	struct private_mapping *mapping = NULL;
+	uint64_t rounded_size;
+	uint64_t base;
+	size_t page_count;
+	size_t mapped = 0;
+	size_t i;
+	int error = -ENOMEM;
+
+	if (base_out == NULL || !initialized || !address_space_valid(space) ||
+	    space == &kernel_space || size == 0 ||
+	    size > UINT64_MAX - (PAGE_SIZE - 1))
+		return -EINVAL;
+	*base_out = 0;
+	rounded_size = (size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+	base = space->private_map_cursor;
+	if (base < PRIVATE_MAP_USABLE_START || base >= PRIVATE_MAP_USABLE_END ||
+	    (base & (PAGE_SIZE - 1)) != 0 ||
+	    rounded_size > PRIVATE_MAP_USABLE_END - base)
+		return -ENOMEM;
+	page_count = (size_t)(rounded_size / PAGE_SIZE);
+	if (page_count == 0 || (uint64_t)page_count != rounded_size / PAGE_SIZE ||
+	    page_count > SIZE_MAX / sizeof(uint64_t))
+		return -EINVAL;
+	for (struct private_mapping *other = space->private_mappings;
+	    other != NULL; other = other->next) {
+		if (base < other->base + other->mapped_size &&
+		    other->base < base + rounded_size)
+			return -EEXIST;
+	}
+	if (
+#ifdef KERNEL_TEST_PRIVATE_MAPPING_FAILURE
+	    private_metadata_allocation_fails() ||
+#endif
+	    (mapping = kheap_alloc(sizeof(*mapping))) == NULL)
+		return -ENOMEM;
+	if (
+#ifdef KERNEL_TEST_PRIVATE_MAPPING_FAILURE
+	    private_metadata_allocation_fails() ||
+#endif
+	    (mapping->physical_pages = kheap_alloc(page_count *
+	    sizeof(uint64_t))) == NULL) {
+		(void)kheap_free(mapping);
+		return -ENOMEM;
+	}
+	if (
+#ifdef KERNEL_TEST_PRIVATE_MAPPING_FAILURE
+	    private_metadata_allocation_fails() ||
+#endif
+	    (mapping->page_protections = kheap_alloc(page_count)) == NULL) {
+		(void)kheap_free(mapping->physical_pages);
+		(void)kheap_free(mapping);
+		return -ENOMEM;
+	}
+	mapping->base = base;
+	mapping->requested_size = size;
+	mapping->mapped_size = rounded_size;
+	mapping->page_count = page_count;
+	mapping->next = NULL;
+	for (i = 0; i < page_count; i++)
+		mapping->page_protections[i] = VMM_PROT_READ | VMM_PROT_WRITE;
+	for (i = 0; i < page_count; i++) {
+		uint64_t physical;
+		uint64_t virtual_address = base + (uint64_t)i * PAGE_SIZE;
+		uint64_t *leaf_table;
+		unsigned int leaf_index;
+
+#ifdef KERNEL_TEST_PRIVATE_MAPPING_FAILURE
+		if (test_private_map_fail_after != 0 &&
+		    test_private_map_page_count >= test_private_map_fail_after) {
+			test_private_map_fail_after = 0;
+			klog("OpenSillicon test: injected private mapping failure\n");
+			goto rollback;
+		}
+#endif
+		if (!pmm_alloc_page(&physical))
+			goto rollback;
+		if (!zero_physical_page(physical)) {
+			if (!pmm_free_page(physical))
+				goto invariant_failure;
+			goto rollback;
+		}
+		if (!vmm_map_page(space, virtual_address, physical,
+		    VMM_USER | VMM_WRITE | VMM_PRIVATE)) {
+			if (!pmm_free_page(physical))
+				goto invariant_failure;
+			goto rollback;
+		}
+		if (!user_leaf_entry(space, virtual_address, &leaf_table,
+		    &leaf_index) ||
+		    (leaf_table[leaf_index] & (PTE_PRESENT | PTE_USER | PTE_WRITE |
+		    PTE_PRIVATE | PTE_NX)) != (PTE_PRESENT | PTE_USER | PTE_WRITE |
+		    PTE_PRIVATE | PTE_NX)) {
+			uint64_t unmapped_physical;
+
+			if (!unmap_user_page(space, virtual_address, &unmapped_physical,
+			    true) || unmapped_physical != physical ||
+			    !pmm_free_page(physical) ||
+			    !reclaim_empty_user_tables(space, virtual_address))
+				goto invariant_failure;
+			goto rollback;
+		}
+		mapping->physical_pages[i] = physical;
+		mapped++;
+#ifdef KERNEL_TEST_PRIVATE_MAPPING_FAILURE
+		test_private_map_page_count++;
+#endif
+	}
+	if (!private_mapping_append(space, mapping))
+		goto rollback;
+	space->private_map_cursor = base + rounded_size;
+	*base_out = base;
+	return 0;
+
+rollback:
+	while (mapped != 0) {
+		uint64_t physical;
+		uint64_t address;
+
+		mapped--;
+		address = base + (uint64_t)mapped * PAGE_SIZE;
+		if (!unmap_user_page(space, address,
+		    &physical, true) || physical != mapping->physical_pages[mapped] ||
+		    !pmm_free_page(physical) ||
+		    !reclaim_empty_user_tables(space, address))
+			goto invariant_failure;
+	}
+	private_mapping_metadata_destroy(mapping);
+	return error;
+
+invariant_failure:
+	klog("OpenSillicon panic: private mapping rollback invariant failed\n");
+	kernel_halt();
+}
+
+int
+vmm_private_map_protected(struct address_space *space, uint64_t size,
+	unsigned int protection, uint64_t *base_out)
+{
+	uint64_t base;
+	int result;
+
+	if (base_out == NULL)
+		return -EINVAL;
+	if (!vmm_private_protection_valid(protection)) {
+		if ((protection & VMM_PROT_EXEC) != 0)
+			return -EOPNOTSUPP;
+		return -EINVAL;
+	}
+	*base_out = 0;
+	result = vmm_private_map(space, size, &base);
+	if (result != 0)
+		return result;
+	if (protection != (VMM_PROT_READ | VMM_PROT_WRITE)) {
+		/* No user return can occur between installation and this change. */
+		result = vmm_private_protect(space, base, size, protection);
+		if (result != 0) {
+			if (vmm_private_unmap(space, base, size) != 0) {
+				klog("OpenSillicon panic: protected mapping rollback failed\n");
+				kernel_halt();
+			}
+			/* Failed map operations do not consume the monotonic cursor. */
+			space->private_map_cursor = base;
+			return result;
+		}
+	}
+	*base_out = base;
+	return 0;
+}
+
+int
+vmm_private_unmap(struct address_space *space, uint64_t base,
+	uint64_t requested_size)
+{
+	struct private_mapping **link;
+	struct private_mapping *mapping;
+	size_t i;
+
+	if (!initialized || !address_space_valid(space) || space == &kernel_space ||
+	    requested_size == 0 || (base & (PAGE_SIZE - 1)) != 0 ||
+	    base < PRIVATE_MAP_USABLE_START || base >= PRIVATE_MAP_USABLE_END)
+		return -EINVAL;
+	mapping = private_mapping_find(space, base, &link);
+	if (mapping == NULL || mapping->requested_size != requested_size ||
+	    mapping->page_protections == NULL)
+		return -EINVAL;
+	for (i = 0; i < mapping->page_count; i++) {
+		uint64_t virtual_address = base + (uint64_t)i * PAGE_SIZE;
+		uint64_t *leaf_table;
+		unsigned int leaf_index;
+		uint64_t entry;
+		uint64_t expected_flags = PTE_PRESENT | PTE_PRIVATE | PTE_NX;
+		uint8_t protection = mapping->page_protections[i];
+
+		if (!vmm_private_protection_valid(protection) ||
+		    !user_leaf_entry(space, virtual_address, &leaf_table,
+		    &leaf_index))
+			return -EINVAL;
+		if (protection != VMM_PROT_NONE)
+			expected_flags |= PTE_USER;
+		if ((protection & VMM_PROT_WRITE) != 0)
+			expected_flags |= PTE_WRITE;
+		entry = leaf_table[leaf_index];
+		if ((entry & (PTE_PRESENT | PTE_USER | PTE_WRITE | PTE_PRIVATE |
+		    PTE_NX | PTE_SHARED)) != expected_flags ||
+		    (entry & PTE_ADDRESS) != mapping->physical_pages[i])
+			return -EINVAL;
+	}
+	for (i = 0; i < mapping->page_count; i++) {
+		uint64_t physical;
+
+		if (!unmap_user_page(space, base + (uint64_t)i * PAGE_SIZE,
+		    &physical, true) || physical != mapping->physical_pages[i]) {
+			klog("OpenSillicon panic: validated private mapping could not unmap\n");
+			kernel_halt();
+		}
+		if (!reclaim_empty_user_tables(space,
+		    base + (uint64_t)i * PAGE_SIZE)) {
+			klog("OpenSillicon panic: private mapping page-table cleanup failed\n");
+			kernel_halt();
+		}
+	}
+	for (i = 0; i < mapping->page_count; i++) {
+		if (!pmm_free_page(mapping->physical_pages[i])) {
+			klog("OpenSillicon panic: private mapping page release failed\n");
+			kernel_halt();
+		}
+	}
+	*link = mapping->next;
+	mapping->next = NULL;
+	private_mapping_metadata_destroy(mapping);
+	return 0;
+}
+
+int
+vmm_private_unmap_complete(struct address_space *space, uint64_t base,
+	uint64_t length)
+{
+	struct private_mapping *mapping;
+
+	if (!initialized || !address_space_valid(space) || space == &kernel_space ||
+	    length == 0 ||
+	    (base & (PAGE_SIZE - 1)) != 0 || base < PRIVATE_MAP_USABLE_START ||
+	    base >= PRIVATE_MAP_USABLE_END)
+		return -EINVAL;
+	mapping = private_mapping_find(space, base, NULL);
+	if (mapping == NULL || !vmm_private_unmap_length_matches(
+	    mapping->mapped_size, length))
+		return -EINVAL;
+	return vmm_private_unmap(space, base, mapping->requested_size);
+}
+
+int
+vmm_private_protect(struct address_space *space, uint64_t base,
+	uint64_t length, unsigned int protection)
+{
+	struct private_mapping *mapping;
+	uint64_t rounded_length;
+	uint64_t end;
+	uint64_t offset;
+	size_t first_page;
+	size_t page_count;
+	size_t i;
+
+	if ((protection & VMM_PROT_EXEC) != 0)
+		return -EOPNOTSUPP;
+	if (!vmm_private_protection_valid(protection))
+		return -EINVAL;
+	if (!initialized || !address_space_valid(space) || space == &kernel_space ||
+	    !vmm_private_protection_range(base, length, &rounded_length, &end) ||
+	    base < PRIVATE_MAP_USABLE_START || end > PRIVATE_MAP_USABLE_END)
+		return -EINVAL;
+	if (base < PRIVATE_MAP_USABLE_START)
+		return -EINVAL;
+	mapping = space->private_mappings;
+	while (mapping != NULL &&
+	    (base < mapping->base || base - mapping->base >= mapping->mapped_size))
+		mapping = mapping->next;
+	if (mapping == NULL || mapping->page_protections == NULL ||
+	    mapping->physical_pages == NULL ||
+	    mapping->mapped_size > UINT64_MAX - mapping->base)
+		return -EINVAL;
+	offset = base - mapping->base;
+	if (rounded_length > mapping->mapped_size - offset ||
+	    end > mapping->base + mapping->mapped_size)
+		return -EINVAL;
+	first_page = (size_t)(offset / PAGE_SIZE);
+	page_count = (size_t)(rounded_length / PAGE_SIZE);
+	if ((uint64_t)first_page != offset / PAGE_SIZE || page_count == 0 ||
+	    first_page > mapping->page_count ||
+	    page_count > mapping->page_count - first_page)
+		return -EINVAL;
+
+	/* Validate every leaf before changing any permission or metadata. */
+	for (i = 0; i < page_count; i++) {
+		uint64_t address = base + (uint64_t)i * PAGE_SIZE;
+		uint64_t *leaf_table;
+		unsigned int leaf_index;
+		uint64_t entry;
+		uint8_t current = mapping->page_protections[first_page + i];
+		uint64_t expected_flags = PTE_PRESENT | PTE_PRIVATE | PTE_NX;
+
+		if (!vmm_private_protection_valid(current) ||
+		    !user_leaf_entry(space, address, &leaf_table, &leaf_index))
+			return -EINVAL;
+		if (current != VMM_PROT_NONE)
+			expected_flags |= PTE_USER;
+		if ((current & VMM_PROT_WRITE) != 0)
+			expected_flags |= PTE_WRITE;
+		entry = leaf_table[leaf_index];
+		if ((entry & (PTE_PRESENT | PTE_USER | PTE_WRITE | PTE_PRIVATE |
+		    PTE_NX | PTE_SHARED)) != expected_flags ||
+		    (entry & PTE_ADDRESS) != mapping->physical_pages[first_page + i])
+			return -EINVAL;
+	}
+
+	/* The commit loop only rewrites validated leaf entries; it cannot allocate. */
+	for (i = 0; i < page_count; i++) {
+		uint64_t address = base + (uint64_t)i * PAGE_SIZE;
+		uint64_t *leaf_table;
+		unsigned int leaf_index;
+		uint64_t entry;
+
+		if (!user_leaf_entry(space, address, &leaf_table, &leaf_index)) {
+			klog("OpenSillicon panic: validated private protection path changed\n");
+			kernel_halt();
+		}
+		entry = leaf_table[leaf_index] &
+		    ~(PTE_USER | PTE_WRITE);
+		if (protection != VMM_PROT_NONE)
+			entry |= PTE_USER;
+		if ((protection & VMM_PROT_WRITE) != 0)
+			entry |= PTE_WRITE;
+		leaf_table[leaf_index] = entry;
+		mapping->page_protections[first_page + i] = (uint8_t)protection;
+		if (active_space == space)
+			__asm__ volatile ("invlpg (%0)" : :
+			    "r" ((void *)(uintptr_t)address) : "memory");
+	}
+	return 0;
+}
+
+#ifdef KERNEL_TEST_PRIVATE_MAPPING_FAILURE
+void
+vmm_test_arm_private_map_failure(unsigned int mapped_pages)
+{
+	test_private_map_fail_after = mapped_pages;
+	test_private_map_page_count = 0;
+}
+
+void
+vmm_test_arm_private_fork_failure(unsigned int copied_pages)
+{
+	test_private_fork_fail_after = copied_pages;
+	test_private_fork_page_count = 0;
+}
+
+void
+vmm_test_arm_private_metadata_failure(unsigned int allocation_number)
+{
+	test_private_metadata_fail_at = allocation_number;
+	test_private_metadata_allocations = 0;
+}
+
+bool
+vmm_test_install_private_collision(struct address_space *space)
+{
+	if (test_private_collision_physical != 0 ||
+	    !pmm_alloc_page(&test_private_collision_physical))
+		return false;
+	if (!zero_physical_page(test_private_collision_physical) ||
+	    !vmm_map_page(space, space->private_map_cursor,
+	    test_private_collision_physical, VMM_USER | VMM_WRITE | VMM_PRIVATE)) {
+		(void)pmm_free_page(test_private_collision_physical);
+		test_private_collision_physical = 0;
+		return false;
+	}
+	return true;
+}
+
+bool
+vmm_test_remove_private_collision(struct address_space *space)
+{
+	uint64_t physical;
+	uint64_t address;
+
+	if (test_private_collision_physical == 0)
+		return false;
+	address = space->private_map_cursor;
+	if (!unmap_user_page(space, address, &physical, true) ||
+	    physical != test_private_collision_physical ||
+	    !pmm_free_page(physical) ||
+	    !reclaim_empty_user_tables(space, address))
+		return false;
+	test_private_collision_physical = 0;
+	return true;
+}
+#endif
 
 bool
 address_space_create(struct address_space *space)
@@ -549,6 +1110,8 @@ address_space_create(struct address_space *space)
 	space->root_physical = physical;
 	space->shm_next_address = SHM_ARENA_START + PAGE_SIZE;
 	shm_mapping_set_init(&space->shared_mappings);
+	space->private_map_cursor = PRIVATE_MAP_USABLE_START;
+	space->private_mappings = NULL;
 	space->next = address_spaces;
 	address_spaces = space;
 	return true;
@@ -581,7 +1144,7 @@ validate_user_tables(uint64_t table_physical, unsigned int level)
 			continue;
 		if (level > 1) {
 			if ((entry & PTE_LARGE) != 0 ||
-			    (entry & PTE_SHARED) != 0 ||
+			    (entry & (PTE_SHARED | PTE_PRIVATE)) != 0 ||
 			    !validate_user_tables(entry & PTE_ADDRESS, level - 1))
 				return false;
 		}
@@ -638,7 +1201,7 @@ validate_shared_leaf_tree(const struct address_space *space,
 			uint64_t child_prefix = virtual_prefix |
 			    ((uint64_t)i << (level == 4 ? 39 : level == 3 ? 30 : 21));
 
-			if ((entry & (PTE_LARGE | PTE_SHARED)) != 0 ||
+			if ((entry & (PTE_LARGE | PTE_SHARED | PTE_PRIVATE)) != 0 ||
 			    !validate_shared_leaf_tree(space, entry & PTE_ADDRESS,
 			    level - 1, child_prefix))
 				return false;
@@ -654,6 +1217,149 @@ validate_shared_leaf_tree(const struct address_space *space,
 			    expected_physical != (entry & PTE_ADDRESS))
 				return false;
 		}
+	}
+	return true;
+}
+
+static bool
+private_mapping_page(const struct address_space *space, uint64_t address,
+	uint64_t *physical_address, uint8_t *protection)
+{
+	const struct private_mapping *mapping;
+
+	for (mapping = space->private_mappings; mapping != NULL;
+	    mapping = mapping->next) {
+		uint64_t offset;
+
+		if (address < mapping->base || address - mapping->base >=
+		    mapping->mapped_size)
+			continue;
+		offset = address - mapping->base;
+		if ((offset & (PAGE_SIZE - 1)) != 0 ||
+		    offset / PAGE_SIZE >= mapping->page_count)
+			return false;
+		if (mapping->physical_pages == NULL ||
+		    mapping->page_protections == NULL)
+			return false;
+		*physical_address = mapping->physical_pages[offset / PAGE_SIZE];
+		if (protection != NULL)
+			*protection = mapping->page_protections[offset / PAGE_SIZE];
+		return true;
+	}
+	return false;
+}
+
+static bool
+validate_private_leaf_tree(const struct address_space *space,
+	uint64_t table_physical, unsigned int level, uint64_t virtual_prefix)
+{
+	uint64_t *table = table_virtual(table_physical);
+	unsigned int i;
+
+	if (table == NULL)
+		return false;
+	for (i = 0; i < 512; i++) {
+		uint64_t entry = table[i];
+
+		if ((entry & PTE_PRESENT) == 0)
+			continue;
+		if (level > 1) {
+			uint64_t child_prefix = virtual_prefix |
+			    ((uint64_t)i << (level == 4 ? 39 : level == 3 ? 30 : 21));
+
+			if ((entry & (PTE_LARGE | PTE_SHARED | PTE_PRIVATE)) != 0 ||
+			    !validate_private_leaf_tree(space, entry & PTE_ADDRESS,
+			    level - 1, child_prefix))
+				return false;
+		} else if ((entry & PTE_PRIVATE) != 0) {
+			uint64_t expected_physical;
+			uint64_t address = virtual_prefix | ((uint64_t)i << 12);
+			uint8_t protection;
+			uint64_t expected_flags = PTE_PRESENT | PTE_PRIVATE | PTE_NX;
+
+			if (!private_mapping_page(space, address, &expected_physical,
+			    &protection) || !vmm_private_protection_valid(protection))
+				return false;
+			if (protection != VMM_PROT_NONE)
+				expected_flags |= PTE_USER;
+			if ((protection & VMM_PROT_WRITE) != 0)
+				expected_flags |= PTE_WRITE;
+			if ((entry & (PTE_PRESENT | PTE_PRIVATE | PTE_NX | PTE_USER |
+			    PTE_WRITE | PTE_SHARED)) != expected_flags ||
+			    expected_physical != (entry & PTE_ADDRESS))
+				return false;
+		}
+	}
+	return true;
+}
+
+static bool
+validate_private_mappings(const struct address_space *space)
+{
+	const struct private_mapping *mapping;
+	const struct private_mapping *previous = NULL;
+	uint64_t *root = table_virtual(space->root_physical);
+	unsigned int i;
+
+	if (root == NULL ||
+	    space->private_map_cursor < PRIVATE_MAP_USABLE_START ||
+	    space->private_map_cursor > PRIVATE_MAP_USABLE_END ||
+	    (space->private_map_cursor & (PAGE_SIZE - 1)) != 0)
+		return false;
+	for (mapping = space->private_mappings; mapping != NULL;
+	    mapping = mapping->next) {
+		uint64_t rounded;
+		size_t page_index;
+
+		if (mapping->requested_size == 0 ||
+		    mapping->requested_size > UINT64_MAX - (PAGE_SIZE - 1) ||
+		    mapping->base < PRIVATE_MAP_USABLE_START ||
+		    mapping->base >= PRIVATE_MAP_USABLE_END ||
+		    (mapping->base & (PAGE_SIZE - 1)) != 0)
+			return false;
+		rounded = (mapping->requested_size + PAGE_SIZE - 1) &
+		    ~(PAGE_SIZE - 1);
+		if (rounded != mapping->mapped_size ||
+		    rounded > PRIVATE_MAP_USABLE_END - mapping->base ||
+		    mapping->base > space->private_map_cursor ||
+		    rounded > space->private_map_cursor - mapping->base ||
+		    mapping->physical_pages == NULL ||
+		    mapping->page_protections == NULL ||
+		    mapping->page_count != rounded / PAGE_SIZE)
+			return false;
+		if (previous != NULL && (previous->base >= mapping->base ||
+		    previous->mapped_size > mapping->base - previous->base))
+			return false;
+		for (page_index = 0; page_index < mapping->page_count; page_index++) {
+			uint64_t address = mapping->base + page_index * PAGE_SIZE;
+			uint64_t *leaf_table;
+			unsigned int leaf_index;
+			uint64_t entry;
+			uint8_t protection = mapping->page_protections[page_index];
+			uint64_t expected_flags = PTE_PRESENT | PTE_PRIVATE | PTE_NX;
+
+			if (!vmm_private_protection_valid(protection) ||
+			    !user_leaf_entry(space, address, &leaf_table, &leaf_index))
+				return false;
+			entry = leaf_table[leaf_index];
+			if (protection != VMM_PROT_NONE)
+				expected_flags |= PTE_USER;
+			if ((protection & VMM_PROT_WRITE) != 0)
+				expected_flags |= PTE_WRITE;
+			if ((entry & (PTE_PRESENT | PTE_USER | PTE_WRITE | PTE_PRIVATE |
+			    PTE_NX | PTE_SHARED)) != expected_flags ||
+			    (entry & PTE_ADDRESS) != mapping->physical_pages[page_index])
+				return false;
+		}
+		previous = mapping;
+	}
+	for (i = 0; i < 256; i++) {
+		uint64_t entry = root[i];
+
+		if ((entry & PTE_PRESENT) != 0 &&
+		    !validate_private_leaf_tree(space, entry & PTE_ADDRESS, 3,
+		    (uint64_t)i << 39))
+			return false;
 	}
 	return true;
 }
@@ -745,7 +1451,8 @@ destroy_address_space_tables(struct address_space *space)
 
 	if (!initialized || !address_space_valid(space) || space->root_physical == 0 ||
 	    space->root_physical == kernel_space.root_physical ||
-	    space->root_physical == read_cr3())
+	    space->root_physical == read_cr3() ||
+	    space->private_mappings != NULL)
 		return false;
 	root = table_virtual(space->root_physical);
 	if (root == NULL)
@@ -778,6 +1485,8 @@ destroy_address_space_tables(struct address_space *space)
 	}
 	space->root_physical = 0;
 	space->shm_next_address = 0;
+	space->private_map_cursor = 0;
+	space->private_mappings = NULL;
 	space->next = NULL;
 	return true;
 }
@@ -790,7 +1499,8 @@ address_space_destroy(struct address_space *space)
 
 	if (!initialized || space == NULL || !address_space_valid(space) ||
 	    space->root_physical == 0 ||
-	    space->shared_mappings.head != NULL)
+	    space->shared_mappings.head != NULL ||
+	    space->private_mappings != NULL)
 		return false;
 	root = table_virtual(space->root_physical);
 	if (root == NULL)
@@ -803,7 +1513,7 @@ address_space_destroy(struct address_space *space)
 		    !validate_user_tables(entry & PTE_ADDRESS, 3)))
 			return false;
 	}
-	if (!validate_shared_mappings(space))
+	if (!validate_shared_mappings(space) || !validate_private_mappings(space))
 		return false;
 	return destroy_address_space_tables(space);
 }
@@ -1036,8 +1746,9 @@ copy_physical_page(uint64_t source, uint64_t destination)
 }
 
 static bool
-clone_user_tables(uint64_t table_physical, unsigned int level,
-	uint64_t virtual_prefix, struct address_space *destination)
+clone_user_tables(const struct address_space *source, uint64_t table_physical,
+	unsigned int level, uint64_t virtual_prefix,
+	struct address_space *destination)
 {
 	uint64_t *table = table_virtual(table_physical);
 	unsigned int i;
@@ -1049,11 +1760,14 @@ clone_user_tables(uint64_t table_physical, unsigned int level,
 
 		if ((entry & PTE_PRESENT) == 0)
 			continue;
-		if ((entry & PTE_USER) == 0 || (entry & PTE_LARGE) != 0 ||
-		    (level > 1 && (entry & PTE_SHARED) != 0))
+		if ((entry & PTE_LARGE) != 0 ||
+		    (level > 1 && ((entry & PTE_USER) == 0 ||
+		    (entry & PTE_SHARED) != 0)) ||
+		    (level == 1 && (entry & PTE_USER) == 0 &&
+		    (entry & PTE_PRIVATE) == 0))
 			return false;
 		if (level > 1) {
-			if (!clone_user_tables(entry & PTE_ADDRESS, level - 1,
+			if (!clone_user_tables(source, entry & PTE_ADDRESS, level - 1,
 			    virtual_prefix | ((uint64_t)i << (level == 3 ? 30 : 21)),
 			    destination))
 				return false;
@@ -1062,12 +1776,37 @@ clone_user_tables(uint64_t table_physical, unsigned int level,
 			    ((uint64_t)i << 12);
 			uint64_t copy_physical;
 			unsigned int flags = VMM_USER;
+			uint8_t protection = VMM_PROT_READ | VMM_PROT_WRITE;
 
 			if ((entry & PTE_SHARED) != 0) {
 				if ((entry & (PTE_WRITE | PTE_NX)) !=
 				    (PTE_WRITE | PTE_NX))
 					return false;
 				continue;
+			}
+			if ((entry & PTE_PRIVATE) != 0) {
+				uint64_t expected_physical;
+
+				if (!private_mapping_page(source, virtual_address,
+				    &expected_physical, &protection) ||
+				    expected_physical != (entry & PTE_ADDRESS) ||
+				    !vmm_private_protection_valid(protection) ||
+				    (entry & (PTE_WRITE | PTE_NX | PTE_SHARED)) !=
+				    (((protection & VMM_PROT_WRITE) != 0 ? PTE_WRITE : 0) |
+				    PTE_NX) ||
+				    (((entry & PTE_USER) != 0) !=
+				    (protection != VMM_PROT_NONE)))
+					return false;
+#ifdef KERNEL_TEST_PRIVATE_MAPPING_FAILURE
+				if (test_private_fork_fail_after != 0 &&
+				    test_private_fork_page_count >=
+				    test_private_fork_fail_after) {
+					test_private_fork_fail_after = 0;
+					klog("OpenSillicon test: injected private fork failure\n");
+					return false;
+				}
+#endif
+				flags |= VMM_PRIVATE;
 			}
 
 			if ((entry & PTE_WRITE) != 0)
@@ -1087,6 +1826,20 @@ clone_user_tables(uint64_t table_physical, unsigned int level,
 				(void)pmm_free_page(copy_physical);
 				return false;
 			}
+			if ((entry & PTE_PRIVATE) != 0 &&
+			    protection == VMM_PROT_NONE) {
+				uint64_t *leaf_table;
+				unsigned int leaf_index;
+
+				if (!user_leaf_entry(destination, virtual_address,
+				    &leaf_table, &leaf_index))
+					return false;
+				leaf_table[leaf_index] &= ~PTE_USER;
+			}
+#ifdef KERNEL_TEST_PRIVATE_MAPPING_FAILURE
+			if ((entry & PTE_PRIVATE) != 0)
+				test_private_fork_page_count++;
+#endif
 		}
 	}
 	return true;
@@ -1167,7 +1920,7 @@ address_space_destroy_with_pages(struct address_space *space)
 		    !validate_user_tables(entry & PTE_ADDRESS, 3)))
 			return false;
 	}
-	if (!validate_shared_mappings(space))
+	if (!validate_shared_mappings(space) || !validate_private_mappings(space))
 		return false;
 	for (i = 0; i < 256; i++) {
 		uint64_t entry = root[i];
@@ -1176,9 +1929,108 @@ address_space_destroy_with_pages(struct address_space *space)
 		    !free_user_leaves(entry & PTE_ADDRESS, 3))
 			return false;
 	}
+	private_mapping_metadata_destroy(space->private_mappings);
+	space->private_mappings = NULL;
 	if (!destroy_address_space_tables(space))
 		return false;
 	__asm__ volatile ("" : : : "memory");
+	shm_mapping_set_destroy(&space->shared_mappings);
+	return true;
+}
+
+static bool
+private_mapping_set_clone(const struct private_mapping *source,
+	struct address_space *destination_space)
+{
+	struct private_mapping **tail = &destination_space->private_mappings;
+
+	destination_space->private_mappings = NULL;
+	while (source != NULL) {
+		struct private_mapping *copy = kheap_alloc(sizeof(*copy));
+		size_t i;
+
+		if (copy == NULL)
+			return false;
+		copy->physical_pages = kheap_alloc(source->page_count *
+		    sizeof(*copy->physical_pages));
+		if (copy->physical_pages == NULL) {
+			(void)kheap_free(copy);
+			return false;
+		}
+		copy->base = source->base;
+		copy->requested_size = source->requested_size;
+		copy->mapped_size = source->mapped_size;
+		copy->page_count = source->page_count;
+		copy->next = NULL;
+		copy->page_protections = kheap_alloc(source->page_count);
+		if (copy->page_protections == NULL) {
+			(void)kheap_free(copy->physical_pages);
+			(void)kheap_free(copy);
+			return false;
+		}
+		for (i = 0; i < source->page_count; i++)
+			copy->page_protections[i] = source->page_protections[i];
+		for (i = 0; i < source->page_count; i++) {
+			uint64_t address = source->base + i * PAGE_SIZE;
+			uint64_t *leaf_table;
+			unsigned int leaf_index;
+			uint64_t entry;
+			uint8_t protection = source->page_protections[i];
+			uint64_t expected_flags = PTE_PRESENT | PTE_PRIVATE | PTE_NX;
+
+			if (!user_leaf_entry(destination_space, address, &leaf_table,
+			    &leaf_index)) {
+				(void)kheap_free(copy->page_protections);
+				(void)kheap_free(copy->physical_pages);
+				(void)kheap_free(copy);
+				return false;
+			}
+			entry = leaf_table[leaf_index];
+			if (!vmm_private_protection_valid(protection)) {
+				(void)kheap_free(copy->page_protections);
+				(void)kheap_free(copy->physical_pages);
+				(void)kheap_free(copy);
+				return false;
+			}
+			if (protection != VMM_PROT_NONE)
+				expected_flags |= PTE_USER;
+			if ((protection & VMM_PROT_WRITE) != 0)
+				expected_flags |= PTE_WRITE;
+			if ((entry & (PTE_PRESENT | PTE_PRIVATE | PTE_USER | PTE_WRITE |
+			    PTE_NX)) != expected_flags) {
+				(void)kheap_free(copy->page_protections);
+				(void)kheap_free(copy->physical_pages);
+				(void)kheap_free(copy);
+				return false;
+			}
+			copy->physical_pages[i] = entry & PTE_ADDRESS;
+		}
+		*tail = copy;
+		tail = &copy->next;
+		source = source->next;
+	}
+	return true;
+}
+
+static bool
+rollback_address_space_clone(struct address_space *space)
+{
+	uint64_t *root = table_virtual(space->root_physical);
+	unsigned int i;
+
+	if (root == NULL || space->shared_mappings.head != NULL)
+		return false;
+	for (i = 0; i < 256; i++) {
+		uint64_t entry = root[i];
+
+		if ((entry & PTE_PRESENT) != 0 &&
+		    !free_user_leaves(entry & PTE_ADDRESS, 3))
+			return false;
+	}
+	private_mapping_metadata_destroy(space->private_mappings);
+	space->private_mappings = NULL;
+	if (!destroy_address_space_tables(space))
+		return false;
 	shm_mapping_set_destroy(&space->shared_mappings);
 	return true;
 }
@@ -1204,19 +2056,34 @@ address_space_clone(const struct address_space *source,
 		    !validate_user_tables(entry & PTE_ADDRESS, 3)))
 			return false;
 	}
-	if (!validate_shared_mappings(source) ||
-	    !address_space_create(destination))
+	if (!validate_shared_mappings(source)) {
+		klog("OpenSillicon: private fork source shared validation failed\n");
+		return false;
+	}
+	if (!validate_private_mappings(source)) {
+		klog("OpenSillicon: private fork source metadata validation failed\n");
+		return false;
+	}
+	if (!address_space_create(destination))
 		return false;
 	destination->shm_next_address = source->shm_next_address;
+	destination->private_map_cursor = source->private_map_cursor;
 	for (i = 0; i < 256; i++) {
 		uint64_t entry = root[i];
 
 		if ((entry & PTE_PRESENT) == 0)
 			continue;
 		if ((entry & PTE_USER) == 0 || (entry & PTE_LARGE) != 0 ||
-		    !clone_user_tables(entry & PTE_ADDRESS, 3,
-		    (uint64_t)i << 39, destination))
+		    !clone_user_tables(source, entry & PTE_ADDRESS, 3,
+		    (uint64_t)i << 39, destination)) {
+			klog("OpenSillicon: private fork page clone failed\n");
 			goto fail;
+		}
+	}
+	if (!private_mapping_set_clone(source->private_mappings,
+	    destination)) {
+		klog("OpenSillicon: private fork metadata clone failed\n");
+		goto fail;
 	}
 	if (!shm_mapping_set_clone(&source->shared_mappings,
 	    &destination->shared_mappings, clone_shared_map_page,
@@ -1225,7 +2092,7 @@ address_space_clone(const struct address_space *source,
 	return true;
 
 fail:
-	if (!address_space_destroy_with_pages(destination))
+	if (!rollback_address_space_clone(destination))
 		return false;
 	return false;
 }
@@ -1270,4 +2137,80 @@ uint64_t
 vmm_vmalloc_end(void)
 {
 	return VMALLOC_END;
+}
+
+uint64_t
+vmm_vmalloc_device_start(void)
+{
+	return VMALLOC_END - VMM_DEVICE_WINDOW_SIZE;
+}
+
+uint64_t
+vmm_vmalloc_device_end(void)
+{
+	return VMALLOC_END;
+}
+
+bool
+vmm_physical_range_mmio_safe(uint64_t physical_address, uint64_t length)
+{
+	uint64_t end;
+	uint64_t cursor;
+	bool entirely_reserved = true;
+
+	if (!initialized || physical_memory_map == NULL || length == 0 ||
+	    physical_address >= (1ULL << 52) ||
+	    length > (1ULL << 52) - physical_address)
+		return false;
+	end = physical_address + length;
+	cursor = physical_address;
+	while (cursor < end) {
+		const struct limine_memmap_entry *cover = NULL;
+		uint64_t cover_end = 0;
+
+		for (uint64_t i = 0; i < physical_memory_map->entry_count; i++) {
+			const struct limine_memmap_entry *entry =
+			    physical_memory_map->entries[i];
+			uint64_t entry_end;
+
+			if (entry == NULL || entry->length == 0 ||
+			    entry->base > UINT64_MAX - entry->length)
+				return false;
+			entry_end = entry->base + entry->length;
+			if (cursor >= entry->base && cursor < entry_end) {
+				if (cover != NULL)
+					return false;
+				cover = entry;
+				cover_end = entry_end;
+			}
+			if (entry->type != LIMINE_MEMMAP_RESERVED &&
+			    entry->base < end && physical_address < entry_end)
+				return false;
+		}
+		if (cover == NULL) {
+			entirely_reserved = false;
+			break;
+		}
+		if (cover->type != LIMINE_MEMMAP_RESERVED)
+			entirely_reserved = false;
+		cursor = cover_end < end ? cover_end : end;
+	}
+	/* Firmware does not always describe PCI apertures in the memory map. It is
+	 * safe to map such a BAR only when the complete range is a hole (no Limine
+	 * entry of any type overlaps it). Partially described ranges are rejected. */
+	if (entirely_reserved)
+		return true;
+	for (uint64_t i = 0; i < physical_memory_map->entry_count; i++) {
+		const struct limine_memmap_entry *entry =
+		    physical_memory_map->entries[i];
+		uint64_t entry_end;
+
+		if (entry == NULL || entry->length == 0 ||
+		    entry->base > UINT64_MAX - entry->length)
+			return false;
+		entry_end = entry->base + entry->length;
+		if (entry->base < end && physical_address < entry_end)
+			return false;
+	}
+	return true;
 }

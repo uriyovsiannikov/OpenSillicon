@@ -72,11 +72,37 @@ isr_common:
 	pushq %r13
 	pushq %r14
 	pushq %r15
+	/* CS is always at byte offset 144 from this register frame. */
+	movq %rsp, %rbx
+	testb $3, 144(%rsp)
+	jz 1f
+	/* Capture user FS before entering C, then establish kernel FS == 0. */
+	movl $0xc0000100, %ecx
+	rdmsr
+	shlq $32, %rdx
+	orq %rdx, %rax
+	movq %rax, %rdi
+	xorl %eax, %eax
+	xorl %edx, %edx
+	movl $0xc0000100, %ecx
+	wrmsr
+	andq $-16, %rsp
+	call process_capture_user_fs_base
+	movq %rbx, %rsp
+1:
 	movq %rsp, %rdi
 	movq %rsp, %rbx
 	andq $-16, %rsp
 	call interrupt_dispatch
 	movq %rax, %rsp
+	testb $3, 144(%rsp)
+	jz 2f
+	/* Restore only after dispatch chose the process that will return. */
+	movq %rsp, %rbx
+	andq $-16, %rsp
+	call process_restore_user_fs_base
+	movq %rbx, %rsp
+2:
 	popq %r15
 	popq %r14
 	popq %r13

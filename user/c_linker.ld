@@ -5,11 +5,14 @@ SECTIONS
 	.text : { *(.text) } :text
 	.rodata : { *(.rodata*) *(.eh_frame*) *(.note.gnu.property) } :text
 	. = ALIGN(0x1000);
+	.tdata : { *(.tdata .tdata.*) } :data :tls
+	.tbss (NOLOAD) : { *(.tbss .tbss.*) *(.tcommon) } :data :tls
 	.data : { *(.data*) } :data
 	.bss : { *(.bss*) } :data
 }
 PHDRS
 {
-	text PT_LOAD FLAGS(5);
+	text PT_LOAD FILEHDR PHDRS FLAGS(5);
 	data PT_LOAD FLAGS(6);
+	tls PT_TLS FLAGS(4);
 }

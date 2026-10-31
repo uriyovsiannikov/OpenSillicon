@@ -3,17 +3,24 @@
 #include "arch/x86_64/interrupts.h"
 #include "arch/x86_64/user.h"
 #include "kernel/fd.h"
+#include "kernel/errno.h"
 #include "kernel/log.h"
 #include "kernel/pipe.h"
 #include "kernel/process.h"
 #include "kernel/syscall.h"
+#include "kernel/tty.h"
 #include "kernel/vmm.h"
 #include "kernel/vfs.h"
 
 #define SYSCALL_VECTOR 128U
 #define SYSCALL_MAX_IO 4096U
+#define SYSCALL_MAX_IOV 16U
+#define SYSCALL_MAX_IOV_BYTES (64U * 1024U)
+#define SYSCALL_IOV_CHUNK 512U
+#define TIOCGWINSZ_REQUEST 0x5413U
 #define ERRNO_EFAULT 14U
 #define ERRNO_EINVAL 22U
+#define ERRNO_E2BIG 7U
 #define ERRNO_ENOSYS 78U
 #define ERRNO_ECHILD 10U
 #define ERRNO_EAGAIN 11U
@@ -21,6 +28,19 @@
 #define ERRNO_ENAMETOOLONG 36U
 #define ERRNO_EPIPE 32U
 #define ERRNO_EMFILE 24U
+#define ERRNO_ENOTTY 25U
+
+struct syscall_iovec {
+	uint64_t base;
+	uint64_t length;
+};
+
+struct syscall_winsize {
+	uint16_t rows;
+	uint16_t columns;
+	uint16_t xpixel;
+	uint16_t ypixel;
+};
 
 static struct fd_table *descriptor_table;
 
@@ -61,6 +81,224 @@ syscall_error(struct interrupt_frame *frame, uint64_t error)
 {
 	frame->rax = error;
 	frame->rflags |= 1U;
+}
+
+static int
+load_iovecs(struct interrupt_frame *frame, struct syscall_iovec *vectors,
+	uint64_t *total)
+{
+	struct address_space *space = vmm_active_address_space();
+	uint64_t count = frame->rdx;
+	uint64_t total_bytes = 0;
+	uint64_t i;
+
+	if (count > SYSCALL_MAX_IOV)
+		return -(int)ERRNO_EINVAL;
+	if (count != 0 && (frame->rsi > UINT64_MAX -
+	    count * sizeof(*vectors) || !vmm_copy_from_user(space, vectors,
+	    frame->rsi, (size_t)(count * sizeof(*vectors)))))
+		return -(int)ERRNO_EFAULT;
+	for (i = 0; i < count; i++) {
+		if (vectors[i].length > SYSCALL_MAX_IOV_BYTES - total_bytes)
+			return -(int)ERRNO_EINVAL;
+		total_bytes += vectors[i].length;
+		if (vectors[i].length != 0 &&
+		    vectors[i].base > UINT64_MAX - vectors[i].length)
+			return -(int)ERRNO_EFAULT;
+	}
+	*total = total_bytes;
+	return 0;
+}
+
+static int
+validate_iovec_buffers(const struct syscall_iovec *vectors, uint64_t count,
+	bool for_read)
+{
+	struct address_space *space = vmm_active_address_space();
+	char scratch[SYSCALL_IOV_CHUNK];
+	uint64_t i;
+
+	for (i = 0; i < count; i++) {
+		uint64_t offset = 0;
+
+		if (vectors[i].length == 0)
+			continue;
+		if (for_read) {
+			if (!vmm_validate_user_write(space, vectors[i].base,
+			    (size_t)vectors[i].length))
+				return -(int)ERRNO_EFAULT;
+			continue;
+		}
+		while (offset < vectors[i].length) {
+			size_t amount = (size_t)(vectors[i].length - offset);
+
+			if (amount > sizeof(scratch))
+				amount = sizeof(scratch);
+			if (!vmm_copy_from_user(space, scratch,
+			    vectors[i].base + offset, amount))
+				return -(int)ERRNO_EFAULT;
+			offset += amount;
+		}
+	}
+	return 0;
+}
+
+static struct interrupt_frame *
+syscall_writev(struct interrupt_frame *frame)
+{
+	struct syscall_iovec vectors[SYSCALL_MAX_IOV];
+	char buffer[SYSCALL_IOV_CHUNK];
+	struct fd_table *table = current_fd_table();
+	struct fd_object *object = fd_object_for_descriptor(table, frame->rdi);
+	uint64_t count = frame->rdx;
+	uint64_t total = 0;
+	uint64_t written = 0;
+	uint64_t i;
+	int result;
+
+	if (object == NULL || object->operations == NULL ||
+	    object->operations->write == NULL) {
+		syscall_error(frame, 9);
+		return frame;
+	}
+	result = load_iovecs(frame, vectors, &total);
+	if (result == 0)
+		result = validate_iovec_buffers(vectors, count, false);
+	if (result != 0) {
+		syscall_error(frame, errno_from_kernel(result));
+		return frame;
+	}
+	for (i = 0; i < count; i++) {
+		uint64_t offset = 0;
+
+		while (offset < vectors[i].length) {
+			size_t chunk = (size_t)(vectors[i].length - offset);
+			size_t amount = 0;
+
+			if (chunk > sizeof(buffer))
+				chunk = sizeof(buffer);
+			if (!vmm_copy_from_user(vmm_active_address_space(), buffer,
+			    vectors[i].base + offset, chunk)) {
+				if (written != 0)
+					goto partial;
+				syscall_error(frame, ERRNO_EFAULT);
+				return frame;
+			}
+			if (pipe_is_write_endpoint(object)) {
+				result = pipe_write_try(object, buffer, chunk, &amount);
+				if (result == -(int)ERRNO_EAGAIN) {
+					if (written != 0)
+						goto partial;
+					return process_block_on_channel(frame,
+					    pipe_wait_channel(object, PIPE_WRITE_WAIT));
+				}
+			} else {
+				result = fd_write(table, frame->rdi, buffer, chunk,
+				    &amount);
+			}
+			if (result != 0) {
+				if (written != 0)
+					goto partial;
+				syscall_error(frame, errno_from_kernel(result));
+				return frame;
+			}
+			written += amount;
+			offset += amount;
+			if (amount < chunk)
+				goto partial;
+		}
+	}
+partial:
+	(void)total;
+	frame->rax = written;
+	return frame;
+}
+
+static struct interrupt_frame *
+syscall_readv(struct interrupt_frame *frame)
+{
+	struct syscall_iovec vectors[SYSCALL_MAX_IOV];
+	char buffer[SYSCALL_IOV_CHUNK];
+	struct fd_table *table = current_fd_table();
+	struct fd_object *object = fd_object_for_descriptor(table, frame->rdi);
+	uint64_t count = frame->rdx;
+	uint64_t total = 0;
+	uint64_t received = 0;
+	uint64_t i;
+	int result;
+
+	if (object == NULL || object->operations == NULL ||
+	    object->operations->read == NULL) {
+		syscall_error(frame, 9);
+		return frame;
+	}
+	result = load_iovecs(frame, vectors, &total);
+	if (result == 0)
+		result = validate_iovec_buffers(vectors, count, true);
+	if (result != 0) {
+		syscall_error(frame, errno_from_kernel(result));
+		return frame;
+	}
+	for (i = 0; i < count; i++) {
+		uint64_t offset = 0;
+
+		while (offset < vectors[i].length) {
+			size_t chunk = (size_t)(vectors[i].length - offset);
+			size_t amount = 0;
+			uint64_t old_offset = fd_get_offset(table, frame->rdi);
+
+			if (chunk > sizeof(buffer))
+				chunk = sizeof(buffer);
+			/* TTY reads may sleep until more input arrives. Once one
+			 * fragment has been delivered, return it rather than sleeping
+			 * for a later iovec. */
+			if (received != 0 && fd_object_is_terminal(object))
+				goto partial;
+			if (pipe_is_read_endpoint(object)) {
+				result = pipe_read_stage(object, buffer, chunk, &amount);
+				if (result == -(int)ERRNO_EAGAIN) {
+					if (received != 0)
+						goto partial;
+					return process_block_on_channel(frame,
+					    pipe_wait_channel(object, PIPE_READ_WAIT));
+				}
+			} else {
+				result = fd_read(table, frame->rdi, buffer, chunk,
+				    &amount);
+			}
+			if (result != 0) {
+				if (received != 0)
+					goto partial;
+				syscall_error(frame, errno_from_kernel(result));
+				return frame;
+			}
+			if (amount != 0 && !vmm_copy_to_user(
+			    vmm_active_address_space(), vectors[i].base + offset,
+			    buffer, amount)) {
+				if (!pipe_is_read_endpoint(object))
+					(void)fd_set_offset(table, frame->rdi, old_offset);
+				if (received != 0)
+					goto partial;
+				syscall_error(frame, ERRNO_EFAULT);
+				return frame;
+			}
+			if (pipe_is_read_endpoint(object) &&
+			    pipe_read_commit(object, amount) != 0) {
+				if (received != 0)
+					goto partial;
+				syscall_error(frame, ERRNO_EINVAL);
+				return frame;
+			}
+			received += amount;
+			offset += amount;
+			if (amount < chunk)
+				goto partial;
+		}
+	}
+partial:
+	(void)total;
+	frame->rax = received;
+	return frame;
 }
 
 static struct interrupt_frame *
@@ -146,6 +384,66 @@ syscall_interrupt(struct interrupt_frame *frame)
 			frame = process_exec_path(frame, path, &error);
 		}
 		break;
+	case SYSCALL_EXEC_PATH_ARGV:
+		{
+			char path[VFS_PATH_MAX];
+			char argument_storage[2048];
+			const char *arguments[16];
+			uint64_t argc = frame->rsi;
+			uint64_t vector = frame->rdx;
+			size_t used = 0;
+			size_t index;
+			int result = copy_user_string(frame->rdi, path, sizeof(path));
+
+			if (result != 0) {
+				syscall_error(frame, (uint64_t)(-result));
+				break;
+			}
+			if (argc == 0 || argc > 16) {
+				syscall_error(frame, ERRNO_E2BIG);
+				break;
+			}
+			if (vector > UINT64_MAX - (argc + 1) * sizeof(uint64_t)) {
+				syscall_error(frame, ERRNO_EFAULT);
+				break;
+			}
+			for (index = 0; index < argc; index++) {
+				uint64_t address;
+				size_t remaining = sizeof(argument_storage) - used;
+				size_t length = 0;
+				result = vmm_copy_from_user(vmm_active_address_space(),
+				    &address, vector + index * sizeof(address), sizeof(address)) ?
+				    0 : -ERRNO_EFAULT;
+				if (result == 0 && remaining != 0)
+					result = copy_user_string(address,
+					    argument_storage + used, remaining);
+				else if (result == 0)
+					result = -ERRNO_E2BIG;
+				if (result != 0) {
+					syscall_error(frame, result == -(int)ERRNO_ENAMETOOLONG ?
+					    ERRNO_E2BIG : (uint64_t)(-result));
+					break;
+				}
+				arguments[index] = argument_storage + used;
+				while (argument_storage[used + length] != '\0')
+					length++;
+				used += length + 1;
+			}
+			if (index != argc)
+				break;
+			{
+				uint64_t terminator;
+				if (!vmm_copy_from_user(vmm_active_address_space(),
+				    &terminator, vector + argc * sizeof(terminator),
+				    sizeof(terminator)) || terminator != 0) {
+					syscall_error(frame, ERRNO_EFAULT);
+					break;
+				}
+			}
+			frame = process_exec_path_argv(frame, path, (size_t)argc,
+			    arguments, &error);
+		}
+		break;
 	case SYSCALL_WAITPID:
 		frame = process_waitpid(frame, &error);
 		break;
@@ -222,6 +520,94 @@ syscall_interrupt(struct interrupt_frame *frame)
 				syscall_error(frame, errno_from_kernel(result));
 			else
 				frame->rax = 0;
+		}
+		break;
+	case SYSCALL_SET_FS_BASE:
+		error = process_set_fs_base(frame->rdi);
+		if (error != 0)
+			syscall_error(frame, error);
+		else
+			frame->rax = 0;
+		break;
+	case SYSCALL_MMAP:
+		{
+			uint64_t base;
+			int result;
+
+			if (frame->rsi > UINT32_MAX)
+				result = -EINVAL;
+			else
+				result = vmm_private_map_protected(
+				    vmm_active_address_space(), frame->rdi,
+				    (unsigned int)frame->rsi, &base);
+			if (result != 0)
+				syscall_error(frame, errno_from_kernel(result));
+			else
+				frame->rax = base;
+		}
+		break;
+	case SYSCALL_MUNMAP:
+		{
+			int result = vmm_private_unmap_complete(
+			    vmm_active_address_space(), frame->rdi, frame->rsi);
+
+			if (result != 0)
+				syscall_error(frame, errno_from_kernel(result));
+			else
+				frame->rax = 0;
+		}
+		break;
+	case SYSCALL_MPROTECT:
+		{
+			int result;
+
+			if (frame->rdx > UINT32_MAX) {
+				result = -EINVAL;
+			} else {
+				result = vmm_private_protect(
+				    vmm_active_address_space(), frame->rdi,
+				    frame->rsi, (unsigned int)frame->rdx);
+			}
+			if (result != 0)
+				syscall_error(frame, errno_from_kernel(result));
+			else
+				frame->rax = 0;
+		}
+		break;
+	case SYSCALL_WRITEV:
+		return syscall_writev(frame);
+	case SYSCALL_READV:
+		return syscall_readv(frame);
+	case SYSCALL_IOCTL:
+		{
+			struct syscall_winsize window = { 0 };
+			struct fd_object *object = fd_object_for_descriptor(
+			    current_fd_table(), frame->rdi);
+
+			if (object == NULL) {
+				syscall_error(frame, 9);
+				break;
+			}
+			if (frame->rsi != TIOCGWINSZ_REQUEST) {
+				syscall_error(frame, ERRNO_ENOTTY);
+				break;
+			}
+			if (!fd_object_is_terminal(object)) {
+				syscall_error(frame, ERRNO_ENOTTY);
+				break;
+			}
+			if (!vmm_validate_user_write(vmm_active_address_space(),
+			    frame->rdx, sizeof(window))) {
+				syscall_error(frame, ERRNO_EFAULT);
+				break;
+			}
+			if (!tty_dimensions(&window.rows, &window.columns) ||
+			    !vmm_copy_to_user(vmm_active_address_space(), frame->rdx,
+			    &window, sizeof(window))) {
+				syscall_error(frame, ERRNO_EFAULT);
+				break;
+			}
+			frame->rax = 0;
 		}
 		break;
 	case SYSCALL_OPEN:

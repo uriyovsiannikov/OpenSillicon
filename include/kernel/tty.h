@@ -9,6 +9,7 @@
 bool tty_init(const struct limine_framebuffer *framebuffer);
 bool tty_framebuffer_available(void);
 bool tty_keyboard_available(void);
+bool tty_dimensions(unsigned short *rows, unsigned short *columns);
 int tty_read(void *buffer, size_t length, size_t *read_length);
 bool tty_write(const void *buffer, size_t length);
 _Noreturn void tty_console_loop(void);

@@ -7,10 +7,12 @@
 
 #include "kernel/elf.h"
 #include "kernel/shm.h"
+#include "kernel/vmm.h"
 
 #define TEST_IMAGE_SIZE 256U
 #define PROGRAM_HEADER_OFFSET 64U
-#define SEGMENT_OFFSET 128U
+#define SECOND_PROGRAM_HEADER_OFFSET 120U
+#define TEST_CODE_OFFSET 200U
 #define TEST_MAPPINGS 32U
 
 struct test_mapping {
@@ -174,12 +176,60 @@ make_test_image(uint8_t image[TEST_IMAGE_SIZE])
 	put16(image, 56, 1);
 	put32(image, PROGRAM_HEADER_OFFSET, 1);
 	put32(image, PROGRAM_HEADER_OFFSET + 4, 5);
-	put64(image, PROGRAM_HEADER_OFFSET + 8, SEGMENT_OFFSET);
-	put64(image, PROGRAM_HEADER_OFFSET + 16, 0x400080);
-	put64(image, PROGRAM_HEADER_OFFSET + 32, 4);
-	put64(image, PROGRAM_HEADER_OFFSET + 40, 16);
+	put64(image, PROGRAM_HEADER_OFFSET + 8, 0);
+	put64(image, PROGRAM_HEADER_OFFSET + 16, 0x400000);
+	put64(image, PROGRAM_HEADER_OFFSET + 32, 132);
+	put64(image, PROGRAM_HEADER_OFFSET + 40, 144);
 	put64(image, PROGRAM_HEADER_OFFSET + 48, 4096);
-	memcpy(image + SEGMENT_OFFSET, "ELF!", 4);
+	memcpy(image + 128, "ELF!", 4);
+}
+
+static void
+make_test_image_with_pt_phdr(uint8_t image[TEST_IMAGE_SIZE])
+{
+	make_test_image(image);
+	put16(image, 56, 2);
+	put64(image, PROGRAM_HEADER_OFFSET + 32, TEST_CODE_OFFSET + 4);
+	put64(image, PROGRAM_HEADER_OFFSET + 40, TEST_CODE_OFFSET + 16);
+	put32(image, SECOND_PROGRAM_HEADER_OFFSET, 6);
+	put32(image, SECOND_PROGRAM_HEADER_OFFSET + 4, 4);
+	put64(image, SECOND_PROGRAM_HEADER_OFFSET + 8,
+	    PROGRAM_HEADER_OFFSET);
+	put64(image, SECOND_PROGRAM_HEADER_OFFSET + 16, 0x400040);
+	put64(image, SECOND_PROGRAM_HEADER_OFFSET + 32, 112);
+	put64(image, SECOND_PROGRAM_HEADER_OFFSET + 40, 112);
+	put64(image, SECOND_PROGRAM_HEADER_OFFSET + 48, 8);
+	put64(image, 24, 0x400000 + TEST_CODE_OFFSET);
+	memcpy(image + TEST_CODE_OFFSET, "ELF!", 4);
+}
+
+static void
+make_test_image_with_tls(uint8_t image[TEST_IMAGE_SIZE])
+{
+	make_test_image(image);
+	put16(image, 56, 2);
+	put64(image, PROGRAM_HEADER_OFFSET + 32, 176);
+	put64(image, PROGRAM_HEADER_OFFSET + 40, 192);
+	put32(image, SECOND_PROGRAM_HEADER_OFFSET, 7);
+	put32(image, SECOND_PROGRAM_HEADER_OFFSET + 4, 4);
+	put64(image, SECOND_PROGRAM_HEADER_OFFSET + 8, 128);
+	put64(image, SECOND_PROGRAM_HEADER_OFFSET + 16, 0x400080);
+	put64(image, SECOND_PROGRAM_HEADER_OFFSET + 32, 4);
+	put64(image, SECOND_PROGRAM_HEADER_OFFSET + 40, 8);
+	put64(image, SECOND_PROGRAM_HEADER_OFFSET + 48, 4);
+}
+
+static void
+make_test_image_with_empty_tls(uint8_t image[TEST_IMAGE_SIZE])
+{
+	make_test_image(image);
+	memset(image + SECOND_PROGRAM_HEADER_OFFSET, 0, 56);
+	put16(image, 56, 2);
+	put64(image, PROGRAM_HEADER_OFFSET + 32, 176);
+	put64(image, PROGRAM_HEADER_OFFSET + 40, 192);
+	put32(image, SECOND_PROGRAM_HEADER_OFFSET, 7);
+	put32(image, SECOND_PROGRAM_HEADER_OFFSET + 4, 4);
+	put64(image, SECOND_PROGRAM_HEADER_OFFSET + 48, 8);
 }
 
 static void
@@ -200,18 +250,66 @@ main(void)
 
 	make_test_image(image);
 	assert(elf_image_validate(image, sizeof(image), &plan));
+	assert(!plan.tls_present);
 	assert(plan.entry == 0x400080 && plan.segment_count == 1 &&
-	    plan.page_count == 1 && plan.segments[0].file_size == 4 &&
-	    plan.segments[0].memory_size == 16);
+	    plan.page_count == 1 && plan.segments[0].file_size == 132 &&
+	    plan.segments[0].memory_size == 144 &&
+	    plan.program_header_address == 0x400040 &&
+	    plan.program_header_entry_size == 56 &&
+	    plan.program_header_count == 1);
 	assert(elf_image_load(image, sizeof(image), &loaded));
 	assert(mapping_count == 1 && allocated_pages == 1 &&
 	    mappings[0].virtual_address == 0x400000 &&
 	    mappings[0].flags == (VMM_USER | VMM_EXEC));
 	loaded_page = (uint8_t *)(uintptr_t)mappings[0].physical_address;
 	assert(memcmp(loaded_page + 0x80, "ELF!", 4) == 0);
-	assert(loaded_page[0x84] == 0 && loaded_page[0] == 0);
+	assert(loaded_page[0x90] == 0 && loaded_page[0] == 0x7f);
 	assert(elf_image_unload(&loaded));
 	assert(mapping_count == 0 && allocated_pages == 0);
+
+	make_test_image_with_empty_tls(image);
+	assert(elf_image_validate(image, sizeof(image), &plan));
+	assert(!plan.tls_present);
+
+	make_test_image_with_tls(image);
+	assert(elf_image_validate(image, sizeof(image), &plan));
+	assert(plan.tls_present && plan.tls_image_address == 0x400080 &&
+	    plan.tls_file_offset == 128 && plan.tls_file_size == 4 &&
+	    plan.tls_memory_size == 8 && plan.tls_alignment == 4);
+	assert(elf_image_load(image, sizeof(image), &loaded));
+	assert(loaded.plan.tls_present && loaded.plan.tls_file_size == 4 &&
+	    loaded.plan.tls_memory_size == 8 && loaded.plan.tls_alignment == 4);
+	assert(elf_image_unload(&loaded));
+	make_test_image_with_tls(image);
+	put64(image, SECOND_PROGRAM_HEADER_OFFSET + 48, 1);
+	assert(elf_image_validate(image, sizeof(image), &plan));
+	make_test_image_with_tls(image);
+	put64(image, SECOND_PROGRAM_HEADER_OFFSET + 16, 0x400084);
+	put64(image, SECOND_PROGRAM_HEADER_OFFSET + 48, 8);
+	expect_invalid(image);
+	make_test_image_with_tls(image);
+	put64(image, SECOND_PROGRAM_HEADER_OFFSET + 40, 4);
+	assert(elf_image_validate(image, sizeof(image), &plan));
+	put64(image, SECOND_PROGRAM_HEADER_OFFSET + 32, 9);
+	expect_invalid(image);
+	make_test_image_with_tls(image);
+	put64(image, SECOND_PROGRAM_HEADER_OFFSET + 8, UINT64_MAX - 2);
+	expect_invalid(image);
+	make_test_image_with_tls(image);
+	put64(image, SECOND_PROGRAM_HEADER_OFFSET + 48, 3);
+	expect_invalid(image);
+	make_test_image_with_tls(image);
+	put64(image, SECOND_PROGRAM_HEADER_OFFSET + 48, 0);
+	expect_invalid(image);
+	make_test_image_with_tls(image);
+	put64(image, SECOND_PROGRAM_HEADER_OFFSET + 16, SHM_ARENA_START);
+	put64(image, SECOND_PROGRAM_HEADER_OFFSET + 8, SHM_ARENA_START);
+	expect_invalid(image);
+	make_test_image_with_tls(image);
+	put16(image, 56, 3);
+	memcpy(image + SECOND_PROGRAM_HEADER_OFFSET + 56,
+	    image + SECOND_PROGRAM_HEADER_OFFSET, 56);
+	expect_invalid(image);
 
 	make_test_image(image);
 	fail_page_allocation = true;
@@ -243,14 +341,40 @@ main(void)
 	put32(image, PROGRAM_HEADER_OFFSET + 4, 7);
 	expect_invalid(image);
 	make_test_image(image);
-	put64(image, 24, 0x400000);
+	put64(image, 24, 0x400100);
 	expect_invalid(image);
 	make_test_image(image);
 	put64(image, PROGRAM_HEADER_OFFSET + 16, SHM_ARENA_START + 128);
 	put64(image, 24, SHM_ARENA_START + 128);
 	expect_invalid(image);
 	make_test_image(image);
+	put64(image, PROGRAM_HEADER_OFFSET + 16,
+	    PRIVATE_MAP_ARENA_START - 0x1000);
+	put64(image, 24, PRIVATE_MAP_ARENA_START - 0xf80);
+	put64(image, PROGRAM_HEADER_OFFSET + 40, 0x1001);
+	expect_invalid(image);
+	make_test_image(image);
+	put64(image, PROGRAM_HEADER_OFFSET + 16,
+	    PRIVATE_MAP_ARENA_START - 0x1000);
+	put64(image, 24, PRIVATE_MAP_ARENA_START - 0xf80);
+	put64(image, PROGRAM_HEADER_OFFSET + 40, 0x1000);
+	assert(elf_image_validate(image, sizeof(image), &plan));
+	make_test_image(image);
 	put32(image, PROGRAM_HEADER_OFFSET, 3);
+	expect_invalid(image);
+	make_test_image_with_pt_phdr(image);
+	assert(elf_image_validate(image, sizeof(image), &plan));
+	assert(plan.program_header_address == 0x400040 &&
+	    plan.program_header_entry_size == 56 &&
+	    plan.program_header_count == 2);
+	make_test_image_with_pt_phdr(image);
+	put64(image, SECOND_PROGRAM_HEADER_OFFSET + 16, 0x400050);
+	expect_invalid(image);
+	make_test_image(image);
+	put64(image, PROGRAM_HEADER_OFFSET + 8, 128);
+	put64(image, PROGRAM_HEADER_OFFSET + 16, 0x400080);
+	put64(image, PROGRAM_HEADER_OFFSET + 32, 4);
+	put64(image, PROGRAM_HEADER_OFFSET + 40, 16);
 	expect_invalid(image);
 
 	puts("ELF64 validation, load, and cleanup tests passed");

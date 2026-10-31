@@ -152,6 +152,47 @@ test_bridge_fallback_and_cycle(void)
 	assert(results.count == 3);
 }
 
+static void
+test_bar_decode(void)
+{
+	struct pci_device_info device = {
+		.header_type = 0,
+		.bars = {
+			0x0000c001U,
+			0xfebc000cU,
+			0x00000004U,
+			0xfeb00000U,
+			0x00000000U,
+			0x00000000U
+		}
+	};
+	struct pci_bar_resource resource;
+
+	assert(pci_bar_decode(&device, 0, &resource));
+	assert(resource.type == PCI_BAR_IO && resource.base == 0xc000U &&
+	    resource.slots == 1);
+	assert(pci_bar_decode(&device, 1, &resource));
+	assert(resource.type == PCI_BAR_MEMORY64 &&
+	    resource.base == 0x00000004febc0000ULL && resource.slots == 2 &&
+	    resource.prefetchable && resource.aperture_size == 0);
+	assert(!pci_bar_decode(&device, 2, &resource));
+	assert(pci_bar_decode(&device, 3, &resource));
+	assert(resource.type == PCI_BAR_MEMORY32 &&
+	    resource.base == 0xfeb00000U && resource.slots == 1);
+	assert(pci_bar_decode(&device, 4, &resource));
+	assert(resource.type == PCI_BAR_UNUSED);
+	assert(!pci_bar_decode(&device, 6, &resource));
+	device.header_type = 1;
+	assert(!pci_bar_decode(&device, 2, &resource));
+	device.header_type = 0;
+	device.bars[5] = 0x00000006U;
+	assert(!pci_bar_decode(&device, 5, &resource));
+	device.bars[5] = UINT32_MAX;
+	assert(!pci_bar_decode(&device, 5, &resource));
+	device.bars[5] = 0x00000006U;
+	assert(!pci_bar_decode(&device, 5, &resource));
+}
+
 struct acpi_mcfg_region *unused_regions;
 size_t acpi_mcfg_regions(struct acpi_mcfg_region *regions, size_t capacity)
 { (void)regions; (void)capacity; return 0; }
@@ -168,6 +209,7 @@ main(void)
 {
 	test_mcfg_scan();
 	test_bridge_fallback_and_cycle();
-	puts("PCI MCFG enumeration, bridge traversal, multifunction, and AHCI tests passed");
+	test_bar_decode();
+	puts("PCI enumeration, bridge traversal, multifunction, and BAR decoding tests passed");
 	return 0;
 }

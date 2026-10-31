@@ -9,12 +9,26 @@
 #include "kernel/fd.h"
 #include "kernel/signal_state.h"
 
+#define PROCESS_EXEC_ARG_MAX 16U
+#define PROCESS_EXEC_ARG_BYTES_MAX 2048U
+
 void process_system_init(void);
 uint64_t process_run_elf(const void *image, size_t image_size);
+#ifdef KERNEL_TEST_PRIVATE_MAPPING_LIFECYCLE
+uint64_t process_test_private_mapping_lifecycle(const void *image,
+	size_t image_size);
+#endif
+#ifdef KERNEL_TEST_PRIVATE_MAPPING_PROTECTION
+void process_test_arm_user_fault_capture(void);
+bool process_test_user_fault_capture(uint64_t *vector, uint64_t *error_code);
+#endif
 uint64_t process_run_path(const char *path, bool startup_stack);
 struct fd_table *process_current_fd_table(void);
 uint64_t process_current_pid(void);
 void process_syscall_retry_begin(void);
+void process_capture_user_fs_base(uint64_t base);
+void process_restore_user_fs_base(void);
+uint64_t process_set_fs_base(uint64_t base);
 uint64_t process_kill(uint64_t pid, unsigned int signo);
 struct interrupt_frame *process_sigaction(struct interrupt_frame *frame,
 	unsigned int signo, uint64_t new_action, uint64_t old_action,
@@ -33,6 +47,8 @@ struct interrupt_frame *process_exec(struct interrupt_frame *frame,
 	uint64_t *error);
 struct interrupt_frame *process_exec_path(struct interrupt_frame *frame,
 	const char *path, uint64_t *error);
+struct interrupt_frame *process_exec_path_argv(struct interrupt_frame *frame,
+	const char *path, size_t argc, const char *const argv[], uint64_t *error);
 struct interrupt_frame *process_sigreturn(struct interrupt_frame *frame,
 	uint64_t *error);
 struct interrupt_frame *process_prepare_user_return(

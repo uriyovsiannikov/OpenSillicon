@@ -7,6 +7,7 @@
 #define KERNEL_CODE_SELECTOR 0x08
 #define TSS_SELECTOR 0x28
 #define KERNEL_STACK_SIZE 16384
+#define IA32_FS_BASE 0xc0000100U
 
 struct tss64 {
 	uint32_t reserved0;
@@ -35,6 +36,24 @@ static uint64_t gdt[GDT_ENTRIES];
 static struct tss64 tss;
 static uint8_t kernel_stack[KERNEL_STACK_SIZE] __attribute__((aligned(16)));
 extern void gdt_load(const struct table_pointer *pointer);
+
+uint64_t
+arch_fs_base_read(void)
+{
+	uint32_t low;
+	uint32_t high;
+
+	__asm__ volatile ("rdmsr" : "=a" (low), "=d" (high) :
+	    "c" (IA32_FS_BASE));
+	return ((uint64_t)high << 32) | low;
+}
+
+void
+arch_fs_base_write(uint64_t base)
+{
+	__asm__ volatile ("wrmsr" : : "c" (IA32_FS_BASE), "a" ((uint32_t)base),
+	    "d" ((uint32_t)(base >> 32)) : "memory");
+}
 
 static void
 set_tss_descriptor(unsigned int index, uint64_t base, uint32_t limit)
@@ -65,6 +84,8 @@ gdt_init(void)
 	tss.iomap_base = sizeof(tss);
 	set_tss_descriptor(5, (uint64_t)(uintptr_t)&tss, sizeof(tss) - 1);
 	gdt_load(&pointer);
+	/* The kernel has no FS-based per-CPU state; keep its base at zero. */
+	arch_fs_base_write(0);
 	__asm__ volatile ("ltr %0" : : "r" ((uint16_t)TSS_SELECTOR));
 }
 

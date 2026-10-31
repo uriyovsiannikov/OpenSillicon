@@ -15,6 +15,7 @@ struct fd_operations {
 	int (*write)(void *context, uint64_t offset, const void *buffer,
 	    size_t length, size_t *write_length);
 	int (*readdir)(void *context, uint64_t index, struct vfs_dirent *entry);
+	bool (*is_terminal)(void *context);
 	void (*close)(void *context);
 };
 
@@ -39,6 +40,7 @@ int fd_object_read(struct fd_object *object, void *buffer, size_t length,
 int fd_object_write(struct fd_object *object, const void *buffer,
 	size_t length, size_t *write_length);
 void fd_table_init_standard(struct fd_table *table);
+void fd_console_framebuffer_enable(bool enable);
 bool fd_table_clone(struct fd_table *destination,
 	const struct fd_table *source);
 void fd_table_destroy(struct fd_table *table);
@@ -48,6 +50,7 @@ int fd_install_pair(struct fd_table *table, struct fd_object *first,
 	int *second_descriptor);
 struct fd_object *fd_object_for_descriptor(struct fd_table *table,
 	uint64_t descriptor);
+bool fd_object_is_terminal(const struct fd_object *object);
 int fd_close(struct fd_table *table, uint64_t descriptor);
 int fd_read(struct fd_table *table, uint64_t descriptor, void *buffer,
 	size_t length, size_t *read_length);

@@ -1,5 +1,6 @@
 #include <stdint.h>
 
+#include "arch/x86_64/fpu.h"
 #include "arch/x86_64/gdt.h"
 #include "arch/x86_64/user.h"
 #include "kernel/elf.h"
@@ -15,6 +16,14 @@
 #define PROCESS_KERNEL_STACK_SIZE 65536U
 #define PROCESS_STACK_TOP (0x00007ffffffff000ULL - 0x1000ULL)
 #define PROCESS_STACK_PAGE (PROCESS_STACK_TOP - 4096ULL)
+#define PROCESS_STACK_SIZE 4096ULL
+#define AUXV_AT_NULL 0ULL
+#define AUXV_AT_PHDR 3ULL
+#define AUXV_AT_PHENT 4ULL
+#define AUXV_AT_PHNUM 5ULL
+#define AUXV_AT_PAGESZ 6ULL
+#define AUXV_AT_BASE 7ULL
+#define AUXV_AT_ENTRY 9ULL
 #define PROCESS_WAIT_ANY UINT64_MAX
 #define PROCESS_ERROR_ECHILD 10U
 #define PROCESS_ERROR_EFAULT 14U
@@ -28,6 +37,8 @@
 #define PROCESS_ERROR_ENOEXEC 8U
 #define PROCESS_ERROR_EIO 5U
 #define PROCESS_ERROR_EINVAL 22U
+#define PROCESS_USER_BASE 0x10000ULL
+#define PROCESS_USER_END 0x00007ffffffff000ULL
 
 enum process_state {
 	PROCESS_READY,
@@ -41,6 +52,15 @@ enum process_block_reason {
 	PROCESS_BLOCK_WAIT,
 	PROCESS_BLOCK_SLEEP,
 	PROCESS_BLOCK_CHANNEL
+};
+
+struct process_tls_metadata {
+	bool present;
+	uint64_t image_address;
+	uint64_t file_offset;
+	uint64_t file_size;
+	uint64_t memory_size;
+	uint64_t alignment;
 };
 
 struct process {
@@ -59,16 +79,27 @@ struct process {
 	struct process *next;
 	struct address_space *address_space;
 	struct elf_loaded_image *loaded_image;
+	struct process_tls_metadata tls;
 	void *kernel_stack;
 	struct interrupt_frame *saved_frame;
 	uint64_t initial_user_stack;
+	uint64_t user_fs_base;
+	_Alignas(16) uint8_t fpu_state[ARCH_FPU_STATE_SIZE];
 	struct fd_table descriptors;
 	struct os_signal_state signals;
 	bool signal_active;
 	uint64_t signal_restorer;
 	uint64_t signal_handler_stack;
 	struct interrupt_frame signal_saved_frame;
+#ifdef KERNEL_TEST_PRIVATE_MAPPING_LIFECYCLE
+	bool test_private_mapping_child;
+	uint64_t test_private_mapping_base;
+	uint64_t test_private_mapping_physical;
+#endif
 };
+
+_Static_assert(_Alignof(struct process) >= 16,
+	"process FXSAVE state must be 16-byte aligned");
 
 static struct process *process_head;
 static struct process *current_process;
@@ -80,9 +111,35 @@ static bool initialized;
 static uint64_t test_shm_reap_releases;
 static uint64_t test_shm_exec_releases;
 #endif
+#ifdef KERNEL_TEST_PRIVATE_MAPPING_LIFECYCLE
+static bool test_private_mapping_armed;
+static bool test_private_mapping_failed;
+static uint64_t test_private_mapping_faults;
+static uint64_t test_private_mapping_zombies;
+static uint64_t test_private_mapping_reaps;
+#endif
+#ifdef KERNEL_TEST_PRIVATE_MAPPING_PROTECTION
+static bool test_user_fault_capture_armed;
+static bool test_user_fault_capture_valid;
+static uint64_t test_user_fault_vector;
+static uint64_t test_user_fault_error;
+#endif
 
 static struct process *find_child(struct process *parent, uint64_t pid,
 	bool zombie_only);
+
+static struct process_tls_metadata
+process_tls_from_plan(const struct elf_load_plan *plan)
+{
+	return (struct process_tls_metadata){
+		.present = plan->tls_present,
+		.image_address = plan->tls_image_address,
+		.file_offset = plan->tls_file_offset,
+		.file_size = plan->tls_file_size,
+		.memory_size = plan->tls_memory_size,
+		.alignment = plan->tls_alignment
+	};
+}
 
 static bool
 process_has_pending_signal(const struct process *process)
@@ -154,6 +211,39 @@ process_syscall_retry_begin(void)
 		return;
 	current_process->retry_in_progress = current_process->retry_pending;
 	current_process->retry_pending = false;
+}
+
+void
+process_capture_user_fs_base(uint64_t base)
+{
+	if (current_process != NULL)
+		current_process->user_fs_base = base;
+}
+
+void
+process_restore_user_fs_base(void)
+{
+	arch_fs_base_write(current_process == NULL ? 0 :
+	    current_process->user_fs_base);
+}
+
+uint64_t
+process_set_fs_base(uint64_t base)
+{
+	if (current_process == NULL)
+		return PROCESS_ERROR_EINVAL;
+	if (base == 0) {
+		current_process->user_fs_base = 0;
+		return 0;
+	}
+	if (base < PROCESS_USER_BASE || base >= PROCESS_USER_END ||
+	    (base & (sizeof(uint64_t) - 1)) != 0)
+		return PROCESS_ERROR_EINVAL;
+	if (!vmm_validate_user_write(current_process->address_space, base,
+	    sizeof(uint64_t)))
+		return PROCESS_ERROR_EFAULT;
+	current_process->user_fs_base = base;
+	return 0;
 }
 
 static uint64_t
@@ -244,6 +334,8 @@ schedule_from(struct process *after)
 {
 	struct process *next;
 
+	if (current_process != NULL)
+		arch_fpu_save(current_process->fpu_state);
 	for (;;) {
 		next = find_next_ready(after);
 		if (next != NULL)
@@ -253,6 +345,7 @@ schedule_from(struct process *after)
 			uint64_t status = current_process->exit_status;
 
 			current_process = NULL;
+			arch_fpu_restore_kernel_state();
 			if (!address_space_activate(vmm_kernel_address_space())) {
 				klog("OpenSillicon panic: cannot restore kernel address space\n");
 				kernel_halt();
@@ -271,6 +364,7 @@ schedule_from(struct process *after)
 				process = process->next;
 			} while (process != process_head);
 			if (blocked_exists) {
+				arch_fpu_restore_kernel_state();
 				__asm__ volatile ("sti; hlt; cli" : : : "memory");
 				continue;
 			}
@@ -285,6 +379,7 @@ schedule_from(struct process *after)
 		klog("OpenSillicon panic: invalid process context\n");
 		kernel_halt();
 	}
+	arch_fpu_restore(current_process->fpu_state);
 	gdt_set_kernel_stack(process_kernel_stack_top(current_process));
 	return current_process->saved_frame;
 }
@@ -306,27 +401,122 @@ initialize_user_frame(struct interrupt_frame *frame, uint64_t entry,
 }
 
 static bool
-map_process_stack(struct elf_loaded_image *image)
+build_initial_stack(const struct elf_loaded_image *image, uint64_t physical,
+	uint64_t *stack_pointer, size_t argc, const char *const argv[])
+{
+	volatile uint64_t *stack;
+	volatile uint8_t *stack_bytes;
+	uint64_t top = PROCESS_STACK_TOP;
+	uint64_t words[PROCESS_EXEC_ARG_MAX + 17U];
+	uint64_t byte_count;
+	uint64_t rsp;
+	uint64_t offset;
+	uint64_t string_cursor;
+	uint64_t string_bytes = 0;
+	uint64_t hhdm = vmm_hhdm_offset();
+	uint64_t i;
+
+	if (image == NULL || stack_pointer == NULL || argc > PROCESS_EXEC_ARG_MAX ||
+	    (argc != 0 && argv == NULL) ||
+	    image->plan.program_header_address == 0 ||
+	    image->plan.program_header_entry_size != 56 ||
+	    image->plan.program_header_count == 0 ||
+	    image->entry != image->plan.entry)
+		return false;
+	for (i = 0; i < argc; i++) {
+		uint64_t length = 0;
+		if (argv[i] == NULL)
+			return false;
+		while (length <= PROCESS_EXEC_ARG_BYTES_MAX && argv[i][length] != '\0')
+			length++;
+		if (length > PROCESS_EXEC_ARG_BYTES_MAX ||
+		    string_bytes > PROCESS_EXEC_ARG_BYTES_MAX - length - 1)
+			return false;
+		string_bytes += length + 1;
+	}
+	byte_count = (argc + 17U) * sizeof(uint64_t);
+	if (byte_count > top || string_bytes > PROCESS_STACK_SIZE - byte_count - 15)
+		return false;
+	rsp = (top - byte_count) & ~15ULL;
+	if (rsp < PROCESS_STACK_PAGE || rsp > top ||
+	    byte_count > top - rsp || hhdm > UINT64_MAX - physical ||
+	    PROCESS_STACK_SIZE - 1 > UINT64_MAX - (hhdm + physical))
+		return false;
+	stack = (volatile uint64_t *)(uintptr_t)(hhdm + physical);
+	stack_bytes = (volatile uint8_t *)(uintptr_t)(hhdm + physical);
+	offset = (rsp - PROCESS_STACK_PAGE) / sizeof(uint64_t);
+	if ((rsp - PROCESS_STACK_PAGE) % sizeof(uint64_t) != 0 ||
+	    offset > PROCESS_STACK_SIZE / sizeof(uint64_t) ||
+	    argc + 17U >
+	    PROCESS_STACK_SIZE / sizeof(uint64_t) - offset)
+		return false;
+	words[0] = argc;
+	string_cursor = top - string_bytes;
+	for (i = 0; i < argc; i++) {
+		uint64_t j = 0;
+		words[1 + i] = string_cursor;
+		for (;;) {
+			uint8_t byte = (uint8_t)argv[i][j];
+			stack_bytes[string_cursor - PROCESS_STACK_PAGE + j] = byte;
+			j++;
+			if (byte == 0)
+				break;
+		}
+		string_cursor += j;
+	}
+	words[1 + argc] = 0;
+	words[2 + argc] = 0;
+	words[3 + argc] = AUXV_AT_PHDR;
+	words[4 + argc] = image->plan.program_header_address;
+	words[5 + argc] = AUXV_AT_PHENT;
+	words[6 + argc] = image->plan.program_header_entry_size;
+	words[7 + argc] = AUXV_AT_PHNUM;
+	words[8 + argc] = image->plan.program_header_count;
+	words[9 + argc] = AUXV_AT_PAGESZ;
+	words[10 + argc] = PROCESS_STACK_SIZE;
+	words[11 + argc] = AUXV_AT_ENTRY;
+	words[12 + argc] = image->entry;
+	words[13 + argc] = AUXV_AT_BASE;
+	words[14 + argc] = 0;
+	words[15 + argc] = AUXV_AT_NULL;
+	words[16 + argc] = 0;
+	for (i = 0; i < argc + 17U; i++)
+		stack[offset + i] = words[i];
+	*stack_pointer = rsp;
+	return true;
+}
+
+static bool
+map_process_stack(struct elf_loaded_image *image, bool startup_stack,
+	uint64_t *stack_pointer, size_t argc, const char *const argv[])
 {
 	uint64_t physical;
+	uint64_t initial_stack = PROCESS_STACK_TOP;
+	uint64_t hhdm = vmm_hhdm_offset();
 	volatile uint8_t *stack;
 	uint64_t i;
 
-	if (!pmm_alloc_page(&physical))
+	if (image == NULL || stack_pointer == NULL || !pmm_alloc_page(&physical))
 		return false;
-	if (vmm_hhdm_offset() > UINT64_MAX - physical ||
-	    4095 > UINT64_MAX - (vmm_hhdm_offset() + physical)) {
+	if (hhdm > UINT64_MAX - physical ||
+	    PROCESS_STACK_SIZE - 1 > UINT64_MAX - (hhdm + physical)) {
 		(void)pmm_free_page(physical);
 		return false;
 	}
-	stack = (volatile uint8_t *)(uintptr_t)(vmm_hhdm_offset() + physical);
-	for (i = 0; i < 4096; i++)
+	stack = (volatile uint8_t *)(uintptr_t)(hhdm + physical);
+	for (i = 0; i < PROCESS_STACK_SIZE; i++)
 		stack[i] = 0;
+	if (startup_stack &&
+	    !build_initial_stack(image, physical, &initial_stack, argc, argv)) {
+		(void)pmm_free_page(physical);
+		return false;
+	}
 	if (!vmm_map_page(&image->address_space, PROCESS_STACK_PAGE, physical,
 	    VMM_USER | VMM_WRITE)) {
 		(void)pmm_free_page(physical);
 		return false;
 	}
+	*stack_pointer = initial_stack;
 	return true;
 }
 
@@ -619,16 +809,23 @@ process_run_elf_internal(const void *image, size_t image_size,
 	root->retry_in_progress = false;
 	root->parent = NULL;
 	root->address_space = &root->loaded_image->address_space;
+	root->tls = process_tls_from_plan(&root->loaded_image->plan);
 	root->saved_frame = NULL;
 	os_signal_state_init(&root->signals);
 	root->signal_active = false;
 	root->signal_restorer = 0;
 	root->signal_handler_stack = 0;
-	/* The zeroed stack page supplies argc, argv[0], and envp for init. */
-	root->initial_user_stack = startup_stack ? PROCESS_STACK_TOP - 3 *
-	    sizeof(uint64_t) : PROCESS_STACK_TOP;
+#ifdef KERNEL_TEST_PRIVATE_MAPPING_LIFECYCLE
+	root->test_private_mapping_child = false;
+	root->test_private_mapping_base = 0;
+	root->test_private_mapping_physical = 0;
+#endif
+	root->initial_user_stack = PROCESS_STACK_TOP;
+	root->user_fs_base = 0;
+	arch_fpu_init_process_state(root->fpu_state);
 	fd_table_init_standard(&root->descriptors);
-	if (!map_process_stack(root->loaded_image)) {
+	if (!map_process_stack(root->loaded_image, startup_stack,
+	    &root->initial_user_stack, 0, NULL)) {
 		release_process(root);
 		return UINT64_MAX;
 	}
@@ -639,7 +836,9 @@ process_run_elf_internal(const void *image, size_t image_size,
 		kernel_halt();
 	}
 	gdt_set_kernel_stack(process_kernel_stack_top(root));
+	arch_fpu_restore(root->fpu_state);
 	status = user_enter(root->loaded_image->entry, root->initial_user_stack);
+	arch_fpu_restore_kernel_state();
 	gdt_restore_kernel_stack();
 	if (!address_space_activate(vmm_kernel_address_space())) {
 		klog("OpenSillicon panic: failed to restore kernel mappings\n");
@@ -660,6 +859,48 @@ process_run_elf(const void *image, size_t image_size)
 {
 	return process_run_elf_internal(image, image_size, false);
 }
+
+#ifdef KERNEL_TEST_PRIVATE_MAPPING_LIFECYCLE
+uint64_t
+process_test_private_mapping_lifecycle(const void *image, size_t image_size)
+{
+	uint64_t status;
+
+	test_private_mapping_armed = true;
+	test_private_mapping_failed = false;
+	test_private_mapping_faults = 0;
+	test_private_mapping_zombies = 0;
+	test_private_mapping_reaps = 0;
+	status = process_run_elf_internal(image, image_size, false);
+	if (status != 0 || test_private_mapping_armed ||
+	    test_private_mapping_failed || test_private_mapping_faults != 1 ||
+	    test_private_mapping_zombies != 1 || test_private_mapping_reaps != 1)
+		return UINT64_MAX;
+	return status;
+}
+#endif
+
+#ifdef KERNEL_TEST_PRIVATE_MAPPING_PROTECTION
+void
+process_test_arm_user_fault_capture(void)
+{
+	test_user_fault_capture_armed = true;
+	test_user_fault_capture_valid = false;
+	test_user_fault_vector = UINT64_MAX;
+	test_user_fault_error = UINT64_MAX;
+}
+
+bool
+process_test_user_fault_capture(uint64_t *vector, uint64_t *error_code)
+{
+	if (!test_user_fault_capture_valid || vector == NULL || error_code == NULL)
+		return false;
+	*vector = test_user_fault_vector;
+	*error_code = test_user_fault_error;
+	test_user_fault_capture_valid = false;
+	return true;
+}
+#endif
 
 uint64_t
 process_run_path(const char *path, bool startup_stack)
@@ -694,8 +935,9 @@ process_run_path(const char *path, bool startup_stack)
 		offset += amount;
 	}
 	fd_object_put(file);
-	result = process_run_elf_internal(image, (size_t)status.size,
-	    startup_stack);
+	/* Path-based launches always receive the standard argc/envp/auxv stack. */
+	(void)startup_stack;
+	result = process_run_elf_internal(image, (size_t)status.size, true);
 	(void)kheap_free(image);
 	return result;
 }
@@ -738,6 +980,13 @@ process_fork(struct interrupt_frame *frame, uint64_t *error)
 		*error = PROCESS_ERROR_ENOMEM;
 		return frame;
 	}
+	arch_fpu_save(current_process->fpu_state);
+	{
+		size_t byte;
+
+		for (byte = 0; byte < ARCH_FPU_STATE_SIZE; byte++)
+			child->fpu_state[byte] = current_process->fpu_state[byte];
+	}
 	child->kernel_stack = kheap_alloc(PROCESS_KERNEL_STACK_SIZE);
 	child->address_space = kheap_alloc(sizeof(*child->address_space));
 	if (child->kernel_stack == NULL || child->address_space == NULL ||
@@ -763,11 +1012,18 @@ process_fork(struct interrupt_frame *frame, uint64_t *error)
 	child->retry_in_progress = false;
 	child->parent = current_process;
 	child->loaded_image = NULL;
+	child->tls = current_process->tls;
 	child->initial_user_stack = current_process->initial_user_stack;
+	child->user_fs_base = current_process->user_fs_base;
 	os_signal_fork_state(&current_process->signals, &child->signals);
 	child->signal_active = false;
 	child->signal_restorer = 0;
 	child->signal_handler_stack = 0;
+#ifdef KERNEL_TEST_PRIVATE_MAPPING_LIFECYCLE
+	child->test_private_mapping_child = false;
+	child->test_private_mapping_base = 0;
+	child->test_private_mapping_physical = 0;
+#endif
 	if (!fd_table_clone(&child->descriptors, &current_process->descriptors)) {
 		(void)address_space_destroy_with_pages(child->address_space);
 		(void)kheap_free(child->address_space);
@@ -783,6 +1039,35 @@ process_fork(struct interrupt_frame *frame, uint64_t *error)
 		destination_words[i] = source_words[i];
 	child_frame->rax = 0;
 	child_frame->rflags &= ~1ULL;
+#ifdef KERNEL_TEST_PRIVATE_MAPPING_LIFECYCLE
+	if (test_private_mapping_armed) {
+		static const uint8_t instruction = 0xc3;
+		static const uint64_t marker = 0x4e585f4c49564531ULL;
+		uint64_t base;
+
+		if (vmm_private_map(child->address_space, 4096, &base) != 0 ||
+		    !vmm_copy_to_user(child->address_space, base, &instruction,
+		    sizeof(instruction)) ||
+		    !vmm_copy_to_user(child->address_space, base + 8, &marker,
+		    sizeof(marker))) {
+			test_private_mapping_failed = true;
+			fd_table_destroy(&child->descriptors);
+			if (!address_space_destroy_with_pages(child->address_space))
+				kernel_halt();
+			(void)kheap_free(child->address_space);
+			(void)kheap_free(child->kernel_stack);
+			(void)kheap_free(child);
+			*error = PROCESS_ERROR_EAGAIN;
+			return frame;
+		}
+		child->test_private_mapping_child = true;
+		child->test_private_mapping_base = base;
+		child->test_private_mapping_physical =
+		    child->address_space->private_mappings->physical_pages[0];
+		child_frame->rip = base;
+		test_private_mapping_armed = false;
+	}
+#endif
 	child->saved_frame = child_frame;
 	insert_process(child);
 	frame->rax = child->id;
@@ -793,18 +1078,19 @@ process_fork(struct interrupt_frame *frame, uint64_t *error)
 
 static struct interrupt_frame *
 replace_process_image(struct interrupt_frame *frame, const void *image,
-	size_t image_size, uint64_t invalid_elf_error, uint64_t *error)
+	size_t image_size, uint64_t invalid_elf_error, uint64_t *error,
+	size_t argc, const char *const argv[])
 {
 	struct process *process = current_process;
 	struct elf_loaded_image *replacement;
 	uint64_t new_entry;
-	uint64_t stack_physical;
-	volatile uint8_t *stack;
-	uint64_t i;
 	struct elf_loaded_image *old_image;
 	struct address_space *old_space;
 	struct interrupt_frame *new_frame;
 	uintptr_t stack_top;
+#ifdef KERNEL_TEST_FS_BASE
+	bool had_user_fs_base;
+#endif
 
 	if (process == NULL || image == NULL || image_size == 0) {
 		*error = PROCESS_ERROR_EINVAL;
@@ -818,24 +1104,7 @@ replace_process_image(struct interrupt_frame *frame, const void *image,
 		*error = invalid_elf_error;
 		return frame;
 	}
-	if (!pmm_alloc_page(&stack_physical)) {
-		release_loaded_image(replacement);
-		*error = PROCESS_ERROR_ENOMEM;
-		return frame;
-	}
-	if (vmm_hhdm_offset() > UINT64_MAX - stack_physical ||
-	    4095 > UINT64_MAX - (vmm_hhdm_offset() + stack_physical)) {
-		(void)pmm_free_page(stack_physical);
-		release_loaded_image(replacement);
-		*error = PROCESS_ERROR_ENOMEM;
-		return frame;
-	}
-	stack = (volatile uint8_t *)(uintptr_t)(vmm_hhdm_offset() + stack_physical);
-	for (i = 0; i < 4096; i++)
-		stack[i] = 0;
-	if (!vmm_map_page(&replacement->address_space, PROCESS_STACK_PAGE,
-	    stack_physical, VMM_USER | VMM_WRITE)) {
-		(void)pmm_free_page(stack_physical);
+	if (!map_process_stack(replacement, true, &stack_top, argc, argv)) {
 		release_loaded_image(replacement);
 		*error = PROCESS_ERROR_ENOMEM;
 		return frame;
@@ -843,11 +1112,27 @@ replace_process_image(struct interrupt_frame *frame, const void *image,
 	new_entry = replacement->entry;
 	old_image = process->loaded_image;
 	old_space = process->address_space;
+#ifdef KERNEL_TEST_FS_BASE
+	had_user_fs_base = process->user_fs_base != 0;
+#endif
 	if (!address_space_activate(&replacement->address_space)) {
 		release_loaded_image(replacement);
 		*error = PROCESS_ERROR_ENOMEM;
 		return frame;
 	}
+	process->loaded_image = replacement;
+	process->address_space = &replacement->address_space;
+	process->tls = process_tls_from_plan(&replacement->plan);
+	process->user_fs_base = 0;
+	arch_fpu_init_process_state(process->fpu_state);
+	arch_fpu_restore(process->fpu_state);
+#ifdef KERNEL_TEST_FS_BASE
+	if (had_user_fs_base) {
+		if (process->user_fs_base != 0 || arch_fs_base_read() != 0)
+			kernel_halt();
+		klog("OpenSillicon test: successful exec reset FS base\n");
+	}
+#endif
 	if (old_image != NULL) {
 #ifdef KERNEL_TEST_SHM_LIFECYCLE
 		uint64_t live_before = shm_test_live_pages();
@@ -871,9 +1156,7 @@ replace_process_image(struct interrupt_frame *frame, const void *image,
 			test_shm_exec_releases++;
 #endif
 	}
-	process->loaded_image = replacement;
-	process->address_space = &replacement->address_space;
-	process->initial_user_stack = PROCESS_STACK_TOP;
+	process->initial_user_stack = stack_top;
 	os_signal_exec_state(&process->signals);
 	process->signal_active = false;
 	process->signal_restorer = 0;
@@ -881,9 +1164,9 @@ replace_process_image(struct interrupt_frame *frame, const void *image,
 	process->block_reason = PROCESS_BLOCK_NONE;
 	process->retry_pending = false;
 	process->retry_in_progress = false;
-	stack_top = process_kernel_stack_top(process);
-	new_frame = (struct interrupt_frame *)(stack_top - sizeof(*new_frame));
-	initialize_user_frame(new_frame, new_entry, PROCESS_STACK_TOP);
+	new_frame = (struct interrupt_frame *)(process_kernel_stack_top(process) -
+	    sizeof(*new_frame));
+	initialize_user_frame(new_frame, new_entry, process->initial_user_stack);
 	process->saved_frame = new_frame;
 	*error = 0;
 	return new_frame;
@@ -912,14 +1195,14 @@ process_exec(struct interrupt_frame *frame, uint64_t *error)
 		return frame;
 	}
 	result = replace_process_image(frame, image_copy, (size_t)image_size,
-	    PROCESS_ERROR_EINVAL, error);
+	    PROCESS_ERROR_EINVAL, error, 0, NULL);
 	(void)kheap_free(image_copy);
 	return result;
 }
 
 struct interrupt_frame *
-process_exec_path(struct interrupt_frame *frame, const char *path,
-	uint64_t *error)
+process_exec_path_argv(struct interrupt_frame *frame, const char *path,
+	size_t argc, const char *const argv[], uint64_t *error)
 {
 	struct vfs_stat status;
 	struct fd_object *file = NULL;
@@ -971,9 +1254,16 @@ process_exec_path(struct interrupt_frame *frame, const char *path,
 	}
 	fd_object_put(file);
 	result = replace_process_image(frame, image, (size_t)status.size,
-	    PROCESS_ERROR_ENOEXEC, error);
+	    PROCESS_ERROR_ENOEXEC, error, argc, argv);
 	(void)kheap_free(image);
 	return result;
+}
+
+struct interrupt_frame *
+process_exec_path(struct interrupt_frame *frame, const char *path,
+	uint64_t *error)
+{
+	return process_exec_path_argv(frame, path, 0, NULL, error);
 }
 
 static struct process *
@@ -998,11 +1288,25 @@ static bool
 reap_child(struct process *parent, struct process *child,
 	uint64_t status_address, uint64_t *error)
 {
+#ifdef KERNEL_TEST_PRIVATE_MAPPING_LIFECYCLE
+	bool test_mapping_child = child->test_private_mapping_child;
+	uint64_t test_mapping_physical = child->test_private_mapping_physical;
+#endif
+
 	if (status_address != 0 && !vmm_copy_to_user(parent->address_space,
 	    status_address, &child->exit_status, sizeof(child->exit_status))) {
 		*error = PROCESS_ERROR_EFAULT;
 		return false;
 	}
+#ifdef KERNEL_TEST_PRIVATE_MAPPING_LIFECYCLE
+	if (test_mapping_child &&
+	    (child->state != PROCESS_ZOMBIE ||
+	    child->address_space->private_mappings == NULL ||
+	    child->address_space->private_mappings->base !=
+	    child->test_private_mapping_base ||
+	    !pmm_test_page_is_allocated(test_mapping_physical)))
+		test_private_mapping_failed = true;
+#endif
 	remove_process(child);
 #ifdef KERNEL_TEST_SHM_LIFECYCLE
 	{
@@ -1014,6 +1318,13 @@ reap_child(struct process *parent, struct process *child,
 	}
 #else
 	release_process(child);
+#endif
+#ifdef KERNEL_TEST_PRIVATE_MAPPING_LIFECYCLE
+	if (test_mapping_child) {
+		if (pmm_test_page_is_allocated(test_mapping_physical))
+			test_private_mapping_failed = true;
+		test_private_mapping_reaps++;
+	}
 #endif
 	*error = 0;
 	return true;
@@ -1177,8 +1488,48 @@ process_exit(struct interrupt_frame *frame, uint64_t status)
 	(void)frame;
 	if (process == NULL)
 		user_return_to_kernel(status);
+#ifdef KERNEL_TEST_PRIVATE_MAPPING_LIFECYCLE
+	if (process->test_private_mapping_child) {
+		uint64_t marker = 0;
+		uint64_t changed_marker = 0x4e585f4146544552ULL;
+
+		if (status != 128U + 14U || frame == NULL || frame->vector != 14 ||
+		    frame->rip != process->test_private_mapping_base ||
+		    frame->error_code != 0x15U ||
+		    !vmm_validate_user_write(process->address_space,
+		    process->test_private_mapping_base, 1) ||
+		    vmm_validate_user_exec(process->address_space,
+		    process->test_private_mapping_base, 1) ||
+		    !vmm_copy_from_user(process->address_space, &marker,
+		    process->test_private_mapping_base + 8, sizeof(marker)) ||
+		    marker != 0x4e585f4c49564531ULL ||
+		    !vmm_copy_to_user(process->address_space,
+		    process->test_private_mapping_base + 16, &changed_marker,
+		    sizeof(changed_marker)) ||
+		    !vmm_copy_from_user(process->address_space, &marker,
+		    process->test_private_mapping_base + 16, sizeof(marker)) ||
+		    marker != changed_marker ||
+		    !pmm_test_page_is_allocated(
+		    process->test_private_mapping_physical))
+			test_private_mapping_failed = true;
+		else
+			test_private_mapping_faults++;
+	}
+#endif
 	process->exit_status = status & 0xffU;
 	process->state = PROCESS_ZOMBIE;
+#ifdef KERNEL_TEST_PRIVATE_MAPPING_LIFECYCLE
+	if (process->test_private_mapping_child) {
+		if (process->address_space->private_mappings == NULL ||
+		    process->address_space->private_mappings->base !=
+		    process->test_private_mapping_base ||
+		    !pmm_test_page_is_allocated(
+		    process->test_private_mapping_physical))
+			test_private_mapping_failed = true;
+		else
+			test_private_mapping_zombies++;
+	}
+#endif
 	fd_table_destroy(&process->descriptors);
 	parent = process->parent;
 	if (process_head != NULL) {
@@ -1200,7 +1551,16 @@ process_exit(struct interrupt_frame *frame, uint64_t status)
 struct interrupt_frame *
 process_user_exception(struct interrupt_frame *frame)
 {
-	if (current_process == NULL)
+	if (current_process == NULL) {
+#ifdef KERNEL_TEST_PRIVATE_MAPPING_PROTECTION
+		if (test_user_fault_capture_armed) {
+			test_user_fault_vector = frame->vector;
+			test_user_fault_error = frame->error_code;
+			test_user_fault_capture_valid = true;
+			test_user_fault_capture_armed = false;
+		}
+#endif
 		user_return_to_kernel(0x100U + frame->vector);
+	}
 	return process_exit(frame, 128U + frame->vector);
 }

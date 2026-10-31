@@ -2,6 +2,7 @@
 
 #include "arch/x86_64/ahci.h"
 #include "kernel/errno.h"
+#include "kernel/dma.h"
 #include "kernel/pmm.h"
 #include "kernel/log.h"
 #include "kernel/vmm.h"
@@ -233,6 +234,7 @@ ahci_initialize(const struct pci_device_info *controller,
 	int error;
 
 	if (controller == NULL || device == NULL || state.initialized ||
+	    !dma_identity_addressing_available() ||
 	    controller->class_code != 1 || controller->subclass != 6 ||
 	    controller->programming_interface != 1)
 		return false;

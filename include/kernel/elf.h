@@ -21,6 +21,15 @@ struct elf_segment_plan {
 
 struct elf_load_plan {
 	uint64_t entry;
+	uint64_t program_header_address;
+	uint16_t program_header_entry_size;
+	uint16_t program_header_count;
+	bool tls_present;
+	uint64_t tls_image_address;
+	uint64_t tls_file_offset;
+	uint64_t tls_file_size;
+	uint64_t tls_memory_size;
+	uint64_t tls_alignment;
 	uint64_t page_count;
 	size_t segment_count;
 	struct elf_segment_plan segments[ELF_MAX_LOAD_SEGMENTS];

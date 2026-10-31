@@ -137,11 +137,12 @@ pci_config_read(uint16_t segment, uint8_t bus, uint8_t device,
 
 	if (value == NULL || !config_valid(device, function, offset, width))
 		return false;
-	if (region != NULL) {
-		if (!reader_for_device(NULL, segment, bus, device, function, aligned,
-		    &dword))
-			return false;
+	if (region != NULL && reader_for_device(NULL, segment, bus, device,
+	    function, aligned, &dword)) {
+		/* ECAM is preferred when a validated MCFG region is available. */
 	} else {
+		/* Segment zero may also be addressed through PCI Configuration
+		 * Mechanism #1. Keep it as a fallback if an ECAM remap/read fails. */
 		if (segment != 0 || offset >= 256)
 			return false;
 		dword = port_config_read(bus, device, function, aligned);
@@ -193,6 +194,81 @@ pci_config_write(uint16_t segment, uint8_t bus, uint8_t device,
 		outl(PCI_CONFIG_DATA, dword);
 	}
 	return true;
+}
+
+bool
+pci_bar_decode(const struct pci_device_info *device, unsigned int index,
+	struct pci_bar_resource *resource)
+{
+	unsigned int bar_count;
+	uint32_t low;
+	uint32_t attributes;
+
+	if (device == NULL || resource == NULL)
+		return false;
+	bar_count = (device->header_type & 0x7fU) == 0 ? 6 :
+	    (device->header_type & 0x7fU) == 1 ? 2 : 0;
+	if (bar_count == 0 || index >= bar_count)
+		return false;
+	for (unsigned int previous = 0; previous < index; previous++) {
+		uint32_t previous_low = device->bars[previous];
+
+		if (previous_low != 0 && previous_low != UINT32_MAX &&
+		    (previous_low & 1U) == 0 &&
+		    ((previous_low >> 1) & 3U) == 2U) {
+			if (previous + 1 == index)
+				return false;
+			previous++;
+		}
+	}
+	low = device->bars[index];
+	if (low == UINT32_MAX)
+		return false;
+	if (low == 0) {
+		*resource = (struct pci_bar_resource){
+			.type = PCI_BAR_UNUSED,
+			.index = (uint8_t)index,
+			.slots = 1
+		};
+		return true;
+	}
+	if ((low & 1U) != 0) {
+		*resource = (struct pci_bar_resource){
+			.type = PCI_BAR_IO,
+			.base = low & ~0x3U,
+			.index = (uint8_t)index,
+			.slots = 1
+		};
+		return true;
+	}
+	attributes = low & 0xfU;
+	switch ((low >> 1) & 3U) {
+	case 0:
+		*resource = (struct pci_bar_resource){
+			.type = PCI_BAR_MEMORY32,
+			.base = low & ~0xfU,
+			.index = (uint8_t)index,
+			.slots = 1,
+			.prefetchable = (attributes & 8U) != 0
+		};
+		return true;
+	case 2:
+		if (index + 1 >= bar_count || index == 5)
+			return false;
+		*resource = (struct pci_bar_resource){
+			.type = PCI_BAR_MEMORY64,
+			.base = ((uint64_t)device->bars[index + 1] << 32) |
+			    (low & ~0xfU),
+			.index = (uint8_t)index,
+			.slots = 2,
+			.prefetchable = (attributes & 8U) != 0
+		};
+		return true;
+	case 1:
+	case 3:
+	default:
+		return false;
+	}
 }
 
 static bool

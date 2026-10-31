@@ -14,6 +14,13 @@
 
 static struct fd_object *get_object(struct fd_table *table,
 	uint64_t descriptor);
+static bool console_framebuffer_enabled;
+
+void
+fd_console_framebuffer_enable(bool enable)
+{
+	console_framebuffer_enabled = enable;
+}
 
 static int
 console_write(void *context, uint64_t offset, const void *buffer,
@@ -25,7 +32,8 @@ console_write(void *context, uint64_t offset, const void *buffer,
 		return -FD_ERROR_EINVAL;
 	if (write_length == NULL)
 		return -FD_ERROR_EINVAL;
-	if (!tty_write(buffer, length) || !serial_write(buffer, length))
+	if ((console_framebuffer_enabled && !tty_write(buffer, length)) ||
+	    !serial_write(buffer, length))
 		return -FD_ERROR_EIO;
 	*write_length = length;
 	return 0;
@@ -40,9 +48,17 @@ console_read(void *context, uint64_t offset, void *buffer, size_t length,
 	return tty_read(buffer, length, read_length);
 }
 
+static bool
+console_is_terminal(void *context)
+{
+	(void)context;
+	return true;
+}
+
 static const struct fd_operations console_operations = {
 	.read = console_read,
-	.write = console_write
+	.write = console_write,
+	.is_terminal = console_is_terminal
 };
 
 static struct fd_object standard_input = {
@@ -207,6 +223,14 @@ struct fd_object *
 fd_object_for_descriptor(struct fd_table *table, uint64_t descriptor)
 {
 	return get_object(table, descriptor);
+}
+
+bool
+fd_object_is_terminal(const struct fd_object *object)
+{
+	return object != NULL && object->operations != NULL &&
+	    object->operations->is_terminal != NULL &&
+	    object->operations->is_terminal(object->context);
 }
 
 int

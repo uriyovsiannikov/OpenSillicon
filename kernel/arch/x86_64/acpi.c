@@ -496,8 +496,9 @@ AcpiOsMapMemory(ACPI_PHYSICAL_ADDRESS where, ACPI_SIZE length)
 		if (!acpi_mappings[slot].active)
 			break;
 	}
-	if (slot == ACPI_MAP_SLOTS || acpi_map_next > vmm_vmalloc_end() ||
-	    span > vmm_vmalloc_end() - acpi_map_next)
+	if (slot == ACPI_MAP_SLOTS ||
+	    acpi_map_next > vmm_vmalloc_device_start() ||
+	    span > vmm_vmalloc_device_start() - acpi_map_next)
 		return NULL;
 	virtual_base = acpi_map_next;
 	for (mapped = 0; mapped < page_count; mapped++) {

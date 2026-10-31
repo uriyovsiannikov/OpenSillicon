@@ -2,8 +2,13 @@
 #include <stddef.h>
 
 #include "kernel/log.h"
+#include "kernel/tty.h"
 
 #define COM1 0x3f8
+#define BOOT_STATUS_BUFFER_SIZE 1024U
+
+static char pending_boot_status[BOOT_STATUS_BUFFER_SIZE];
+static size_t pending_boot_status_length;
 
 static inline void
 outb(uint16_t port, uint8_t value)
@@ -76,6 +81,53 @@ klog_u64(uint64_t value)
 	} while (value != 0 && count < sizeof(digits));
 	while (count != 0)
 		serial_putc(digits[--count]);
+}
+
+void
+klog_status(const char *component, bool success, const char *detail)
+{
+	char line[192];
+	size_t length = 0;
+	size_t component_length = 0;
+	const char *part;
+
+	#define APPEND_STATUS(text) do { \
+		part = (text); \
+		while (*part != '\0' && length < sizeof(line)) \
+			line[length++] = *part++; \
+	} while (0)
+	APPEND_STATUS("\033[34m*\033[0m Initializing ");
+	APPEND_STATUS(component);
+	while (component[component_length] != '\0')
+		component_length++;
+	APPEND_STATUS(" ...");
+	while (component_length + 20 < 44) {
+		APPEND_STATUS(" ");
+		component_length++;
+	}
+	APPEND_STATUS(" ");
+	APPEND_STATUS(success ? "\033[32m[ OK ]\033[0m" :
+	    "\033[31m[ ER ]\033[0m");
+	if (!success && detail != NULL && detail[0] != '\0') {
+		APPEND_STATUS(" ");
+		APPEND_STATUS(detail);
+	}
+	APPEND_STATUS("\n");
+	#undef APPEND_STATUS
+	(void)serial_write(line, length);
+	if (tty_framebuffer_available()) {
+		if (pending_boot_status_length != 0) {
+			(void)tty_write(pending_boot_status,
+			    pending_boot_status_length);
+			pending_boot_status_length = 0;
+		}
+		(void)tty_write(line, length);
+	} else {
+		size_t i;
+		for (i = 0; i < length && pending_boot_status_length <
+		    sizeof(pending_boot_status); i++)
+			pending_boot_status[pending_boot_status_length++] = line[i];
+	}
 }
 
 _Noreturn void

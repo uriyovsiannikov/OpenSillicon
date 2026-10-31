@@ -17,6 +17,9 @@ struct pmm_state {
 };
 
 static struct pmm_state pmm;
+#ifdef KERNEL_TEST_PRIVATE_MAPPING_EXHAUSTION
+static uint64_t test_exhaustion_failures;
+#endif
 
 static bool
 range_end(uint64_t base, uint64_t length, uint64_t *end)
@@ -184,8 +187,14 @@ pmm_alloc_page(uint64_t *physical_address)
 	uint64_t checked;
 	uint64_t frame;
 
-	if (!pmm.initialized || physical_address == NULL || pmm.free_count == 0)
+	if (!pmm.initialized || physical_address == NULL)
 		return false;
+	if (pmm.free_count == 0) {
+#ifdef KERNEL_TEST_PRIVATE_MAPPING_EXHAUSTION
+		test_exhaustion_failures++;
+#endif
+		return false;
+	}
 	for (checked = 0; checked < pmm.frame_count; checked++) {
 		frame = pmm.search_hint + checked;
 		if (frame >= pmm.frame_count)
@@ -222,6 +231,111 @@ pmm_free_page(uint64_t physical_address)
 	return true;
 }
 
+bool
+pmm_alloc_contiguous(size_t page_count, size_t alignment_pages,
+	uint64_t maximum_address_exclusive, uint64_t *physical_address)
+{
+	uint64_t limit_frames;
+	uint64_t count;
+	uint64_t alignment;
+	uint64_t candidate;
+	uint64_t first_candidate;
+	uint64_t found = UINT64_MAX;
+
+	if (!pmm.initialized || physical_address == NULL || page_count == 0 ||
+	    alignment_pages == 0 ||
+	    (alignment_pages & (alignment_pages - 1)) != 0 ||
+	    maximum_address_exclusive == 0 ||
+	    page_count > UINT64_MAX / PAGE_SIZE)
+		return false;
+	count = (uint64_t)page_count;
+	alignment = (uint64_t)alignment_pages;
+	if (count > pmm.free_count)
+		return false;
+	limit_frames = maximum_address_exclusive / PAGE_SIZE;
+	if (limit_frames > pmm.frame_count)
+		limit_frames = pmm.frame_count;
+	if (count > limit_frames)
+		return false;
+	first_candidate = pmm.search_hint;
+	if (first_candidate > UINT64_MAX - (alignment - 1))
+		first_candidate = limit_frames;
+	else
+		first_candidate = (first_candidate + alignment - 1) &
+		    ~(alignment - 1);
+	if (first_candidate > limit_frames)
+		first_candidate = limit_frames;
+	for (unsigned int pass = 0; pass < 2 && found == UINT64_MAX; pass++) {
+		uint64_t start = pass == 0 ? first_candidate : 0;
+		uint64_t stop = pass == 0 ? limit_frames : first_candidate;
+
+		if (start > stop || count > stop - start)
+			continue;
+		candidate = start;
+		if (candidate % alignment != 0) {
+			uint64_t adjustment = alignment - candidate % alignment;
+
+			if (candidate > UINT64_MAX - adjustment)
+				continue;
+			candidate += adjustment;
+		}
+		for (; candidate <= stop - count;) {
+			uint64_t i;
+
+			for (i = 0; i < count; i++)
+				if (bit_is_set(pmm.used, candidate + i))
+					break;
+			if (i == count) {
+				found = candidate;
+				break;
+			}
+			if (candidate > UINT64_MAX - alignment)
+				break;
+			candidate += alignment;
+		}
+	}
+	if (found == UINT64_MAX)
+		return false;
+	for (uint64_t i = 0; i < count; i++)
+		bit_set(pmm.used, found + i);
+	pmm.free_count -= count;
+	pmm.search_hint = found + count;
+	if (pmm.search_hint >= pmm.frame_count)
+		pmm.search_hint = 0;
+	*physical_address = found * PAGE_SIZE;
+	return true;
+}
+
+bool
+pmm_free_contiguous(uint64_t physical_address, size_t page_count)
+{
+	uint64_t first;
+	uint64_t count;
+	uint64_t i;
+
+	if (!pmm.initialized || page_count == 0 ||
+	    (physical_address & (PAGE_SIZE - 1)) != 0 ||
+	    page_count > UINT64_MAX / PAGE_SIZE)
+		return false;
+	first = physical_address / PAGE_SIZE;
+	count = (uint64_t)page_count;
+	if (first >= pmm.frame_count || count > pmm.frame_count - first)
+		return false;
+	for (i = 0; i < count; i++) {
+		uint64_t address = (first + i) * PAGE_SIZE;
+
+		if (!bit_is_set(pmm.used, first + i) || !page_is_usable(address) ||
+		    (address >= pmm.metadata_start && address < pmm.metadata_end))
+			return false;
+	}
+	for (i = 0; i < count; i++)
+		bit_clear(pmm.used, first + i);
+	pmm.free_count += count;
+	if (first < pmm.search_hint)
+		pmm.search_hint = first;
+	return true;
+}
+
 uint64_t
 pmm_total_pages(void)
 {
@@ -233,3 +347,31 @@ pmm_free_pages(void)
 {
 	return pmm.initialized ? pmm.free_count : 0;
 }
+
+#if defined(KERNEL_TEST_PRIVATE_MAPPING_LIFECYCLE) || \
+	defined(KERNEL_TEST_PRIVATE_MAPPING_PROTECTION)
+bool
+pmm_test_page_is_allocated(uint64_t physical_address)
+{
+	uint64_t frame;
+
+	if (!pmm.initialized || (physical_address & (PAGE_SIZE - 1)) != 0)
+		return false;
+	frame = physical_address / PAGE_SIZE;
+	return frame < pmm.frame_count && bit_is_set(pmm.used, frame);
+}
+#endif
+
+#ifdef KERNEL_TEST_PRIVATE_MAPPING_EXHAUSTION
+void
+pmm_test_reset_exhaustion_failures(void)
+{
+	test_exhaustion_failures = 0;
+}
+
+uint64_t
+pmm_test_exhaustion_failures(void)
+{
+	return test_exhaustion_failures;
+}
+#endif

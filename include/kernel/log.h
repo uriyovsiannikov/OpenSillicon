@@ -9,6 +9,7 @@ void serial_init(void);
 bool serial_write(const char *buffer, size_t length);
 void klog(const char *message);
 void klog_u64(uint64_t value);
+void klog_status(const char *component, bool success, const char *detail);
 _Noreturn void kernel_halt(void);
 
 #endif
