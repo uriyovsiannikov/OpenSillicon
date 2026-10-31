@@ -9,6 +9,8 @@
 #include "kernel/scheduler.h"
 #include "kernel/fd.h"
 #include "kernel/syscall.h"
+#include "kernel/elf.h"
+#include "kernel/process.h"
 #include "arch/x86_64/user.h"
 #include "arch/x86_64/lapic.h"
 #include "arch/x86_64/interrupts.h"
@@ -16,14 +18,15 @@
 #define SCHEDULER_TEST_STEPS 4U
 #define USER_TEST_CODE 0x400000ULL
 #define USER_TEST_FAULT (USER_TEST_CODE + 0x400ULL)
-#define USER_TEST_STACK (0x00007ffffffff000ULL - 0x1000ULL)
+#define USER_TEST_STACK (0x00007ffffffff000ULL - 0x2000ULL)
 #define PAGE_SIZE 4096U
+
+static struct fd_table user_descriptors;
 
 static void
 run_user_test(void)
 {
 	struct address_space space;
-	struct fd_table descriptors;
 	uint64_t code_page;
 	uint64_t stack_page;
 	uint64_t image_size = (uintptr_t)_binary_user_test_bin_end -
@@ -48,8 +51,8 @@ run_user_test(void)
 		klog("OpenSillicon: user test mapping failed\n");
 		kernel_halt();
 	}
-	fd_table_init_standard(&descriptors);
-	syscall_init(&descriptors);
+	fd_table_init_standard(&user_descriptors);
+	syscall_init(&user_descriptors);
 	status = user_enter(USER_TEST_CODE, USER_TEST_STACK + PAGE_SIZE);
 	if (status != 0) {
 		klog("OpenSillicon: user syscall test failed, status ");
@@ -70,6 +73,28 @@ run_user_test(void)
 		kernel_halt();
 	}
 	klog("OpenSillicon: Ring 3 isolation and syscall tests passed\n");
+}
+
+static void
+run_elf_test(void)
+{
+	uint64_t image_size = (uintptr_t)_binary_elf_test_bin_end -
+	    (uintptr_t)_binary_elf_test_bin_start;
+	uint64_t status;
+
+	status = process_run_elf(_binary_elf_test_bin_start, (size_t)image_size);
+	if (status != 0 || process_user_preemptions() == 0) {
+		klog("OpenSillicon: ELF process smoke test failed, status ");
+		klog_u64(status);
+		klog(" preemptions ");
+		klog_u64(process_user_preemptions());
+		klog("\n");
+		kernel_halt();
+	}
+	klog("OpenSillicon: user timer preemptions ");
+	klog_u64(process_user_preemptions());
+	klog("\n");
+	klog("OpenSillicon: ELF64 process, fork, wait, and cleanup passed\n");
 }
 
 static volatile uint64_t scheduler_test_order[SCHEDULER_TEST_STEPS * 2];
@@ -204,6 +229,7 @@ _start(void)
 		klog("OpenSillicon: kernel heap initialization failed\n");
 		kernel_halt();
 	}
+	process_system_init();
 	klog("OpenSillicon: heap initialized\n");
 	if (!pmm_alloc_page(&user_page) || !address_space_create(&user_space) ||
 	    vmm_map_page(&user_space, 0x400000, user_page,
@@ -249,6 +275,7 @@ _start(void)
 	}
 	klog("OpenSillicon: address space destroyed\n");
 	run_user_test();
+	run_elf_test();
 	if (!scheduler_init() ||
 	    !thread_create(scheduler_test_worker, (void *)(uintptr_t)0) ||
 	    !thread_create(scheduler_test_worker, (void *)(uintptr_t)1)) {

@@ -5,6 +5,7 @@
 #include "arch/x86_64/interrupts.h"
 #include "arch/x86_64/user.h"
 #include "kernel/log.h"
+#include "kernel/process.h"
 
 #define IDT_ENTRIES 256
 #define KERNEL_CODE_SELECTOR 0x08
@@ -78,7 +79,7 @@ interrupt_register_handler(uint8_t vector, interrupt_handler handler)
 	return available;
 }
 
-void
+struct interrupt_frame *
 interrupt_dispatch(struct interrupt_frame *frame)
 {
 	if (frame == NULL) {
@@ -87,10 +88,7 @@ interrupt_dispatch(struct interrupt_frame *frame)
 	}
 	if (frame->vector < 32) {
 		if ((frame->cs & 3U) == 3U) {
-			klog("OpenSillicon: user exception vector ");
-			klog_u64(frame->vector);
-			klog("\n");
-			user_return_to_kernel(0x100U + frame->vector);
+			return process_user_exception(frame);
 		}
 		klog("OpenSillicon exception: vector ");
 		klog_u64(frame->vector);
@@ -107,10 +105,13 @@ interrupt_dispatch(struct interrupt_frame *frame)
 		}
 		klog("\n");
 	} else if (frame->vector == 255) {
-		return;
+		return frame;
 	} else if (frame->vector < IDT_ENTRIES && handlers[frame->vector] != NULL) {
-		handlers[frame->vector](frame);
-		return;
+		struct interrupt_frame *next = handlers[frame->vector](frame);
+
+		if (next != NULL)
+			return next;
+		klog("OpenSillicon panic: interrupt handler returned no frame\n");
 	} else {
 		klog("OpenSillicon panic: unexpected interrupt vector ");
 		klog_u64(frame->vector);

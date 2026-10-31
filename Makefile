@@ -18,7 +18,7 @@ KERNEL_ASFLAGS := -m64 -mno-red-zone
 USER_ASFLAGS := -m64 -ffreestanding -fno-pic -fno-pie -mno-red-zone
 USER_LDFLAGS := -nostdlib -static -no-pie -T user/linker.ld
 
-.PHONY: all kernel iso run test fault-test interrupt-test vmm-protection-test \
+.PHONY: all kernel iso run test elf-test process-test fault-test interrupt-test vmm-protection-test \
 	timer-test clean
 
 all: kernel
@@ -30,6 +30,7 @@ $(BUILD_DIR)/main.o: kernel/main.c include/kernel/boot.h include/kernel/log.h \
 		include/kernel/timer.h include/kernel/scheduler.h \
 		include/arch/x86_64/lapic.h include/arch/x86_64/interrupts.h \
 		include/arch/x86_64/user.h include/kernel/fd.h include/kernel/syscall.h \
+		include/kernel/elf.h include/kernel/process.h \
 		limine/limine.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
@@ -57,12 +58,22 @@ $(BUILD_DIR)/fd.o: kernel/fd.c include/kernel/fd.h include/kernel/log.h | $(BUIL
 
 $(BUILD_DIR)/syscall.o: kernel/syscall.c include/kernel/syscall.h \
 		include/kernel/fd.h include/kernel/vmm.h include/kernel/log.h \
+		include/kernel/process.h \
 		include/arch/x86_64/user.h include/arch/x86_64/interrupts.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/elf.o: kernel/elf.c include/kernel/elf.h include/kernel/vmm.h \
+		include/kernel/heap.h include/kernel/pmm.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/process.o: kernel/proc/process.c include/kernel/process.h \
+		include/kernel/elf.h include/kernel/vmm.h include/kernel/heap.h \
+		include/kernel/pmm.h include/arch/x86_64/gdt.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/interrupts.o: kernel/arch/x86_64/interrupts.c \
 		include/arch/x86_64/gdt.h include/arch/x86_64/interrupts.h \
-		include/kernel/log.h | $(BUILD_DIR)
+		include/kernel/log.h include/kernel/process.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/gdt.o: kernel/arch/x86_64/gdt.c include/arch/x86_64/gdt.h | $(BUILD_DIR)
@@ -74,7 +85,7 @@ $(BUILD_DIR)/lapic.o: kernel/arch/x86_64/lapic.c \
 
 $(BUILD_DIR)/timer.o: kernel/arch/x86_64/timer.c \
 		include/arch/x86_64/lapic.h include/arch/x86_64/interrupts.h \
-		include/kernel/timer.h | $(BUILD_DIR)
+		include/kernel/timer.h include/kernel/process.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/scheduler.o: kernel/sched/scheduler.c \
@@ -111,13 +122,36 @@ $(BUILD_DIR)/user_test_blob.o: $(BUILD_DIR)/user_test.bin
 		--rename-section .data=.rodata,alloc,load,readonly,data,contents \
 		user_test.bin user_test_blob.o
 
+$(BUILD_DIR)/exec_child.o: user/exec_child.S | $(BUILD_DIR)
+	$(CC) $(USER_ASFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/exec_child.elf: $(BUILD_DIR)/exec_child.o user/exec_child.ld
+	$(LD) -nostdlib -static -no-pie -T user/exec_child.ld $< -o $@
+
+$(BUILD_DIR)/elf_test_user.o: user/elf_test.S $(BUILD_DIR)/exec_child.elf | $(BUILD_DIR)
+	$(CC) $(USER_ASFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/elf_test_user.elf: $(BUILD_DIR)/elf_test_user.o user/elf_test.ld
+	$(LD) -nostdlib -static -no-pie -T user/elf_test.ld $< -o $@
+
+$(BUILD_DIR)/elf_test_user.bin: $(BUILD_DIR)/elf_test_user.elf
+	objcopy -O binary $< $@
+
+$(BUILD_DIR)/elf_test_blob.o: $(BUILD_DIR)/elf_test_user.elf
+	cd $(BUILD_DIR) && objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
+		--rename-section .data=.rodata,alloc,load,readonly,data,contents \
+		--redefine-sym _binary_elf_test_user_elf_start=_binary_elf_test_bin_start \
+		--redefine-sym _binary_elf_test_user_elf_end=_binary_elf_test_bin_end \
+		elf_test_user.elf elf_test_blob.o
+
 KERNEL_OBJECTS := $(BUILD_DIR)/main.o $(BUILD_DIR)/boot.o $(BUILD_DIR)/pmm.o \
 	$(BUILD_DIR)/vmm.o $(BUILD_DIR)/heap.o $(BUILD_DIR)/log.o \
 	$(BUILD_DIR)/gdt.o $(BUILD_DIR)/lapic.o $(BUILD_DIR)/timer.o \
 	$(BUILD_DIR)/scheduler.o $(BUILD_DIR)/interrupts.o $(BUILD_DIR)/gdt_asm.o \
 	$(BUILD_DIR)/interrupts_asm.o $(BUILD_DIR)/context.o $(BUILD_DIR)/fd.o \
 	$(BUILD_DIR)/syscall.o $(BUILD_DIR)/user_entry.o \
-	$(BUILD_DIR)/user_entry_c.o $(BUILD_DIR)/user_test_blob.o
+	$(BUILD_DIR)/user_entry_c.o $(BUILD_DIR)/user_test_blob.o \
+	$(BUILD_DIR)/elf.o $(BUILD_DIR)/elf_test_blob.o $(BUILD_DIR)/process.o
 
 $(BUILD_DIR)/kernel.elf: $(KERNEL_OBJECTS) kernel/linker.ld
 	$(LD) $(KERNEL_LDFLAGS) $(KERNEL_OBJECTS) -o $@
@@ -147,6 +181,25 @@ test: | $(BUILD_DIR)
 	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Ilimine \
 		kernel/boot.c kernel/mm/pmm.c tests/boot_test.c -o $(BUILD_DIR)/boot_test
 	$(BUILD_DIR)/boot_test
+
+elf-test: | $(BUILD_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Ilimine \
+		kernel/elf.c tests/elf_test.c -o $(BUILD_DIR)/elf_test
+	$(BUILD_DIR)/elf_test
+
+process-test: iso
+	@set +e; timeout 10s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \
+		-cdrom $(BUILD_DIR)/opensillicon.iso \
+		-serial file:$(BUILD_DIR)/process-serial.log -display none \
+		-no-reboot -no-shutdown; status=$$?; test $$status -eq 124
+	@grep -F 'OpenSillicon: fork inherited serial descriptor' \
+		$(BUILD_DIR)/process-serial.log
+	@grep -F 'OpenSillicon: static ELF64 fork, exec, and wait passed' \
+		$(BUILD_DIR)/process-serial.log
+	@grep -E 'OpenSillicon: user timer preemptions [1-9][0-9]*' \
+		$(BUILD_DIR)/process-serial.log
+	@grep -F 'OpenSillicon: ELF64 process, fork, wait, and cleanup passed' \
+		$(BUILD_DIR)/process-serial.log
 
 fault-test:
 	$(MAKE) BUILD_DIR=$(BUILD_DIR)/fault \

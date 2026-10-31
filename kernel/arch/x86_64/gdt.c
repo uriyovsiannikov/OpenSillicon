@@ -67,3 +67,15 @@ gdt_init(void)
 	gdt_load(&pointer);
 	__asm__ volatile ("ltr %0" : : "r" ((uint16_t)TSS_SELECTOR));
 }
+
+void
+gdt_set_kernel_stack(uint64_t stack_top)
+{
+	tss.rsp0 = stack_top;
+}
+
+void
+gdt_restore_kernel_stack(void)
+{
+	tss.rsp0 = (uint64_t)(uintptr_t)(kernel_stack + sizeof(kernel_stack));
+}

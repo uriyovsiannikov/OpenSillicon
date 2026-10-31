@@ -2,6 +2,7 @@
 
 #include "arch/x86_64/interrupts.h"
 #include "arch/x86_64/lapic.h"
+#include "kernel/process.h"
 #include "kernel/timer.h"
 
 #define TIMER_HZ 100U
@@ -12,12 +13,12 @@
 static volatile uint64_t ticks;
 static bool initialized;
 
-static void
+static struct interrupt_frame *
 timer_interrupt(struct interrupt_frame *frame)
 {
-	(void)frame;
 	ticks++;
 	lapic_eoi();
+	return process_timer_preempt(frame);
 }
 
 bool

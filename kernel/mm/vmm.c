@@ -465,7 +465,7 @@ address_space_destroy(struct address_space *space)
 
 static bool
 user_page_physical(const struct address_space *space, uint64_t virtual_address,
-	uint64_t *physical_address)
+	uint64_t *physical_address, bool writable)
 {
 	static const unsigned int shifts[] = {39, 30, 21};
 	uint64_t *table = table_virtual(space->root_physical);
@@ -478,6 +478,7 @@ user_page_physical(const struct address_space *space, uint64_t virtual_address,
 		uint64_t entry = table[index];
 
 		if ((entry & (PTE_PRESENT | PTE_USER)) != (PTE_PRESENT | PTE_USER) ||
+		    (writable && (entry & PTE_WRITE) == 0) ||
 		    (entry & PTE_LARGE) != 0)
 			return false;
 		table = table_virtual(entry & PTE_ADDRESS);
@@ -488,7 +489,8 @@ user_page_physical(const struct address_space *space, uint64_t virtual_address,
 		unsigned int index = (unsigned int)((virtual_address >> 12) & 0x1ff);
 		uint64_t entry = table[index];
 
-		if ((entry & (PTE_PRESENT | PTE_USER)) != (PTE_PRESENT | PTE_USER))
+		if ((entry & (PTE_PRESENT | PTE_USER)) != (PTE_PRESENT | PTE_USER) ||
+		    (writable && (entry & PTE_WRITE) == 0))
 			return false;
 		*physical_address = entry & PTE_ADDRESS;
 	}
@@ -519,7 +521,7 @@ vmm_copy_from_user(const struct address_space *space, void *destination,
 
 		if (chunk > remaining)
 			chunk = remaining;
-		if (!user_page_physical(space, current, &physical))
+		if (!user_page_physical(space, current, &physical, false))
 			return false;
 		current += chunk;
 		remaining -= chunk;
@@ -534,7 +536,7 @@ vmm_copy_from_user(const struct address_space *space, void *destination,
 
 		if (chunk > remaining)
 			chunk = remaining;
-		if (!user_page_physical(space, current, &physical) ||
+		if (!user_page_physical(space, current, &physical, false) ||
 		    hhdm_offset > UINT64_MAX - physical ||
 		    chunk - 1 > UINTPTR_MAX - (uintptr_t)(hhdm_offset + physical +
 		    (current & (PAGE_SIZE - 1))))
@@ -548,6 +550,219 @@ vmm_copy_from_user(const struct address_space *space, void *destination,
 		remaining -= chunk;
 	}
 	return true;
+}
+
+bool
+vmm_copy_to_user(const struct address_space *space, uint64_t destination,
+	const void *source, size_t length)
+{
+	uint64_t current;
+	uint64_t remaining;
+	uintptr_t input = (uintptr_t)source;
+
+	if (!initialized || !address_space_valid(space) || space == &kernel_space ||
+	    (length != 0 && source == NULL))
+		return false;
+	if (length == 0)
+		return true;
+	if (destination < USER_BASE || destination >= USER_END ||
+	    length > USER_END - destination || length - 1 > UINTPTR_MAX - input)
+		return false;
+	current = destination;
+	remaining = length;
+	while (remaining != 0) {
+		uint64_t physical;
+		uint64_t chunk = PAGE_SIZE - (current & (PAGE_SIZE - 1));
+
+		if (chunk > remaining)
+			chunk = remaining;
+		if (!user_page_physical(space, current, &physical, true))
+			return false;
+		current += chunk;
+		remaining -= chunk;
+	}
+	current = destination;
+	remaining = length;
+	while (remaining != 0) {
+		uint64_t physical;
+		uint64_t chunk = PAGE_SIZE - (current & (PAGE_SIZE - 1));
+		volatile uint8_t *output;
+		uint64_t i;
+
+		if (chunk > remaining)
+			chunk = remaining;
+		if (!user_page_physical(space, current, &physical, true) ||
+		    hhdm_offset > UINT64_MAX - physical ||
+		    (current & (PAGE_SIZE - 1)) > UINTPTR_MAX -
+		    (uintptr_t)(hhdm_offset + physical) ||
+		    chunk - 1 > UINTPTR_MAX - (uintptr_t)(hhdm_offset + physical +
+		    (current & (PAGE_SIZE - 1))))
+			return false;
+		output = (volatile uint8_t *)(uintptr_t)(hhdm_offset + physical +
+		    (current & (PAGE_SIZE - 1)));
+		for (i = 0; i < chunk; i++)
+			output[i] = ((const uint8_t *)input)[i];
+		input += chunk;
+		current += chunk;
+		remaining -= chunk;
+	}
+	return true;
+}
+
+static bool
+copy_physical_page(uint64_t source, uint64_t destination)
+{
+	volatile uint8_t *input;
+	volatile uint8_t *output;
+	uint64_t i;
+
+	if (hhdm_offset > UINT64_MAX - source ||
+	    hhdm_offset > UINT64_MAX - destination ||
+	    PAGE_SIZE - 1 > UINT64_MAX - (hhdm_offset + source) ||
+	    PAGE_SIZE - 1 > UINT64_MAX - (hhdm_offset + destination))
+		return false;
+	input = (volatile uint8_t *)(uintptr_t)(hhdm_offset + source);
+	output = (volatile uint8_t *)(uintptr_t)(hhdm_offset + destination);
+	for (i = 0; i < PAGE_SIZE; i++)
+		output[i] = input[i];
+	return true;
+}
+
+static bool
+clone_user_tables(uint64_t table_physical, unsigned int level,
+	uint64_t virtual_prefix, struct address_space *destination)
+{
+	uint64_t *table = table_virtual(table_physical);
+	unsigned int i;
+
+	if (table == NULL)
+		return false;
+	for (i = 0; i < 512; i++) {
+		uint64_t entry = table[i];
+
+		if ((entry & PTE_PRESENT) == 0)
+			continue;
+		if ((entry & PTE_USER) == 0 || (entry & PTE_LARGE) != 0)
+			return false;
+		if (level > 1) {
+			if (!clone_user_tables(entry & PTE_ADDRESS, level - 1,
+			    virtual_prefix | ((uint64_t)i << (level == 3 ? 30 : 21)),
+			    destination))
+				return false;
+		} else {
+			uint64_t virtual_address = virtual_prefix |
+			    ((uint64_t)i << 12);
+			uint64_t copy_physical;
+			unsigned int flags = VMM_USER;
+
+			if ((entry & PTE_WRITE) != 0)
+				flags |= VMM_WRITE;
+			if ((entry & PTE_NX) == 0)
+				flags |= VMM_EXEC;
+			if ((entry & PTE_PCD) != 0)
+				flags |= VMM_UNCACHED;
+			if (!pmm_alloc_page(&copy_physical))
+				return false;
+			if (!copy_physical_page(entry & PTE_ADDRESS, copy_physical)) {
+				(void)pmm_free_page(copy_physical);
+				return false;
+			}
+			if (!vmm_map_page(destination, virtual_address, copy_physical,
+			    flags)) {
+				(void)pmm_free_page(copy_physical);
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+static bool
+free_user_leaves(uint64_t table_physical, unsigned int level)
+{
+	uint64_t *table = table_virtual(table_physical);
+	unsigned int i;
+
+	if (table == NULL)
+		return false;
+	for (i = 0; i < 512; i++) {
+		uint64_t entry = table[i];
+
+		if ((entry & PTE_PRESENT) == 0)
+			continue;
+		if (level > 1) {
+			if ((entry & PTE_LARGE) != 0 ||
+			    !free_user_leaves(entry & PTE_ADDRESS, level - 1))
+				return false;
+		} else {
+			if (!pmm_free_page(entry & PTE_ADDRESS))
+				return false;
+			table[i] = 0;
+		}
+	}
+	return true;
+}
+
+bool
+address_space_destroy_with_pages(struct address_space *space)
+{
+	uint64_t *root;
+	unsigned int i;
+
+	if (!initialized || !address_space_valid(space) || space == &kernel_space ||
+	    space->root_physical == 0 || space->root_physical == read_cr3())
+		return false;
+	root = table_virtual(space->root_physical);
+	if (root == NULL)
+		return false;
+	for (i = 0; i < 256; i++) {
+		uint64_t entry = root[i];
+
+		if ((entry & PTE_PRESENT) != 0 &&
+		    ((entry & PTE_LARGE) != 0 ||
+		    !validate_user_tables(entry & PTE_ADDRESS, 3)))
+			return false;
+	}
+	for (i = 0; i < 256; i++) {
+		uint64_t entry = root[i];
+
+		if ((entry & PTE_PRESENT) != 0 &&
+		    !free_user_leaves(entry & PTE_ADDRESS, 3))
+			return false;
+	}
+	return address_space_destroy(space);
+}
+
+bool
+address_space_clone(const struct address_space *source,
+	struct address_space *destination)
+{
+	uint64_t *root;
+	unsigned int i;
+
+	if (!initialized || source == NULL || source == &kernel_space ||
+	    !address_space_valid(source) || destination == NULL ||
+	    !address_space_create(destination))
+		return false;
+	root = table_virtual(source->root_physical);
+	if (root == NULL)
+		goto fail;
+	for (i = 0; i < 256; i++) {
+		uint64_t entry = root[i];
+
+		if ((entry & PTE_PRESENT) == 0)
+			continue;
+		if ((entry & PTE_USER) == 0 || (entry & PTE_LARGE) != 0 ||
+		    !clone_user_tables(entry & PTE_ADDRESS, 3,
+		    (uint64_t)i << 39, destination))
+			goto fail;
+	}
+	return true;
+
+fail:
+	if (!address_space_destroy_with_pages(destination))
+		return false;
+	return false;
 }
 
 uint64_t

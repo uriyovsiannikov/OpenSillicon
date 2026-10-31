@@ -4,6 +4,7 @@
 #include "arch/x86_64/user.h"
 #include "kernel/fd.h"
 #include "kernel/log.h"
+#include "kernel/process.h"
 #include "kernel/syscall.h"
 #include "kernel/vmm.h"
 
@@ -13,6 +14,9 @@
 #define ERRNO_EFAULT 14U
 #define ERRNO_EINVAL 22U
 #define ERRNO_ENOSYS 78U
+#define ERRNO_ECHILD 10U
+#define ERRNO_EAGAIN 11U
+#define ERRNO_ENOMEM 12U
 
 static struct fd_table *descriptor_table;
 
@@ -23,10 +27,12 @@ syscall_error(struct interrupt_frame *frame, uint64_t error)
 	frame->rflags |= 1U;
 }
 
-static void
+static struct interrupt_frame *
 syscall_interrupt(struct interrupt_frame *frame)
 {
 	uint64_t number = frame->rax;
+	uint64_t error = 0;
+	struct fd_table *table;
 
 	frame->rflags &= ~1ULL;
 	switch (number) {
@@ -34,7 +40,7 @@ syscall_interrupt(struct interrupt_frame *frame)
 		frame->rax = SYSCALL_ABI_VERSION;
 		break;
 	case SYSCALL_EXIT:
-		user_return_to_kernel(frame->rdi);
+		return process_exit(frame, frame->rdi);
 	case SYSCALL_WRITE:
 		if (frame->rdx > SYSCALL_MAX_WRITE) {
 			syscall_error(frame, ERRNO_EINVAL);
@@ -49,7 +55,10 @@ syscall_interrupt(struct interrupt_frame *frame)
 				syscall_error(frame, ERRNO_EFAULT);
 				break;
 			}
-			if (!fd_write(descriptor_table, frame->rdi, buffer,
+			table = process_current_fd_table();
+			if (table == NULL)
+				table = descriptor_table;
+			if (!fd_write(table, frame->rdi, buffer,
 			    (size_t)frame->rdx)) {
 				syscall_error(frame, ERRNO_EBADF);
 				break;
@@ -58,12 +67,24 @@ syscall_interrupt(struct interrupt_frame *frame)
 		frame->rax = frame->rdx;
 		break;
 	case SYSCALL_GETPID:
-		frame->rax = 1;
+		frame->rax = process_current_pid();
+		break;
+	case SYSCALL_FORK:
+		frame = process_fork(frame, &error);
+		break;
+	case SYSCALL_EXEC:
+		frame = process_exec(frame, &error);
+		break;
+	case SYSCALL_WAITPID:
+		frame = process_waitpid(frame, &error);
 		break;
 	default:
 		syscall_error(frame, ERRNO_ENOSYS);
 		break;
 	}
+	if (error != 0)
+		syscall_error(frame, error);
+	return frame;
 }
 
 void

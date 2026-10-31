@@ -20,8 +20,9 @@ syscall number and return value; arguments use `RDI`, `RSI`, `RDX`, `R10`,
 `R8`, and `R9` in order. Success clears CF. Errors return a positive errno
 value in `RAX` and set CF. Initial append-only numbers are 0 (`get ABI
 version`), 1 (`exit`), 2 (`write`), and 3 (`getpid`). The ABI version returned
-by syscall 0 is 1. New calls append numbers; assigned numbers and semantics
-are not reused or changed. This initial kernel supports a 4096-byte maximum
+by syscall 0 is 1. Phase 7 appends syscall 4 (`fork`), 5 (`exec`), and 6
+(`waitpid`); `wait()` uses `waitpid(-1, status)`. New calls append numbers;
+assigned numbers and semantics are not reused or changed. This initial kernel supports a 4096-byte maximum
 single `write`, standard descriptors 1 and 2 for serial output, and the
 minimal process identity value 1.
 
@@ -166,7 +167,35 @@ Keep the VFS independent from SilliconFS-specific implementation details.
 
 ADR-006 — Process, Signals and IPC Semantics
 
-Status: Open
+Status: Accepted
+
+Decision (Phase 7): a process is single-threaded and uses one isolated user
+address space. `fork()` eagerly copies the parent's user pages; it returns the
+child PID to the parent and zero to the child. `exec()` takes a pointer and
+length for a static x86_64 ELF64 image in the calling process and replaces
+that process image only after the replacement image has loaded successfully.
+This memory-buffer interface is temporary until VFS path lookup exists.
+`waitpid()` blocks for a direct child PID; `wait()` waits for any direct child.
+Exit status is the low 8 bits of the supplied status; a non-null wait status
+pointer receives that single byte. Exited children remain as zombies until
+reaped; reaping releases process memory and its descriptor table. Fork inherits
+the descriptor table. The initially supported standard
+descriptors retain their existing serial behavior.
+
+The scheduler remains single-CPU. LAPIC timer interrupts preempt userspace by
+saving and restoring the complete user interrupt frame on each process's
+kernel stack. Kernel threads continue to use cooperative Round Robin. Signals,
+pipes, shared memory, and multithreaded processes remain deferred.
+
+The process syscall numbers append to ABI v1: 4 (`fork`), 5 (`exec`), and 6
+(`waitpid`). `wait()` uses `waitpid(-1, status)`. PID allocation is monotonic
+for the lifetime of the kernel and does not reuse identifiers.
+
+Rationale: eager copying keeps address-space ownership explicit before
+copy-on-write exists. Direct-child waits and a memory-buffer `exec` avoid
+requiring VFS and path resolution ahead of Phase 8. Per-process kernel stacks
+make timer-driven user preemption compatible with the existing interrupt
+frame and TSS entry model.
 
 Define process and IPC behavior.
 
@@ -186,6 +215,10 @@ Questions:
 - File descriptor inheritance.
 
 Use practical Unix/POSIX behavior as a reference without promising full POSIX compliance.
+
+These decisions resolve process creation, replacement, exit, wait, and
+descriptor inheritance for Phase 7. The remaining IPC and signal questions
+stay open for later milestones.
 
 ---
 

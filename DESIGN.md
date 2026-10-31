@@ -276,6 +276,10 @@ provides standard serial output descriptors 1 and 2 and a 4096-byte write
 limit. Full process and VFS-backed descriptor semantics arrive in later
 phases.
 
+Phase 7 appends `fork` (4), `exec` (5), and `waitpid` (6); `wait()` is
+`waitpid(-1, status)`. ADR-006 defines eager-copy fork, static ELF exec from a
+user memory buffer, direct-child wait behavior, and single-threaded processes.
+
 Userspace
 
 The system will provide:

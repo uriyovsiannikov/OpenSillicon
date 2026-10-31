@@ -25,12 +25,15 @@ struct interrupt_frame {
 	uint64_t rip;
 	uint64_t cs;
 	uint64_t rflags;
+	uint64_t user_rsp;
+	uint64_t user_ss;
 };
 
-typedef void (*interrupt_handler)(struct interrupt_frame *frame);
+typedef struct interrupt_frame *(*interrupt_handler)(
+	struct interrupt_frame *frame);
 
 void idt_init(void);
 bool interrupt_register_handler(uint8_t vector, interrupt_handler handler);
-void interrupt_dispatch(struct interrupt_frame *frame);
+struct interrupt_frame *interrupt_dispatch(struct interrupt_frame *frame);
 
 #endif

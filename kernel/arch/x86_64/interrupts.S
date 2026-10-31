@@ -76,7 +76,7 @@ isr_common:
 	movq %rsp, %rbx
 	andq $-16, %rsp
 	call interrupt_dispatch
-	movq %rbx, %rsp
+	movq %rax, %rsp
 	popq %r15
 	popq %r14
 	popq %r13
