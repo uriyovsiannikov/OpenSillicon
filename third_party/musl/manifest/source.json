@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "project": "musl",
+  "version": "1.2.6",
+  "archive_name": "musl-1.2.6.tar.gz",
+  "archive_url": "https://musl.libc.org/releases/musl-1.2.6.tar.gz",
+  "archive_sha256": "d585fd3b613c66151fc3249e8ed44f77020cb5e6c1e635a616d3f9f82460512a",
+  "top_level": "musl-1.2.6",
+  "version_file": "VERSION",
+  "copyright_file": "COPYRIGHT",
+  "copyright_sha256": "b870108ec5e7790e9f9919064f1b9421d62d5f9b0e6c230c6adf7ea2da62e97b",
+  "signature_url": "https://musl.libc.org/releases/musl-1.2.6.tar.gz.asc",
+  "signature_sha256": "8a696228404cd4bae6379cf7538fc5d18c133b0ada54a41c1c6cef31d3c22ab6",
+  "signing_key_fingerprint": "836489290BB6B70F99FFDA0556BCDB593020450F",
+  "signature_verification": "valid for the pinned archive, checked 2026-10-31",
+  "signing_key_trust": "not certified by the local GPG trust database"
+}

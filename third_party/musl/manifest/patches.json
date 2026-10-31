@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "application_order": [
+    "patches/upstream/0001-regcomp-overflow.patch",
+    "patches/upstream/0002-iconv-gb18030.patch",
+    "patches/upstream/0003-qsort-hardening.patch"
+  ],
+  "candidate_application_order": [
+    "patches/candidates/regexec-backref-candidate.patch"
+  ],
+  "confirmed_upstream": [
+    {
+      "file": "patches/upstream/0001-regcomp-overflow.patch",
+      "sha256": "0cf0090ab433e8f9ed08ae03a0c93aff557c1d3e347260f62a61a10281f5333b",
+      "classification": "upstream-accepted",
+      "origin": "https://git.musl-libc.org/cgit/musl/commit/?id=7813e9119eb5fe681b6750b8a033a0490bca0941",
+      "advisory": "https://www.openwall.com/lists/musl/2026/10/21/1",
+      "author": "Szabolcs Nagy <nsz@port70.net>",
+      "date": "2026-04-23",
+      "commits": ["7813e9119eb5fe681b6750b8a033a0490bca0941"],
+      "expected_files": ["src/regex/regcomp.c"]
+    },
+    {
+      "file": "patches/upstream/0002-iconv-gb18030.patch",
+      "sha256": "444fa70e52ca158fb7d4bad560637790bbf8f72e80b82fff840dd66fa83091e3",
+      "classification": "upstream-accepted",
+      "origin": "https://git.musl-libc.org/cgit/musl/commit/?id=67219f0130ec7c876ac0b299046460fad31caabf",
+      "advisory": "https://www.openwall.com/lists/oss-security/2026/04/03/2",
+      "author": "Rich Felker <dalias@aerifal.cx>",
+      "date": "2026-03-30",
+      "commits": ["67219f0130ec7c876ac0b299046460fad31caabf"],
+      "expected_files": ["src/locale/gb18030utf.h", "src/locale/iconv.c"]
+    },
+    {
+      "file": "patches/upstream/0003-qsort-hardening.patch",
+      "sha256": "1ee29f64f9ca8e8ad7c349779d661ff6b52126a27575d3586981357a52c406fb",
+      "classification": "upstream-accepted-bundle",
+      "origin": "https://git.musl-libc.org/cgit/musl/commit/?id=228da39e38c1cae13cbe637e771412c1984dba5d",
+      "advisory": "https://www.openwall.com/lists/musl/2026/04/10/3",
+      "author": "Rich Felker and Luca Kellermann",
+      "date": "2026-04-09 through 2026-04-10",
+      "commits": [
+        "228da39e38c1cae13cbe637e771412c1984dba5d",
+        "b3291b9a9f77f1f993d2b4f8c68a26cf09221ae7",
+        "5122f9f3c99fee366167c5de98b31546312921ab"
+      ],
+      "expected_files": ["src/stdlib/qsort.c"]
+    }
+  ],
+  "candidates": [
+    {
+      "file": "patches/candidates/regexec-backref-candidate.patch",
+      "sha256": "6cfe87c3794562841a80fee8d1cd1b99d5ec67d4565f459b3812760912fe97ff",
+      "classification": "local-candidate-not-confirmed-upstream",
+      "origin": "https://www.openwall.com/lists/musl/2026/10/27/6",
+      "report": "https://www.openwall.com/lists/musl/2026/10/26/1",
+      "message_id": "<30a7f9efc7f1563a355579fcd23589e851dee5de>",
+      "author": "Szabolcs Nagy <nsz@port70.net>",
+      "date": "2026-10-27",
+      "commits": [],
+      "expected_files": ["src/regex/regexec.c"]
+    }
+  ]
+}
