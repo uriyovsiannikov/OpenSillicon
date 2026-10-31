@@ -125,6 +125,9 @@ syscall_interrupt(struct interrupt_frame *frame)
 	case SYSCALL_WAITPID:
 		frame = process_waitpid(frame, &error);
 		break;
+	case SYSCALL_SLEEP_TICKS:
+		frame = process_sleep_ticks(frame, frame->rdi, &error);
+		break;
 	case SYSCALL_OPEN:
 		{
 			char path[VFS_PATH_MAX];

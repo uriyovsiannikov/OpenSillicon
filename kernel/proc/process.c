@@ -6,6 +6,7 @@
 #include "kernel/heap.h"
 #include "kernel/log.h"
 #include "kernel/pmm.h"
+#include "kernel/timer.h"
 #include "kernel/process.h"
 #include "kernel/vmm.h"
 #include "kernel/vfs.h"
@@ -22,6 +23,7 @@
 #define PROCESS_ERROR_EACCES 13U
 #define PROCESS_ERROR_ENOEXEC 8U
 #define PROCESS_ERROR_EIO 5U
+#define PROCESS_ERROR_EINVAL 22U
 
 enum process_state {
 	PROCESS_READY,
@@ -36,6 +38,7 @@ struct process {
 	uint8_t exit_status;
 	uint64_t waiting_for;
 	uint64_t wait_status_address;
+	uint64_t wake_tick;
 	struct process *parent;
 	struct process *previous;
 	struct process *next;
@@ -139,9 +142,29 @@ find_next_ready(struct process *after)
 static struct interrupt_frame *
 schedule_from(struct process *after)
 {
-	struct process *next = find_next_ready(after);
+	struct process *next;
 
-	if (next == NULL) {
+	for (;;) {
+		next = find_next_ready(after);
+		if (next != NULL)
+			break;
+		if (process_head != NULL) {
+			struct process *process = process_head;
+			bool sleeper_exists = false;
+
+			do {
+				if (process->state == PROCESS_BLOCKED &&
+				    process->wake_tick != 0) {
+					sleeper_exists = true;
+					break;
+				}
+				process = process->next;
+			} while (process != process_head);
+			if (sleeper_exists) {
+				__asm__ volatile ("sti; hlt; cli" : : : "memory");
+				continue;
+			}
+		}
 		if (current_process != NULL && current_process->parent == NULL &&
 		    current_process->state == PROCESS_ZOMBIE) {
 			uint64_t status = current_process->exit_status;
@@ -236,8 +259,9 @@ process_user_preemptions(void)
 	return user_preemptions;
 }
 
-uint64_t
-process_run_elf(const void *image, size_t image_size)
+static uint64_t
+process_run_elf_internal(const void *image, size_t image_size,
+	bool startup_stack)
 {
 	struct process *root;
 	uint64_t status;
@@ -263,10 +287,13 @@ process_run_elf(const void *image, size_t image_size)
 	root->exit_status = 0;
 	root->waiting_for = 0;
 	root->wait_status_address = 0;
+	root->wake_tick = 0;
 	root->parent = NULL;
 	root->address_space = &root->loaded_image->address_space;
 	root->saved_frame = NULL;
-	root->initial_user_stack = PROCESS_STACK_TOP;
+	/* The zeroed stack page supplies argc, argv[0], and envp for init. */
+	root->initial_user_stack = startup_stack ? PROCESS_STACK_TOP - 3 *
+	    sizeof(uint64_t) : PROCESS_STACK_TOP;
 	fd_table_init_standard(&root->descriptors);
 	if (!map_process_stack(root->loaded_image)) {
 		release_process(root);
@@ -293,6 +320,51 @@ process_run_elf(const void *image, size_t image_size)
 	}
 	current_process = NULL;
 	return status;
+}
+
+uint64_t
+process_run_elf(const void *image, size_t image_size)
+{
+	return process_run_elf_internal(image, image_size, false);
+}
+
+uint64_t
+process_run_path(const char *path, bool startup_stack)
+{
+	struct vfs_stat status;
+	struct fd_object *file = NULL;
+	void *image;
+	size_t offset = 0;
+	int error;
+	uint64_t result;
+
+	if (path == NULL || vfs_stat_path(path, &status) != 0 ||
+	    status.type != VNODE_REGULAR || (status.mode & 0111U) == 0 ||
+	    status.size == 0 || status.size > SIZE_MAX ||
+	    vfs_open(path, VFS_O_RDONLY, 0, &file) != 0)
+		return UINT64_MAX;
+	image = kheap_alloc((size_t)status.size);
+	if (image == NULL) {
+		fd_object_put(file);
+		return UINT64_MAX;
+	}
+	while (offset < status.size) {
+		size_t amount = 0;
+
+		error = fd_object_read(file, (uint8_t *)image + offset,
+		    (size_t)(status.size - offset), &amount);
+		if (error != 0 || amount == 0) {
+			(void)kheap_free(image);
+			fd_object_put(file);
+			return UINT64_MAX;
+		}
+		offset += amount;
+	}
+	fd_object_put(file);
+	result = process_run_elf_internal(image, (size_t)status.size,
+	    startup_stack);
+	(void)kheap_free(image);
+	return result;
 }
 
 struct interrupt_frame *
@@ -347,6 +419,7 @@ process_fork(struct interrupt_frame *frame, uint64_t *error)
 	child->exit_status = 0;
 	child->waiting_for = 0;
 	child->wait_status_address = 0;
+	child->wake_tick = 0;
 	child->parent = current_process;
 	child->loaded_image = NULL;
 	child->initial_user_stack = current_process->initial_user_stack;
@@ -600,6 +673,54 @@ process_waitpid(struct interrupt_frame *frame, uint64_t *error)
 	parent->wait_status_address = frame->rsi;
 	*error = 0;
 	return schedule_from(parent);
+}
+
+struct interrupt_frame *
+process_sleep_ticks(struct interrupt_frame *frame, uint64_t ticks,
+	uint64_t *error)
+{
+	uint64_t now;
+
+	if (current_process == NULL) {
+		*error = PROCESS_ERROR_ECHILD;
+		return frame;
+	}
+	if (ticks == 0) {
+		frame->rax = 0;
+		frame->rflags &= ~1ULL;
+		*error = 0;
+		return frame;
+	}
+	now = timer_ticks();
+	if (ticks > UINT64_MAX - now) {
+		*error = PROCESS_ERROR_EINVAL;
+		return frame;
+	}
+	current_process->wake_tick = now + ticks;
+	current_process->state = PROCESS_BLOCKED;
+	current_process->saved_frame = frame;
+	frame->rax = 0;
+	frame->rflags &= ~1ULL;
+	*error = 0;
+	return schedule_from(current_process);
+}
+
+void
+process_timer_wakeup(uint64_t ticks)
+{
+	struct process *process;
+
+	if (process_head == NULL)
+		return;
+	process = process_head;
+	do {
+		if (process->state == PROCESS_BLOCKED && process->wake_tick != 0 &&
+		    ticks >= process->wake_tick) {
+			process->wake_tick = 0;
+			process->state = PROCESS_READY;
+		}
+		process = process->next;
+	} while (process != process_head);
 }
 
 struct interrupt_frame *

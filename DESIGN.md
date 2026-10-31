@@ -294,6 +294,14 @@ have a 4096-byte limit; `stat` returns a fixed-width type, mode, and size struct
 `readdir` returns one entry per call, then zero at end of directory. See
 ADR-001 and ADR-005 for the ABI and VFS contracts.
 
+Phase 12 appends syscall 13, `sleep_ticks(ticks)`, for init's restart delay.
+`RDI` is an unsigned tick count. Zero returns immediately; positive requests
+block the calling process until at least that many timer ticks have elapsed.
+The scheduler keeps the process off the runnable set while asleep, and the
+timer interrupt wakes it without polling. Requests larger than
+`UINT64_MAX - current_tick` fail with `EINVAL`, preventing deadline overflow.
+No clock query or nanosecond sleep interface is provided.
+
 Userspace
 
 The system will provide:
@@ -304,6 +312,23 @@ The system will provide:
 - User and group management.
 - File descriptor interface.
 - Static executable support.
+
+Phase 12 supplies a minimal `/sbin/init` and `/bin/sh` on the persistent
+SilliconFS root. The kernel launches init with descriptors 0–2 on the
+canonical TTY. For this launch path only, the ELF stack starts with
+`argc = 0`, `argv[0] = NULL`, and a null environment pointer. Existing ELF
+smoke-test execution keeps its current entry convention. Init supervises the
+shell, waits for exit, sleeps ten timer ticks with syscall 13, then restarts
+it. Failure to load init is reported over serial and halts the kernel.
+
+The shell provides `help`, `echo`, `pwd`, `cd`, `ls`, `cat`, and `exit`.
+Its `cd` state is local to the shell and paths are resolved to absolute VFS
+paths. External commands may be absolute paths or bare names under `/bin`;
+execution uses existing fork, `exec_path`, and `waitpid` calls. There is no
+`PATH`, environment, script language, pipelines, or job control.
+`/etc/passwd` and `/etc/group` provide descriptive root and regular-user
+records only. No login, authentication, kernel UID/GID, privilege separation,
+or permission enforcement is added. rc.d and persistent logging are deferred.
 
 C library
 
@@ -551,12 +576,14 @@ Use a BSD-inspired startup model.
 Planned:
 
 - Own minimal init.
-- BSD-style rc.d service scripts.
-- Simple syslog-like logging.
+- Supervise and restart the shell after a timer-based delay.
 - Basic account initialization.
-- Mounting of required filesystems.
-- Starting the shell.
+- Start from the mounted persistent SilliconFS root.
+- Keep serial diagnostics separate from terminal output.
 
+BSD-style rc.d services and persistent syslog-like logging are deferred until
+the system has services and a logging facility. Phase 12 account files are
+metadata only; authentication and permission enforcement are not implemented.
 The initial userspace must remain minimal.
 
 ---

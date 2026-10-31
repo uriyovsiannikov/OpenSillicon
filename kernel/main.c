@@ -531,5 +531,17 @@ _start(void)
 	klog_u64(lapic_id());
 	klog("\nOpenSillicon: kernel heap ready\n");
 	klog("OpenSillicon terminal ready\n");
-	tty_console_loop();
+	klog("OpenSillicon: launching /sbin/init from SilliconFS\n");
+	{
+		uint64_t status = process_run_path("/sbin/init", true);
+
+		if (status == UINT64_MAX)
+			klog("OpenSillicon: /sbin/init missing or failed to load; halting\n");
+		else {
+			klog("OpenSillicon: /sbin/init exited with status ");
+			klog_u64(status);
+			klog("; halting\n");
+		}
+	}
+	kernel_halt();
 }

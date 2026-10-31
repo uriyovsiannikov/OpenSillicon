@@ -16,6 +16,7 @@
 #define SYSCALL_STAT 10U
 #define SYSCALL_READDIR 11U
 #define SYSCALL_EXEC_PATH 12U
+#define SYSCALL_SLEEP_TICKS 13U
 #define SYSCALL_ABI_VERSION 1U
 
 void syscall_init(struct fd_table *table);

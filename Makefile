@@ -17,6 +17,10 @@ KERNEL_LDFLAGS := -nostdlib -static -no-pie -z max-page-size=0x1000 \
 KERNEL_ASFLAGS := -m64 -mno-red-zone
 USER_ASFLAGS := -m64 -ffreestanding -fno-pic -fno-pie -mno-red-zone
 USER_LDFLAGS := -nostdlib -static -no-pie -T user/linker.ld
+USER_C_LDFLAGS := -nostdlib -static -no-pie -T user/c_linker.ld
+USER_CFLAGS := -std=c11 -O2 -ffreestanding -fno-builtin -fno-stack-protector \
+	-fno-pic -fno-pie -m64 -mno-red-zone -mcmodel=small \
+	-Wall -Wextra -Werror -Iuser
 
 ACPICA_ROOT := third_party/acpica/source
 ACPICA_COMPONENTS := dispatcher events executer hardware namespace parser \
@@ -37,7 +41,8 @@ ACPICA_CFLAGS := $(KERNEL_CFLAGS) -Wno-unused-parameter -fno-builtin \
 	silliconfs-test silliconfs-image fault-test \
 	interrupt-test vmm-protection-test timer-test clean acpica-check acpi-test \
 	pci-test block-test phase10-test phase11-test terminal-test \
-	terminal-qemu-test
+	terminal-qemu-test user-path-test phase12-qemu-test phase12-test \
+	refresh-test-root
 
 all: kernel
 
@@ -133,7 +138,8 @@ $(BUILD_DIR)/elf.o: kernel/elf.c include/kernel/elf.h include/kernel/vmm.h \
 
 $(BUILD_DIR)/process.o: kernel/proc/process.c include/kernel/process.h \
 		include/kernel/elf.h include/kernel/vmm.h include/kernel/heap.h \
-		include/kernel/pmm.h include/kernel/fd.h include/arch/x86_64/gdt.h | $(BUILD_DIR)
+		include/kernel/pmm.h include/kernel/fd.h include/kernel/timer.h \
+		include/arch/x86_64/gdt.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/interrupts.o: kernel/arch/x86_64/interrupts.c \
@@ -206,6 +212,61 @@ $(BUILD_DIR)/user_entry.o: kernel/arch/x86_64/user_entry.S | $(BUILD_DIR)
 
 $(BUILD_DIR)/user_entry_c.o: kernel/arch/x86_64/user_entry.c | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/user_start.o: user/start.S user/include/os.h | $(BUILD_DIR)
+	$(CC) $(USER_ASFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/user_os.o: user/os.c user/include/os.h | $(BUILD_DIR)
+	$(CC) $(USER_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/user_path.o: user/path.c user/include/os.h | $(BUILD_DIR)
+	$(CC) $(USER_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/user_init.o: user/init.c user/include/os.h | $(BUILD_DIR)
+	$(CC) $(USER_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/user_shell.o: user/shell.c user/include/os.h | $(BUILD_DIR)
+	$(CC) $(USER_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/user_probe.o: user/probe.c user/include/os.h | $(BUILD_DIR)
+	$(CC) $(USER_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/user_crash.o: user/crash.c user/include/os.h | $(BUILD_DIR)
+	$(CC) $(USER_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/init.elf: $(BUILD_DIR)/user_start.o $(BUILD_DIR)/user_os.o \
+		$(BUILD_DIR)/user_path.o \
+		$(BUILD_DIR)/user_init.o user/c_linker.ld
+	$(LD) $(USER_C_LDFLAGS) $(BUILD_DIR)/user_start.o \
+		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
+		$(BUILD_DIR)/user_init.o -o $@
+
+$(BUILD_DIR)/shell.elf: $(BUILD_DIR)/user_start.o $(BUILD_DIR)/user_os.o \
+		$(BUILD_DIR)/user_path.o \
+		$(BUILD_DIR)/user_shell.o user/c_linker.ld
+	$(LD) $(USER_C_LDFLAGS) $(BUILD_DIR)/user_start.o \
+		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
+		$(BUILD_DIR)/user_shell.o -o $@
+
+$(BUILD_DIR)/probe.elf: $(BUILD_DIR)/user_start.o $(BUILD_DIR)/user_os.o \
+		$(BUILD_DIR)/user_path.o \
+		$(BUILD_DIR)/user_probe.o user/c_linker.ld
+	$(LD) $(USER_C_LDFLAGS) $(BUILD_DIR)/user_start.o \
+		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
+		$(BUILD_DIR)/user_probe.o -o $@
+
+$(BUILD_DIR)/crash.elf: $(BUILD_DIR)/user_start.o $(BUILD_DIR)/user_os.o \
+		$(BUILD_DIR)/user_path.o $(BUILD_DIR)/user_crash.o user/c_linker.ld
+	$(LD) $(USER_C_LDFLAGS) $(BUILD_DIR)/user_start.o \
+		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
+		$(BUILD_DIR)/user_crash.o -o $@
+
+$(BUILD_DIR)/populate_root: tools/populate_root.c kernel/vfs/vfs.c \
+		kernel/vfs/silliconfs.c kernel/fd.c include/kernel/vfs.h \
+		include/kernel/silliconfs.h
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Ilimine \
+		tools/populate_root.c kernel/vfs/vfs.c kernel/vfs/silliconfs.c \
+		kernel/fd.c -o $@
 
 $(BUILD_DIR)/acpica/%.o: $(ACPICA_ROOT)/%.c \
 		$(ACPICA_ROOT)/include/platform/acenv.h \
@@ -321,11 +382,45 @@ $(BUILD_DIR):
 
 iso: $(BUILD_DIR)/opensillicon.iso
 
-$(BUILD_DIR)/root.img: | $(BUILD_DIR)
+$(BUILD_DIR)/root.img: $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.elf \
+		$(BUILD_DIR)/probe.elf $(BUILD_DIR)/populate_root \
+		tools/mksilliconfs.py | $(BUILD_DIR)
+	python3 tools/mksilliconfs.py $@ --blocks 32768 --inodes 1024
+	$(BUILD_DIR)/populate_root $@ $(BUILD_DIR)/init.elf \
+		$(BUILD_DIR)/shell.elf $(BUILD_DIR)/probe.elf
+
+refresh-test-root: $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.elf \
+		$(BUILD_DIR)/probe.elf $(BUILD_DIR)/populate_root \
+		tools/mksilliconfs.py | $(BUILD_DIR)
+	python3 tools/mksilliconfs.py $(BUILD_DIR)/test-root.img \
+		--blocks 32768 --inodes 1024
+	$(BUILD_DIR)/populate_root $(BUILD_DIR)/test-root.img $(BUILD_DIR)/init.elf \
+		$(BUILD_DIR)/shell.elf $(BUILD_DIR)/probe.elf
+
+$(BUILD_DIR)/test-root.img: refresh-test-root
+	@test -f $@
+
+$(BUILD_DIR)/phase12-root.img: $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.elf \
+		$(BUILD_DIR)/probe.elf $(BUILD_DIR)/populate_root \
+		tools/mksilliconfs.py | $(BUILD_DIR)
+	python3 tools/mksilliconfs.py $@ --blocks 32768 --inodes 1024
+	$(BUILD_DIR)/populate_root $@ $(BUILD_DIR)/init.elf \
+		$(BUILD_DIR)/shell.elf $(BUILD_DIR)/probe.elf
+
+$(BUILD_DIR)/blank-root.img: tools/mksilliconfs.py | $(BUILD_DIR)
 	python3 tools/mksilliconfs.py $@ --blocks 32768 --inodes 1024
 
-$(BUILD_DIR)/test-root.img: | $(BUILD_DIR)
+$(BUILD_DIR)/bad-init-root.img: $(BUILD_DIR)/shell.elf $(BUILD_DIR)/probe.elf \
+		$(BUILD_DIR)/populate_root tests/not_elf.txt tools/mksilliconfs.py
 	python3 tools/mksilliconfs.py $@ --blocks 32768 --inodes 1024
+	$(BUILD_DIR)/populate_root $@ tests/not_elf.txt $(BUILD_DIR)/shell.elf \
+		$(BUILD_DIR)/probe.elf
+
+$(BUILD_DIR)/crash-root.img: $(BUILD_DIR)/init.elf $(BUILD_DIR)/crash.elf \
+		$(BUILD_DIR)/probe.elf $(BUILD_DIR)/populate_root tools/mksilliconfs.py
+	python3 tools/mksilliconfs.py $@ --blocks 32768 --inodes 1024
+	$(BUILD_DIR)/populate_root $@ $(BUILD_DIR)/init.elf \
+		$(BUILD_DIR)/crash.elf $(BUILD_DIR)/probe.elf
 
 $(BUILD_DIR)/opensillicon.iso: $(BUILD_DIR)/kernel.elf $(BUILD_DIR)/initramfs.cpio \
 		limine/BOOTX64.EFI limine/limine-uefi-cd.bin
@@ -405,15 +500,26 @@ terminal-test: $(BUILD_DIR)/terminal_test
 	$(BUILD_DIR)/terminal_test
 
 terminal-qemu-test: iso $(BUILD_DIR)/test-root.img
-	python3 tools/mksilliconfs.py $(BUILD_DIR)/test-root.img \
-		--blocks 32768 --inodes 1024
 	python3 tests/terminal_qemu_test.py $(QEMU) $(OVMF_CODE) \
 		$(BUILD_DIR)/opensillicon.iso $(BUILD_DIR)/test-root.img
 
 phase11-test: terminal-test phase10-test terminal-qemu-test
 
+user-path-test: | $(BUILD_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iuser user/path.c \
+		tests/user_path_test.c -o $(BUILD_DIR)/user_path_test
+	$(BUILD_DIR)/user_path_test
+
+phase12-qemu-test: iso $(BUILD_DIR)/phase12-root.img $(BUILD_DIR)/blank-root.img \
+		$(BUILD_DIR)/bad-init-root.img $(BUILD_DIR)/crash-root.img
+	python3 tests/phase12_qemu_test.py $(QEMU) $(OVMF_CODE) \
+		$(BUILD_DIR)/opensillicon.iso $(BUILD_DIR)/phase12-root.img \
+		$(BUILD_DIR)/blank-root.img $(BUILD_DIR)/bad-init-root.img \
+		$(BUILD_DIR)/crash-root.img
+
+phase12-test: user-path-test phase11-test phase12-qemu-test
+
 vfs-smoke-test: iso $(BUILD_DIR)/test-root.img
-	python3 tools/mksilliconfs.py $(BUILD_DIR)/test-root.img --blocks 32768 --inodes 1024
 	@set +e; timeout 10s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \
 		-cdrom $(BUILD_DIR)/opensillicon.iso \
 		-drive file=$(BUILD_DIR)/test-root.img,if=none,id=rootdisk,format=raw \
@@ -428,7 +534,6 @@ vfs-smoke-test: iso $(BUILD_DIR)/test-root.img
 		$(BUILD_DIR)/vfs-serial.log
 
 process-test: iso $(BUILD_DIR)/test-root.img
-	python3 tools/mksilliconfs.py $(BUILD_DIR)/test-root.img --blocks 32768 --inodes 1024
 	@set +e; timeout 10s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \
 		-cdrom $(BUILD_DIR)/opensillicon.iso \
 		-drive file=$(BUILD_DIR)/test-root.img,if=none,id=rootdisk,format=raw \
@@ -448,7 +553,6 @@ fault-test:
 	$(MAKE) BUILD_DIR=$(BUILD_DIR)/fault \
 		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DKERNEL_TEST_PAGE_FAULT' iso
 	$(MAKE) BUILD_DIR=$(BUILD_DIR)/fault $(BUILD_DIR)/fault/test-root.img
-	python3 tools/mksilliconfs.py $(BUILD_DIR)/fault/test-root.img --blocks 32768 --inodes 1024
 	@set +e; timeout 8s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \
 		-cdrom $(BUILD_DIR)/fault/opensillicon.iso \
 		-drive file=$(BUILD_DIR)/fault/test-root.img,if=none,id=rootdisk,format=raw \
@@ -461,7 +565,6 @@ interrupt-test:
 	$(MAKE) BUILD_DIR=$(BUILD_DIR)/interrupt \
 		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DKERNEL_TEST_INTERRUPT' iso
 	$(MAKE) BUILD_DIR=$(BUILD_DIR)/interrupt $(BUILD_DIR)/interrupt/test-root.img
-	python3 tools/mksilliconfs.py $(BUILD_DIR)/interrupt/test-root.img --blocks 32768 --inodes 1024
 	@set +e; timeout 8s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \
 		-cdrom $(BUILD_DIR)/interrupt/opensillicon.iso \
 		-drive file=$(BUILD_DIR)/interrupt/test-root.img,if=none,id=rootdisk,format=raw \
@@ -474,7 +577,6 @@ vmm-protection-test:
 	$(MAKE) BUILD_DIR=$(BUILD_DIR)/vmm-protection \
 		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DKERNEL_TEST_VMM_PROTECTION' iso
 	$(MAKE) BUILD_DIR=$(BUILD_DIR)/vmm-protection $(BUILD_DIR)/vmm-protection/test-root.img
-	python3 tools/mksilliconfs.py $(BUILD_DIR)/vmm-protection/test-root.img --blocks 32768 --inodes 1024
 	@set +e; timeout 8s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \
 		-cdrom $(BUILD_DIR)/vmm-protection/opensillicon.iso \
 		-drive file=$(BUILD_DIR)/vmm-protection/test-root.img,if=none,id=rootdisk,format=raw \
@@ -485,7 +587,6 @@ vmm-protection-test:
 		$(BUILD_DIR)/vmm-protection/serial.log
 
 timer-test: iso $(BUILD_DIR)/test-root.img
-	python3 tools/mksilliconfs.py $(BUILD_DIR)/test-root.img --blocks 32768 --inodes 1024
 	@set +e; timeout 8s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \
 		-cdrom $(BUILD_DIR)/opensillicon.iso \
 		-drive file=$(BUILD_DIR)/test-root.img,if=none,id=rootdisk,format=raw \

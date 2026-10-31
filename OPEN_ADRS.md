@@ -28,6 +28,15 @@ a 4096-byte maximum single `write`; Phase 6 initially bound standard
 descriptors 1 and 2 to serial output. Phase 11 binds descriptor 0 to the
 canonical TTY and routes each descriptor 1/2 write through the framebuffer
 terminal and serial console once. The minimal process identity value remains 1.
+Phase 12 appends syscall 13 (`sleep_ticks`): `RDI` is an unsigned tick count
+and success returns zero after the calling process has remained blocked for
+at least that many timer ticks. Zero returns immediately. The kernel rejects
+a count greater than `UINT64_MAX - current_tick` with `EINVAL`; accepted
+deadlines cannot wrap and cause an early wake. Sleeping processes consume no
+CPU while blocked and the timer interrupt makes them runnable. Requests that
+would cross the tick counter's `uint64_t` maximum are rejected. This is the
+only time-related syscall added in Phase 12; there is no clock query or
+nanosecond sleep API.
 
 Rationale: the interrupt gate offers a simple, debuggable entry path while
 Ring 3 support is new. The explicit CF error convention distinguishes errors
@@ -489,6 +498,13 @@ ADR-009 — POSIX.1-2008 Compatibility Profile
 
 Status: Open
 
+Phase 12 uses the existing ABI v1 calls plus syscall 13 `sleep_ticks(ticks)`
+as recorded in ADR-001. The extension lets init delay shell restarts without
+busy-waiting. It adds no clock API, `nanosleep`, libc, or broader POSIX
+process or terminal semantics. Phase 12 init and shell are freestanding,
+statically linked ELF64 programs using the syscall ABI directly. Broader
+POSIX compatibility remains open and out of scope.
+
 Define the practical POSIX subset.
 
 Questions:
@@ -507,9 +523,35 @@ The goal is practical compatibility, not complete POSIX compliance.
 
 ADR-010 — Filesystem Hierarchy and Account Policy
 
-Status: Open
+Status: Accepted for Phase 12
 
-Define the exact filesystem hierarchy and account behavior.
+Phase 12 installs `/sbin/init`, `/bin/sh`, and an external test utility on
+the persistent SilliconFS root. The required hierarchy is `/bin`, `/sbin`,
+`/etc`, and `/tmp`; this phase does not add devices, procfs, or boot mounts.
+The kernel starts `/sbin/init` with descriptors 0, 1, and 2 attached to the
+canonical TTY. Its ELF initial stack contains `argc = 0`, a null `argv[0]`,
+and a null environment pointer. Existing ELF smoke-test entry behavior is
+unchanged. Init launches `/bin/sh`, waits for it, sleeps ten timer ticks via
+syscall 13, and restarts it after every exit. Missing or unloadable init
+produces a serial diagnostic followed by kernel halt.
+
+The shell provides `help`, `echo`, `pwd`, `cd`, `ls`, `cat`, and `exit`.
+`cd` changes only the shell's current-directory string. VFS paths remain
+absolute: builtins resolve relative operands against that string, while
+external commands accept absolute paths or bare names resolved beneath
+`/bin`. There is no `PATH`, environment, scripting, pipelines, or job
+control. External execution uses the existing `fork`, syscall 12
+`exec_path`, and `waitpid` model.
+
+`/etc/passwd` and `/etc/group` contain descriptive records for `root`
+(UID/GID 0) and `user` (UID/GID 1000). They do not create kernel credentials
+or provide authentication, login, privilege separation, or permission
+enforcement. No password hashes are stored. Init supervises only the shell;
+rc.d services and persistent logging are deferred. Serial diagnostics remain
+kernel diagnostics and are not mirrored copies of all terminal output.
+
+The Phase 12 hierarchy and metadata-only account policy above are resolved.
+Remaining hierarchy and authentication questions apply only to future work.
 
 Proposed hierarchy:
 

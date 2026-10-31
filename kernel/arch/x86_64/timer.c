@@ -18,6 +18,7 @@ timer_interrupt(struct interrupt_frame *frame)
 {
 	ticks++;
 	lapic_eoi();
+	process_timer_wakeup(ticks);
 	return process_timer_preempt(frame);
 }
 

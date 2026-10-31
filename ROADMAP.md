@@ -427,23 +427,34 @@ Create a usable minimal Unix-like userspace.
 
 Tasks
 
-- Implement init.
-- Add BSD-style rc.d startup infrastructure.
-- Implement minimal shell.
-- Add basic commands.
-- Implement "/etc/passwd".
-- Implement "/etc/group".
-- Add root and regular users.
-- Add simple system logging.
+- Launch `/sbin/init` from persistent SilliconFS with the documented minimal
+  ELF startup stack and TTY descriptors 0–2.
+- Append syscall 13 `sleep_ticks(ticks)` for scheduler-blocking tick delays;
+  reject overflowing deadlines and return immediately for zero ticks.
+- Implement init that starts `/bin/sh`, waits for exit, sleeps ten ticks, and
+  restarts the shell. Missing or unloadable init is diagnosed over serial and
+  halts.
+- Implement a freestanding shell with `help`, `echo`, `pwd`, `cd`, `ls`,
+  `cat`, and `exit`.
+- Keep `cd` state in the shell and resolve VFS operations to absolute paths.
+- Execute external programs by absolute path or bare name under `/bin` using
+  existing `fork`, `exec_path`, and `waitpid` calls.
+- Populate `/etc/passwd` and `/etc/group` with root and regular-user metadata;
+  do not add authentication, kernel identities, or permission enforcement.
+- Populate required `/bin`, `/sbin`, `/etc`, and `/tmp` directories on the
+  persistent root image.
+- Defer rc.d, persistent logging, `PATH`, environment support, and Phase 13
+  IPC/POSIX work.
 
 Done criteria
 
 - System boots into userspace.
-- Init starts required services.
+- Init starts and restarts the shell after a timer-based delay.
 - Shell accepts commands.
-- Root account works.
-- Regular user accounts work.
-- Basic commands operate on the filesystem.
+- External static ELF execution works through fork/exec_path/waitpid.
+- Account files contain the documented metadata records.
+- Basic commands operate on persistent SilliconFS.
+- Syscall sleep blocks without consuming CPU and wakes after timer ticks.
 
 ---
 
