@@ -7,10 +7,15 @@ QEMU ?= qemu-system-x86_64
 OVMF_CODE ?= /usr/share/OVMF/OVMF_CODE.fd
 BUILD_DIR := build
 ISO_ROOT := $(BUILD_DIR)/iso_root
+MUSL_BUILD_DIR ?= build/musl-port
+MUSL_SYSROOT := $(MUSL_BUILD_DIR)/sysroot
+MUSL_HELLO := $(MUSL_BUILD_DIR)/musl_hello.elf
+MUSL_ALLOC := $(MUSL_BUILD_DIR)/musl_alloc.elf
+MUSL_STDIO := $(MUSL_BUILD_DIR)/musl_stdio.elf
 
 KERNEL_CFLAGS := -std=c11 -O2 -g -ffreestanding -fno-stack-protector \
 	-fno-pic -fno-pie -m64 -mno-red-zone -mcmodel=kernel \
-	-mno-mmx -mno-sse -mno-sse2 -msoft-float \
+	-mgeneral-regs-only -mno-mmx -mno-sse -mno-sse2 -msoft-float \
 	-Wall -Wextra -Werror -Ilimine
 KERNEL_LDFLAGS := -nostdlib -static -no-pie -z max-page-size=0x1000 \
 	-T kernel/linker.ld
@@ -21,6 +26,9 @@ USER_C_LDFLAGS := -nostdlib -static -no-pie -T user/c_linker.ld
 USER_CFLAGS := -std=c11 -O2 -ffreestanding -fno-builtin -fno-stack-protector \
 	-fno-pic -fno-pie -m64 -mno-red-zone -mcmodel=small \
 	-Wall -Wextra -Werror -Iuser
+
+COREUTILS := ls cat echo pwd true false clear uname fetch
+COREUTILS_ELFS := $(addprefix $(BUILD_DIR)/coreutils/,$(addsuffix .elf,$(COREUTILS)))
 
 ACPICA_ROOT := third_party/acpica/source
 ACPICA_COMPONENTS := dispatcher events executer hardware namespace parser \
@@ -37,14 +45,26 @@ ACPICA_CFLAGS := $(KERNEL_CFLAGS) -Wno-unused-parameter -fno-builtin \
 	-DBUILDING_ACPICA -DOPEN_SILLICON_KERNEL \
 	-I$(ACPICA_ROOT)/include -I$(ACPICA_ROOT)/include/platform
 
-.PHONY: all kernel iso run test elf-test process-test vfs-test vfs-smoke-test \
+PRIVATE_MAPPING_TEST_OBJECTS :=
+ifneq (,$(findstring KERNEL_TEST_PRIVATE_MAPPING_LIFECYCLE,$(KERNEL_CFLAGS)))
+PRIVATE_MAPPING_TEST_OBJECTS := $(BUILD_DIR)/private_mapping_lifecycle_blob.o
+endif
+
+.PHONY: all kernel iso run run-gui test elf-test process-test vfs-test vfs-smoke-test \
 	silliconfs-test silliconfs-image fault-test \
 	interrupt-test vmm-protection-test timer-test clean acpica-check acpi-test \
-	pci-test block-test phase10-test phase11-test terminal-test \
+	pci-test pci-resource-test dma-test pmm-contiguous-test network-foundation-test block-test phase10-test phase11-test terminal-test \
+	dma-ring-test e1000-profile-test e1000-init-qemu-test \
 	terminal-qemu-test user-path-test phase12-qemu-test phase12-test \
 	pipe-test phase13a-test signal-state-test phase13b-test refresh-test-root \
 	shm-test shm-failure-qemu-test shm-lifecycle-qemu-test \
-	shm-fork-failure-qemu-test
+	shm-fork-failure-qemu-test private-map-qemu-test \
+	private-map-lifecycle-qemu-test private-map-exhaustion-qemu-test \
+	private-map-abi-test private-protection-test private-protection-qemu-test fs-base-qemu-test \
+	fpu-context-qemu-test \
+	native-musl-verify native-musl-build native-musl-hello \
+	native-musl-alloc native-musl-inspect native-musl-qemu-test \
+	native-musl-alloc-qemu-test native-musl-stdio native-musl-stdio-qemu-test
 
 all: kernel
 
@@ -52,14 +72,18 @@ kernel: $(BUILD_DIR)/kernel.elf
 
 $(BUILD_DIR)/main.o: kernel/main.c include/kernel/boot.h include/kernel/log.h \
 		include/kernel/pmm.h include/kernel/vmm.h include/kernel/heap.h \
+		include/kernel/errno.h \
 		include/kernel/timer.h include/kernel/scheduler.h \
 		include/arch/x86_64/lapic.h include/arch/x86_64/interrupts.h \
 		include/arch/x86_64/user.h include/kernel/fd.h include/kernel/syscall.h \
 		include/kernel/elf.h include/kernel/process.h include/kernel/vfs.h \
 		include/arch/x86_64/acpi.h include/arch/x86_64/ioapic.h \
 		include/arch/x86_64/pci.h \
+		include/kernel/dma.h \
+		include/kernel/e1000.h include/kernel/e1000_profile.h \
 		include/arch/x86_64/ahci.h include/kernel/block.h \
 		include/kernel/block_silliconfs.h include/kernel/silliconfs.h \
+		include/arch/x86_64/fpu.h \
 		include/kernel/tty.h \
 		limine/limine.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
@@ -77,6 +101,13 @@ $(BUILD_DIR)/vmm.o: kernel/mm/vmm.c include/kernel/vmm.h \
 		limine/limine.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
+$(BUILD_DIR)/dma.o: kernel/mm/dma.c include/kernel/dma.h \
+		include/kernel/pmm.h include/kernel/vmm.h include/kernel/log.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/dma_ring.o: kernel/mm/dma_ring.c include/kernel/dma_ring.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
 $(BUILD_DIR)/shm.o: kernel/mm/shm.c include/kernel/shm.h \
 		include/kernel/vmm.h include/kernel/pmm.h include/kernel/heap.h \
 		include/kernel/log.h | $(BUILD_DIR)
@@ -86,7 +117,7 @@ $(BUILD_DIR)/heap.o: kernel/mm/heap.c include/kernel/heap.h \
 		include/kernel/vmm.h include/kernel/pmm.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/log.o: kernel/log.c include/kernel/log.h | $(BUILD_DIR)
+$(BUILD_DIR)/log.o: kernel/log.c include/kernel/log.h include/kernel/tty.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/fd.o: kernel/fd.c include/kernel/fd.h include/kernel/log.h \
@@ -109,7 +140,7 @@ $(BUILD_DIR)/keyboard.o: kernel/tty/keyboard.c \
 
 $(BUILD_DIR)/framebuffer.o: kernel/tty/framebuffer.c \
 		include/kernel/framebuffer.h include/kernel/terminal.h \
-		third_party/font8x8/font8x8_basic.h | $(BUILD_DIR)
+		third_party/font8x16/font8x16_basic.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -Ithird_party -c $< -o $@
 
 $(BUILD_DIR)/tty.o: kernel/tty/tty.c include/kernel/tty.h \
@@ -154,7 +185,7 @@ $(BUILD_DIR)/elf.o: kernel/elf.c include/kernel/elf.h include/kernel/vmm.h \
 $(BUILD_DIR)/process.o: kernel/proc/process.c include/kernel/process.h \
 		include/kernel/signal_state.h include/kernel/elf.h include/kernel/vmm.h include/kernel/heap.h \
 		include/kernel/pmm.h include/kernel/fd.h include/kernel/timer.h \
-		include/arch/x86_64/gdt.h | $(BUILD_DIR)
+		include/arch/x86_64/gdt.h include/arch/x86_64/fpu.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/signal_state.o: kernel/proc/signal_state.c \
@@ -167,6 +198,10 @@ $(BUILD_DIR)/interrupts.o: kernel/arch/x86_64/interrupts.c \
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/gdt.o: kernel/arch/x86_64/gdt.c include/arch/x86_64/gdt.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/fpu.o: kernel/arch/x86_64/fpu.c \
+		include/arch/x86_64/fpu.h include/kernel/log.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/lapic.o: kernel/arch/x86_64/lapic.c \
@@ -183,9 +218,33 @@ $(BUILD_DIR)/pci.o: kernel/arch/x86_64/pci.c \
 		include/kernel/vmm.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
+$(BUILD_DIR)/pci_resource.o: kernel/arch/x86_64/pci_resource.c \
+		include/arch/x86_64/pci_resource.h include/arch/x86_64/pci.h \
+		include/kernel/vmm.h include/kernel/log.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/netbuf.o: kernel/net/netbuf.c include/kernel/netbuf.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/netdev.o: kernel/net/netdev.c include/kernel/netdev.h \
+		include/kernel/netbuf.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/e1000_profile.o: kernel/net/e1000_profile.c \
+		include/kernel/e1000_profile.h include/arch/x86_64/pci.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/e1000.o: kernel/net/e1000.c include/kernel/e1000.h \
+		include/kernel/e1000_profile.h include/arch/x86_64/pci_resource.h \
+		include/kernel/dma.h include/kernel/log.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/e1000_reset.o: kernel/net/e1000_reset.c include/kernel/e1000.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
 $(BUILD_DIR)/ahci.o: kernel/arch/x86_64/ahci.c \
 		include/arch/x86_64/ahci.h include/arch/x86_64/pci.h \
-		include/kernel/block.h include/kernel/errno.h include/kernel/pmm.h \
+		include/kernel/block.h include/kernel/errno.h include/kernel/dma.h include/kernel/pmm.h \
 		include/kernel/vmm.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
@@ -247,8 +306,41 @@ $(BUILD_DIR)/user_init.o: user/init.c user/include/os.h | $(BUILD_DIR)
 $(BUILD_DIR)/user_shell.o: user/shell.c user/include/os.h | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
+$(BUILD_DIR)/coreutils/%.o: user/coreutils/%.c user/include/os.h | $(BUILD_DIR)
+	mkdir -p $(@D)
+	$(CC) $(USER_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/coreutils/fetch.o: user/fetch.c user/include/os.h | $(BUILD_DIR)
+	mkdir -p $(@D)
+	$(CC) $(USER_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/coreutils/%.elf: $(BUILD_DIR)/user_start.o \
+		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
+		$(BUILD_DIR)/coreutils/%.o user/c_linker.ld
+	$(LD) $(USER_C_LDFLAGS) $(BUILD_DIR)/user_start.o \
+		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
+		$(BUILD_DIR)/coreutils/$*.o -o $@
+
 $(BUILD_DIR)/user_probe.o: user/probe.c user/include/os.h | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/user_argv_probe.o: user/argv_probe.c user/include/os.h | $(BUILD_DIR)
+	$(CC) $(USER_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/argv_probe.elf: $(BUILD_DIR)/user_start.o $(BUILD_DIR)/user_os.o \
+		$(BUILD_DIR)/user_path.o $(BUILD_DIR)/user_argv_probe.o user/c_linker.ld
+	$(LD) $(USER_C_LDFLAGS) $(BUILD_DIR)/user_start.o \
+		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
+		$(BUILD_DIR)/user_argv_probe.o -o $@
+
+$(BUILD_DIR)/user_argv_limit_test.o: user/argv_limit_test.c user/include/os.h | $(BUILD_DIR)
+	$(CC) $(USER_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/argv_limit_test.elf: $(BUILD_DIR)/user_start.o $(BUILD_DIR)/user_os.o \
+		$(BUILD_DIR)/user_path.o $(BUILD_DIR)/user_argv_limit_test.o user/c_linker.ld
+	$(LD) $(USER_C_LDFLAGS) $(BUILD_DIR)/user_start.o \
+		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
+		$(BUILD_DIR)/user_argv_limit_test.o -o $@
 
 $(BUILD_DIR)/user_pipe_test.o: user/pipe_test.c user/include/os.h | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) -Iuser -c $< -o $@
@@ -259,6 +351,28 @@ $(BUILD_DIR)/user_pipe_exec_child.o: user/pipe_exec_child.c user/include/os.h | 
 $(BUILD_DIR)/user_signal_test.o: user/signal_test.c user/include/os.h | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) -mno-sse -mno-sse2 -msoft-float \
 		-Iuser -c $< -o $@
+
+$(BUILD_DIR)/user_fpu_context_test.o: user/fpu_context_test.c \
+		user/include/os.h | $(BUILD_DIR)
+	$(CC) $(USER_CFLAGS) -Iuser -c $< -o $@
+
+$(BUILD_DIR)/user_fpu_exec_child.o: user/fpu_exec_child.c \
+		user/include/os.h | $(BUILD_DIR)
+	$(CC) $(USER_CFLAGS) -Iuser -c $< -o $@
+
+$(BUILD_DIR)/fpu_context_test.elf: $(BUILD_DIR)/user_start.o \
+		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
+		$(BUILD_DIR)/user_fpu_context_test.o user/c_linker.ld
+	$(LD) $(USER_C_LDFLAGS) $(BUILD_DIR)/user_start.o \
+		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
+		$(BUILD_DIR)/user_fpu_context_test.o -o $@
+
+$(BUILD_DIR)/fpu_exec_child.elf: $(BUILD_DIR)/user_start.o \
+		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
+		$(BUILD_DIR)/user_fpu_exec_child.o user/c_linker.ld
+	$(LD) $(USER_C_LDFLAGS) $(BUILD_DIR)/user_start.o \
+		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
+		$(BUILD_DIR)/user_fpu_exec_child.o -o $@
 
 $(BUILD_DIR)/user_shm_lifecycle_test.o: user/shm_lifecycle_test.c \
 		user/include/os.h | $(BUILD_DIR)
@@ -351,6 +465,156 @@ $(BUILD_DIR)/populate_root: tools/populate_root.c kernel/vfs/vfs.c \
 		tools/populate_root.c kernel/vfs/vfs.c kernel/vfs/silliconfs.c \
 		kernel/fd.c -o $@
 
+native-musl-verify:
+	python3 third_party/musl/scripts/verify.py --output build/musl-bootstrap
+
+native-musl-build:
+	python3 third_party/musl/scripts/build_native.py \
+		--output $(MUSL_BUILD_DIR) --bootstrap build/musl-bootstrap --jobs 4
+
+$(MUSL_HELLO): tests/musl_hello.c user/c_linker.ld \
+		$(MUSL_SYSROOT)/usr/lib/libc.a
+	clang --target=x86_64-unknown-none-elf -std=c11 -O2 -Wall -Wextra -Werror \
+		-ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
+		-mno-red-zone -mno-mmx -mno-sse -mno-sse2 -msoft-float \
+		-ftls-model=local-exec -nostdinc \
+		-isystem $(MUSL_SYSROOT)/usr/include -c tests/musl_hello.c \
+		-o $(MUSL_BUILD_DIR)/musl_hello.o
+	clang --target=x86_64-unknown-none-elf -std=c11 -O2 -Wall -Wextra -Werror \
+		-nostdlib -static -fuse-ld=lld \
+		-no-pie -Wl,-z,noexecstack -Wl,--build-id=none \
+		-Wl,-T,user/c_linker.ld $(MUSL_SYSROOT)/usr/lib/crt1.o \
+		$(MUSL_SYSROOT)/usr/lib/crti.o $(MUSL_BUILD_DIR)/musl_hello.o \
+		-L$(MUSL_SYSROOT)/usr/lib -lc $(MUSL_SYSROOT)/usr/lib/crtn.o \
+		-o $(MUSL_HELLO)
+
+$(MUSL_ALLOC): tests/musl_alloc.c user/c_linker.ld \
+		$(MUSL_SYSROOT)/usr/lib/libc.a
+	clang --target=x86_64-unknown-none-elf -std=c11 -O2 -Wall -Wextra -Werror \
+		-ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
+		-mno-red-zone -mno-mmx -mno-sse -mno-sse2 -msoft-float \
+		-ftls-model=local-exec -nostdinc \
+		-isystem $(MUSL_SYSROOT)/usr/include -c tests/musl_alloc.c \
+		-o $(MUSL_BUILD_DIR)/musl_alloc.o
+	clang --target=x86_64-unknown-none-elf -std=c11 -O2 -Wall -Wextra -Werror \
+		-nostdlib -static -fuse-ld=lld \
+		-no-pie -Wl,-z,noexecstack -Wl,--build-id=none \
+		-Wl,-T,user/c_linker.ld $(MUSL_SYSROOT)/usr/lib/crt1.o \
+		$(MUSL_SYSROOT)/usr/lib/crti.o $(MUSL_BUILD_DIR)/musl_alloc.o \
+		-L$(MUSL_SYSROOT)/usr/lib -lc $(MUSL_SYSROOT)/usr/lib/crtn.o \
+		-o $(MUSL_ALLOC)
+
+$(MUSL_STDIO): tests/musl_stdio.c user/c_linker.ld \
+		$(MUSL_SYSROOT)/usr/lib/libc.a
+	clang --target=x86_64-unknown-none-elf -std=c11 -O2 -Wall -Wextra -Werror \
+		-ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
+		-mno-red-zone -mno-mmx -mno-sse -mno-sse2 -msoft-float \
+		-ftls-model=local-exec -nostdinc \
+		-isystem $(MUSL_SYSROOT)/usr/include -c tests/musl_stdio.c \
+		-o $(MUSL_BUILD_DIR)/musl_stdio.o
+	clang --target=x86_64-unknown-none-elf -std=c11 -O2 -Wall -Wextra -Werror \
+		-nostdlib -static -fuse-ld=lld \
+		-no-pie -Wl,-z,noexecstack -Wl,--build-id=none \
+		-Wl,-T,user/c_linker.ld $(MUSL_SYSROOT)/usr/lib/crt1.o \
+		$(MUSL_SYSROOT)/usr/lib/crti.o $(MUSL_BUILD_DIR)/musl_stdio.o \
+		-L$(MUSL_SYSROOT)/usr/lib -lc $(MUSL_SYSROOT)/usr/lib/crtn.o \
+		-o $(MUSL_STDIO)
+
+native-musl-hello:
+	$(MAKE) native-musl-build
+	$(MAKE) $(MUSL_HELLO)
+
+native-musl-alloc:
+	$(MAKE) native-musl-build
+	$(MAKE) $(MUSL_HELLO) $(MUSL_ALLOC)
+
+native-musl-stdio:
+	$(MAKE) native-musl-build
+	$(MAKE) $(MUSL_STDIO)
+
+native-musl-inspect: native-musl-hello
+	readelf -h -l -S -r -d $(MUSL_HELLO)
+	! readelf -l $(MUSL_HELLO) | grep -E 'INTERP|DYNAMIC'
+	! nm -u $(MUSL_HELLO) | grep -v '_DYNAMIC'
+
+$(BUILD_DIR)/musl-root.img: $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.elf \
+		$(BUILD_DIR)/probe.elf $(BUILD_DIR)/populate_root $(MUSL_HELLO) \
+		tools/mksilliconfs.py | $(BUILD_DIR)
+	python3 tools/mksilliconfs.py $@ --blocks 32768 --inodes 1024
+	$(BUILD_DIR)/populate_root $@ $(BUILD_DIR)/init.elf \
+		$(BUILD_DIR)/shell.elf $(BUILD_DIR)/probe.elf $(MUSL_HELLO)
+
+native-musl-qemu-test:
+	$(MAKE) native-musl-hello
+	$(MAKE) BUILD_DIR=build/musl-qemu \
+		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DKERNEL_TEST_NATIVE_MUSL' \
+		iso build/musl-qemu/musl-root.img
+	@set +e; timeout 35s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \
+		-cdrom build/musl-qemu/opensillicon.iso \
+		-drive file=build/musl-qemu/musl-root.img,if=none,id=rootdisk,format=raw \
+		-device ide-hd,drive=rootdisk,bus=ide.0 \
+		-serial file:build/musl-qemu/serial.log -display none \
+		-no-reboot -no-shutdown; status=$$?; test $$status -eq 124
+	grep -F 'OpenSillicon: native musl write, errno, and TLS passed' \
+		build/musl-qemu/serial.log
+	grep -F 'OpenSillicon: native musl 1.2.6 CRT, TLS, errno, write, and exit passed' \
+		build/musl-qemu/serial.log
+
+$(BUILD_DIR)/musl-alloc-root.img: $(BUILD_DIR)/init.elf \
+		$(BUILD_DIR)/shell.elf $(BUILD_DIR)/probe.elf \
+		$(BUILD_DIR)/populate_root $(MUSL_HELLO) $(MUSL_ALLOC) \
+		tools/mksilliconfs.py | $(BUILD_DIR)
+	python3 tools/mksilliconfs.py $@ --blocks 32768 --inodes 1024
+	$(BUILD_DIR)/populate_root $@ $(BUILD_DIR)/init.elf \
+		$(BUILD_DIR)/shell.elf $(BUILD_DIR)/probe.elf $(MUSL_HELLO) $(MUSL_ALLOC)
+
+native-musl-alloc-qemu-test:
+	$(MAKE) native-musl-alloc
+	$(MAKE) BUILD_DIR=build/musl-alloc-qemu \
+		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DKERNEL_TEST_NATIVE_MUSL_ALLOC -DKERNEL_TEST_PRIVATE_MAPPING_FAILURE' \
+		iso build/musl-alloc-qemu/musl-alloc-root.img
+	@set +e; timeout 45s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \
+		-cdrom build/musl-alloc-qemu/opensillicon.iso \
+		-drive file=build/musl-alloc-qemu/musl-alloc-root.img,if=none,id=rootdisk,format=raw \
+		-device ide-hd,drive=rootdisk,bus=ide.0 \
+		-serial file:build/musl-alloc-qemu/serial.log -display none \
+		-no-reboot -no-shutdown; status=$$?; test $$status -eq 124
+	grep -F 'OpenSillicon: musl mallocng small/large allocations and mmap passed' \
+		build/musl-alloc-qemu/serial.log
+	grep -F 'OpenSillicon: native musl malloc, mmap, mprotect, munmap, TLS, and exit passed' \
+		build/musl-alloc-qemu/serial.log
+
+$(BUILD_DIR)/musl-stdio-root.img: $(BUILD_DIR)/init.elf \
+		$(BUILD_DIR)/shell.elf $(BUILD_DIR)/probe.elf \
+		$(BUILD_DIR)/populate_root $(MUSL_STDIO) tools/mksilliconfs.py | $(BUILD_DIR)
+	python3 tools/mksilliconfs.py $@ --blocks 32768 --inodes 1024
+	$(BUILD_DIR)/populate_root $@ $(BUILD_DIR)/init.elf \
+		$(BUILD_DIR)/shell.elf $(BUILD_DIR)/probe.elf $(MUSL_HELLO) \
+		$(MUSL_ALLOC) $(MUSL_STDIO)
+
+native-musl-stdio-qemu-test:
+	$(MAKE) native-musl-build
+	$(MAKE) $(MUSL_HELLO) $(MUSL_ALLOC) $(MUSL_STDIO)
+	$(MAKE) BUILD_DIR=build/musl-stdio-qemu \
+		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DKERNEL_TEST_NATIVE_MUSL_ALLOC -DKERNEL_TEST_NATIVE_MUSL_STDIO' \
+		iso build/musl-stdio-qemu/musl-stdio-root.img
+	@set +e; timeout 45s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \
+		-cdrom build/musl-stdio-qemu/opensillicon.iso \
+		-drive file=build/musl-stdio-qemu/musl-stdio-root.img,if=none,id=rootdisk,format=raw \
+		-device ide-hd,drive=rootdisk,bus=ide.0 \
+		-serial file:build/musl-stdio-qemu/serial.log -display none \
+		-no-reboot -no-shutdown; status=$$?; test $$status -eq 124
+	grep -F 'stdio printf: ok -7 42 0x2a' build/musl-stdio-qemu/serial.log
+	grep -F 'stdio stdout: fprintf' build/musl-stdio-qemu/serial.log
+	grep -F 'stdio stderr: fprintf' build/musl-stdio-qemu/serial.log
+	grep -F 'stdio puts' build/musl-stdio-qemu/serial.log
+	grep -F 'stdio fwrite' build/musl-stdio-qemu/serial.log
+	grep -F 'stdio writev: ok' build/musl-stdio-qemu/serial.log
+	grep -F 'OpenSillicon: musl stdio, TTY query, VFS readv, allocator, and TLS passed' \
+		build/musl-stdio-qemu/serial.log
+	grep -F 'OpenSillicon: native musl stdio QEMU fixture exited with status zero' \
+		build/musl-stdio-qemu/serial.log
+
 $(BUILD_DIR)/acpica/%.o: $(ACPICA_ROOT)/%.c \
 		$(ACPICA_ROOT)/include/platform/acenv.h \
 		$(ACPICA_ROOT)/include/platform/acopensillicon.h \
@@ -377,6 +641,79 @@ $(BUILD_DIR)/pci_test: kernel/arch/x86_64/pci.c tests/pci_test.c \
 
 pci-test: $(BUILD_DIR)/pci_test
 	$(BUILD_DIR)/pci_test
+
+$(BUILD_DIR)/pci_resource_test: kernel/arch/x86_64/pci_resource.c \
+		tests/pci_resource_test.c include/arch/x86_64/pci_resource.h \
+		include/kernel/vmm.h
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Ilimine \
+		kernel/arch/x86_64/pci_resource.c tests/pci_resource_test.c -o $@
+
+pci-resource-test: $(BUILD_DIR)/pci_resource_test
+	$(BUILD_DIR)/pci_resource_test
+
+$(BUILD_DIR)/dma_test: kernel/mm/dma.c tests/dma_test.c \
+		include/kernel/dma.h include/kernel/pmm.h include/kernel/vmm.h
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Ilimine \
+		kernel/mm/dma.c tests/dma_test.c -o $@
+
+dma-test: $(BUILD_DIR)/dma_test
+	$(BUILD_DIR)/dma_test
+	$(BUILD_DIR)/dma_test reject
+
+$(BUILD_DIR)/dma_ring_test: kernel/mm/dma_ring.c tests/dma_ring_test.c \
+		kernel/mm/dma.c include/kernel/dma_ring.h include/kernel/dma.h
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Ilimine \
+		kernel/mm/dma.c kernel/mm/dma_ring.c tests/dma_ring_test.c -o $@
+
+dma-ring-test: $(BUILD_DIR)/dma_ring_test
+	$(BUILD_DIR)/dma_ring_test
+
+$(BUILD_DIR)/e1000_profile_test: kernel/net/e1000_profile.c \
+		tests/e1000_profile_test.c include/kernel/e1000_profile.h \
+		include/arch/x86_64/pci.h
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude \
+		kernel/net/e1000_profile.c tests/e1000_profile_test.c -o $@
+
+e1000-profile-test: $(BUILD_DIR)/e1000_profile_test $(BUILD_DIR)/e1000_reset_test
+	$(BUILD_DIR)/e1000_profile_test
+	$(BUILD_DIR)/e1000_reset_test
+
+e1000-init-qemu-test: iso $(BUILD_DIR)/phase12-root.img
+	@set +e; timeout 18s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \
+		-cdrom $(BUILD_DIR)/opensillicon.iso \
+		-drive file=$(BUILD_DIR)/phase12-root.img,if=none,id=rootdisk,format=raw \
+		-device ide-hd,drive=rootdisk,bus=ide.0 -nodefaults -nic none \
+		-netdev user,id=net0 -device e1000,netdev=net0 \
+		-serial file:$(BUILD_DIR)/e1000-init.log -display none \
+		-no-reboot -no-shutdown; status=$$?; set -e; \
+	test $$status -eq 124; \
+	grep -F 'reset complete; bus mastering remains disabled' \
+		$(BUILD_DIR)/e1000-init.log; \
+	grep -F 'Initializing QEMU e1000 82540EM ...' \
+		$(BUILD_DIR)/e1000-init.log
+
+$(BUILD_DIR)/e1000_reset_test: kernel/net/e1000_reset.c \
+		tests/e1000_reset_test.c include/kernel/e1000.h | $(BUILD_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude \
+		kernel/net/e1000_reset.c tests/e1000_reset_test.c -o $@
+
+$(BUILD_DIR)/pmm_contiguous_test: kernel/mm/pmm.c tests/pmm_contiguous_test.c \
+		include/kernel/pmm.h include/kernel/boot.h limine/limine.h
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Ilimine \
+		kernel/mm/pmm.c tests/pmm_contiguous_test.c -o $@
+
+pmm-contiguous-test: $(BUILD_DIR)/pmm_contiguous_test
+	$(BUILD_DIR)/pmm_contiguous_test
+
+$(BUILD_DIR)/network_foundation_test: kernel/net/netbuf.c \
+		kernel/net/netdev.c tests/network_foundation_test.c \
+		include/kernel/netbuf.h include/kernel/netdev.h
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude \
+		kernel/net/netbuf.c kernel/net/netdev.c \
+		tests/network_foundation_test.c -o $@
+
+network-foundation-test: $(BUILD_DIR)/network_foundation_test pci-test
+	$(BUILD_DIR)/network_foundation_test
 
 $(BUILD_DIR)/user_test.o: user/test.S | $(BUILD_DIR)
 	$(CC) $(USER_ASFLAGS) -c $< -o $@
@@ -414,6 +751,20 @@ $(BUILD_DIR)/elf_test_blob.o: $(BUILD_DIR)/elf_test_user.elf
 		--redefine-sym _binary_elf_test_user_elf_end=_binary_elf_test_bin_end \
 		elf_test_user.elf elf_test_blob.o
 
+$(BUILD_DIR)/private_mapping_lifecycle_test.o: \
+		user/private_mapping_lifecycle_test.S | $(BUILD_DIR)
+	$(CC) $(USER_ASFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/private_mapping_lifecycle_test.elf: \
+		$(BUILD_DIR)/private_mapping_lifecycle_test.o user/elf_test.ld
+	$(LD) -nostdlib -static -no-pie -T user/elf_test.ld $< -o $@
+
+$(BUILD_DIR)/private_mapping_lifecycle_blob.o: \
+		$(BUILD_DIR)/private_mapping_lifecycle_test.elf
+	cd $(BUILD_DIR) && objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
+		--rename-section .data=.rodata,alloc,load,readonly,data,contents \
+		private_mapping_lifecycle_test.elf private_mapping_lifecycle_blob.o
+
 $(BUILD_DIR)/vfs_test_user.o: user/vfs_test.S | $(BUILD_DIR)
 	$(CC) $(USER_ASFLAGS) -c $< -o $@
 
@@ -439,6 +790,8 @@ $(BUILD_DIR)/initramfs.cpio: $(shell find initramfs -type f -o -type d) \
 		$(BUILD_DIR)/signal_exec_child.elf \
 		$(BUILD_DIR)/shm_lifecycle_test.elf \
 		$(BUILD_DIR)/shm_fork_failure_test.elf \
+		$(BUILD_DIR)/fpu_context_test.elf $(BUILD_DIR)/fpu_exec_child.elf \
+		$(BUILD_DIR)/argv_probe.elf $(BUILD_DIR)/argv_limit_test.elf \
 		tools/mkinitramfs.py
 	python3 tools/mkinitramfs.py initramfs $@ \
 		--file bin/exec_path_child=$(BUILD_DIR)/exec_path_child.elf \
@@ -447,14 +800,21 @@ $(BUILD_DIR)/initramfs.cpio: $(shell find initramfs -type f -o -type d) \
 		--file bin/signal_test=$(BUILD_DIR)/signal_test.elf \
 		--file bin/signal_exec_child=$(BUILD_DIR)/signal_exec_child.elf \
 		--file bin/shm_lifecycle_test=$(BUILD_DIR)/shm_lifecycle_test.elf \
-		--file bin/shm_fork_failure_test=$(BUILD_DIR)/shm_fork_failure_test.elf
+		--file bin/shm_fork_failure_test=$(BUILD_DIR)/shm_fork_failure_test.elf \
+		--file bin/fpu_context_test=$(BUILD_DIR)/fpu_context_test.elf \
+		--file bin/fpu_exec_child=$(BUILD_DIR)/fpu_exec_child.elf \
+		--file bin/argv_probe=$(BUILD_DIR)/argv_probe.elf \
+		--file bin/argv_limit_test=$(BUILD_DIR)/argv_limit_test.elf
 
 KERNEL_OBJECTS := $(BUILD_DIR)/main.o $(BUILD_DIR)/boot.o $(BUILD_DIR)/pmm.o \
 	$(BUILD_DIR)/vmm.o $(BUILD_DIR)/shm.o $(BUILD_DIR)/heap.o $(BUILD_DIR)/log.o \
-	$(BUILD_DIR)/gdt.o $(BUILD_DIR)/lapic.o $(BUILD_DIR)/acpi.o \
+	$(BUILD_DIR)/gdt.o $(BUILD_DIR)/fpu.o $(BUILD_DIR)/lapic.o $(BUILD_DIR)/acpi.o \
 	$(BUILD_DIR)/ioapic.o $(BUILD_DIR)/ahci.o $(BUILD_DIR)/block.o \
 	$(BUILD_DIR)/block_silliconfs.o \
-	$(BUILD_DIR)/pci.o \
+	$(BUILD_DIR)/pci.o $(BUILD_DIR)/pci_resource.o $(BUILD_DIR)/dma.o \
+	$(BUILD_DIR)/dma_ring.o $(BUILD_DIR)/netbuf.o $(BUILD_DIR)/netdev.o \
+	$(BUILD_DIR)/e1000_profile.o $(BUILD_DIR)/e1000.o \
+	$(BUILD_DIR)/e1000_reset.o \
 	$(BUILD_DIR)/timer.o \
 	$(BUILD_DIR)/scheduler.o $(BUILD_DIR)/interrupts.o $(BUILD_DIR)/gdt_asm.o \
 	$(BUILD_DIR)/interrupts_asm.o $(BUILD_DIR)/context.o $(BUILD_DIR)/fd.o \
@@ -464,7 +824,8 @@ KERNEL_OBJECTS := $(BUILD_DIR)/main.o $(BUILD_DIR)/boot.o $(BUILD_DIR)/pmm.o \
 	$(BUILD_DIR)/syscall.o $(BUILD_DIR)/pipe.o $(BUILD_DIR)/pipe_buffer.o \
 	$(BUILD_DIR)/user_entry.o \
 	$(BUILD_DIR)/user_entry_c.o $(BUILD_DIR)/user_test_blob.o \
-	$(BUILD_DIR)/elf.o $(BUILD_DIR)/elf_test_blob.o $(BUILD_DIR)/process.o \
+	$(BUILD_DIR)/elf.o $(BUILD_DIR)/elf_test_blob.o \
+	$(PRIVATE_MAPPING_TEST_OBJECTS) $(BUILD_DIR)/process.o \
 	$(BUILD_DIR)/signal_state.o \
 	$(BUILD_DIR)/string.o $(BUILD_DIR)/vfs.o $(BUILD_DIR)/ramfs.o \
 	$(BUILD_DIR)/initramfs.o $(BUILD_DIR)/silliconfs.o \
@@ -480,28 +841,46 @@ iso: $(BUILD_DIR)/opensillicon.iso
 
 $(BUILD_DIR)/root.img: $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.elf \
 		$(BUILD_DIR)/probe.elf $(BUILD_DIR)/populate_root \
+		$(COREUTILS_ELFS) \
 		tools/mksilliconfs.py | $(BUILD_DIR)
 	python3 tools/mksilliconfs.py $@ --blocks 32768 --inodes 1024
 	$(BUILD_DIR)/populate_root $@ $(BUILD_DIR)/init.elf \
-		$(BUILD_DIR)/shell.elf $(BUILD_DIR)/probe.elf
+		$(BUILD_DIR)/shell.elf $(BUILD_DIR)/probe.elf --coreutils \
+		$(BUILD_DIR)/coreutils/ls.elf $(BUILD_DIR)/coreutils/cat.elf \
+		$(BUILD_DIR)/coreutils/echo.elf $(BUILD_DIR)/coreutils/pwd.elf \
+		$(BUILD_DIR)/coreutils/true.elf $(BUILD_DIR)/coreutils/false.elf \
+		$(BUILD_DIR)/coreutils/clear.elf $(BUILD_DIR)/coreutils/uname.elf \
+		$(BUILD_DIR)/coreutils/fetch.elf
 
 refresh-test-root: $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.elf \
 		$(BUILD_DIR)/probe.elf $(BUILD_DIR)/populate_root \
+		$(COREUTILS_ELFS) \
 		tools/mksilliconfs.py | $(BUILD_DIR)
 	python3 tools/mksilliconfs.py $(BUILD_DIR)/test-root.img \
 		--blocks 32768 --inodes 1024
 	$(BUILD_DIR)/populate_root $(BUILD_DIR)/test-root.img $(BUILD_DIR)/init.elf \
-		$(BUILD_DIR)/shell.elf $(BUILD_DIR)/probe.elf
+		$(BUILD_DIR)/shell.elf $(BUILD_DIR)/probe.elf --coreutils \
+		$(BUILD_DIR)/coreutils/ls.elf $(BUILD_DIR)/coreutils/cat.elf \
+		$(BUILD_DIR)/coreutils/echo.elf $(BUILD_DIR)/coreutils/pwd.elf \
+		$(BUILD_DIR)/coreutils/true.elf $(BUILD_DIR)/coreutils/false.elf \
+		$(BUILD_DIR)/coreutils/clear.elf $(BUILD_DIR)/coreutils/uname.elf \
+		$(BUILD_DIR)/coreutils/fetch.elf
 
 $(BUILD_DIR)/test-root.img: refresh-test-root
 	@test -f $@
 
 $(BUILD_DIR)/phase12-root.img: $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.elf \
 		$(BUILD_DIR)/probe.elf $(BUILD_DIR)/populate_root \
+		$(COREUTILS_ELFS) \
 		tools/mksilliconfs.py | $(BUILD_DIR)
 	python3 tools/mksilliconfs.py $@ --blocks 32768 --inodes 1024
 	$(BUILD_DIR)/populate_root $@ $(BUILD_DIR)/init.elf \
-		$(BUILD_DIR)/shell.elf $(BUILD_DIR)/probe.elf
+		$(BUILD_DIR)/shell.elf $(BUILD_DIR)/probe.elf --coreutils \
+		$(BUILD_DIR)/coreutils/ls.elf $(BUILD_DIR)/coreutils/cat.elf \
+		$(BUILD_DIR)/coreutils/echo.elf $(BUILD_DIR)/coreutils/pwd.elf \
+		$(BUILD_DIR)/coreutils/true.elf $(BUILD_DIR)/coreutils/false.elf \
+		$(BUILD_DIR)/coreutils/clear.elf $(BUILD_DIR)/coreutils/uname.elf \
+		$(BUILD_DIR)/coreutils/fetch.elf
 
 $(BUILD_DIR)/blank-root.img: tools/mksilliconfs.py | $(BUILD_DIR)
 	python3 tools/mksilliconfs.py $@ --blocks 32768 --inodes 1024
@@ -537,6 +916,11 @@ run: iso $(BUILD_DIR)/root.img
 		-drive file=$(BUILD_DIR)/root.img,if=none,id=rootdisk,format=raw \
 		-device ide-hd,drive=rootdisk,bus=ide.0 -serial stdio -display none -no-reboot
 
+run-gui: iso $(BUILD_DIR)/root.img
+	$(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) -cdrom $(BUILD_DIR)/opensillicon.iso \
+		-drive file=$(BUILD_DIR)/root.img,if=none,id=rootdisk,format=raw \
+		-device ide-hd,drive=rootdisk,bus=ide.0 -serial stdio -display gtk -no-reboot
+
 $(BUILD_DIR)/block_test: kernel/block.c kernel/block_silliconfs.c \
 		tests/block_test.c include/kernel/block.h include/kernel/errno.h \
 		include/kernel/block_silliconfs.h
@@ -557,6 +941,20 @@ elf-test: | $(BUILD_DIR)
 	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Ilimine \
 		kernel/elf.c tests/elf_test.c -o $(BUILD_DIR)/elf_test
 	$(BUILD_DIR)/elf_test
+
+$(BUILD_DIR)/vmm_protection_test: tests/vmm_protection_test.c \
+		include/kernel/vmm.h | $(BUILD_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Ilimine $< -o $@
+
+private-protection-test: $(BUILD_DIR)/vmm_protection_test
+	$(BUILD_DIR)/vmm_protection_test
+
+$(BUILD_DIR)/private_mapping_abi_test: tests/private_mapping_abi_test.c \
+		include/kernel/vmm.h | $(BUILD_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Ilimine $< -o $@
+
+private-map-abi-test: $(BUILD_DIR)/private_mapping_abi_test
+	$(BUILD_DIR)/private_mapping_abi_test
 
 vfs-test: $(BUILD_DIR)/initramfs.cpio | $(BUILD_DIR)
 	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Ilimine \
@@ -586,7 +984,7 @@ $(BUILD_DIR)/terminal_test: kernel/tty/terminal.c kernel/tty/tty.c \
 		kernel/tty/keyboard.c kernel/tty/framebuffer.c \
 		kernel/arch/x86_64/ps2_keyboard.c tests/timer_stub.c \
 		tests/terminal_test.c include/kernel/terminal.h \
-		third_party/font8x8/font8x8_basic.h
+		third_party/font8x16/font8x16_basic.h
 	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Ilimine -Ithird_party \
 		kernel/tty/terminal.c kernel/tty/tty.c kernel/tty/keyboard.c \
 		kernel/tty/framebuffer.c kernel/arch/x86_64/ps2_keyboard.c \
@@ -693,6 +1091,89 @@ shm-fork-failure-qemu-test:
 		build/shm-fork-failure/serial.log
 	@grep -F 'OpenSillicon: shared fork mapping rollback and reference cleanup passed' \
 		build/shm-fork-failure/serial.log
+
+private-map-qemu-test:
+	$(MAKE) BUILD_DIR=build/private-map \
+		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DKERNEL_TEST_PRIVATE_MAPPING_FAILURE' \
+		iso build/private-map/test-root.img
+	@set +e; timeout 20s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \
+		-cdrom build/private-map/opensillicon.iso \
+		-drive file=build/private-map/test-root.img,if=none,id=rootdisk,format=raw \
+		-device ide-hd,drive=rootdisk,bus=ide.0 \
+		-serial file:build/private-map/serial.log -display none \
+		-no-reboot -no-shutdown; status=$$?; test $$status -eq 124
+	@grep -F 'OpenSillicon: private mapping zero-fill, RW/NX, exact unmap, fork isolation, exec replacement, and teardown passed' \
+		build/private-map/serial.log
+	@grep -F 'OpenSillicon: private mapping metadata, page, and fork rollback injection passed' \
+		build/private-map/serial.log
+
+private-map-lifecycle-qemu-test:
+	$(MAKE) BUILD_DIR=build/private-map-lifecycle \
+		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DKERNEL_TEST_PRIVATE_MAPPING_LIFECYCLE' \
+		iso build/private-map-lifecycle/test-root.img
+	@set +e; timeout 30s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \
+		-cdrom build/private-map-lifecycle/opensillicon.iso \
+		-drive file=build/private-map-lifecycle/test-root.img,if=none,id=rootdisk,format=raw \
+		-device ide-hd,drive=rootdisk,bus=ide.0 \
+		-serial file:build/private-map-lifecycle/serial.log -display none \
+		-no-reboot -no-shutdown; status=$$?; test $$status -eq 124
+	@grep -F 'OpenSillicon: private mapping NX instruction fault, zombie retention, and reap cleanup passed' \
+		build/private-map-lifecycle/serial.log
+
+private-map-exhaustion-qemu-test:
+	$(MAKE) BUILD_DIR=build/private-map-exhaustion \
+		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DKERNEL_TEST_PRIVATE_MAPPING_EXHAUSTION' \
+		iso build/private-map-exhaustion/test-root.img
+	@set +e; timeout 30s $(QEMU) -machine q35 -m 128M -bios $(OVMF_CODE) \
+		-cdrom build/private-map-exhaustion/opensillicon.iso \
+		-drive file=build/private-map-exhaustion/test-root.img,if=none,id=rootdisk,format=raw \
+		-device ide-hd,drive=rootdisk,bus=ide.0 \
+		-serial file:build/private-map-exhaustion/serial.log -display none \
+		-no-reboot -no-shutdown; status=$$?; test $$status -eq 124
+	@grep -F 'OpenSillicon: actual PMM exhaustion rollback and retry passed' \
+		build/private-map-exhaustion/serial.log
+
+private-protection-qemu-test:
+	$(MAKE) BUILD_DIR=build/private-protection \
+		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DKERNEL_TEST_PRIVATE_MAPPING_PROTECTION -DKERNEL_TEST_PRIVATE_MAPPING_FAILURE' \
+		iso build/private-protection/test-root.img
+	@set +e; timeout 15s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \
+		-cdrom build/private-protection/opensillicon.iso \
+		-drive file=build/private-protection/test-root.img,if=none,id=rootdisk,format=raw \
+		-device ide-hd,drive=rootdisk,bus=ide.0 \
+		-serial file:build/private-protection/serial.log -display none \
+		-no-reboot -no-shutdown; status=$$?; test $$status -eq 124
+	@grep -F 'OpenSillicon: private protection modes, range checks, RW/NX faults, fork isolation, and teardown passed' \
+		build/private-protection/serial.log
+
+fs-base-qemu-test:
+	$(MAKE) BUILD_DIR=build/fs-base \
+		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DKERNEL_TEST_FS_BASE' \
+		iso build/fs-base/test-root.img
+	@set +e; timeout 30s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \
+		-cdrom build/fs-base/opensillicon.iso \
+		-drive file=build/fs-base/test-root.img,if=none,id=rootdisk,format=raw \
+		-device ide-hd,drive=rootdisk,bus=ide.0 \
+		-serial file:build/fs-base/serial.log -display none \
+		-no-reboot -no-shutdown; status=$$?; test $$status -eq 124
+	@grep -F 'OpenSillicon test: successful exec reset FS base' \
+		build/fs-base/serial.log
+	@grep -F 'OpenSillicon shell ready' build/fs-base/serial.log
+
+fpu-context-qemu-test:
+	$(MAKE) -B BUILD_DIR=build/fpu-context \
+		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DKERNEL_TEST_FPU_CONTEXT' iso \
+		build/fpu-context/test-root.img
+	@set +e; timeout 30s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \
+		-cdrom build/fpu-context/opensillicon.iso \
+	-drive file=build/fpu-context/test-root.img,if=none,id=rootdisk,format=raw \
+		-device ide-hd,drive=rootdisk,bus=ide.0 \
+		-serial file:build/fpu-context/serial.log -display none \
+		-no-reboot -no-shutdown; status=$$?; test $$status -eq 124
+	@grep -F 'OpenSillicon: Ring3 FPU/SSE context, fork, preemption, syscall, and exec tests passed' \
+		build/fpu-context/serial.log
+	@grep -F 'OpenSillicon: successful exec restored clean FPU state' \
+		build/fpu-context/serial.log
 
 vfs-smoke-test: iso $(BUILD_DIR)/test-root.img
 	@set +e; timeout 10s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \
