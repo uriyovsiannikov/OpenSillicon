@@ -7,12 +7,18 @@
 
 #include "arch/x86_64/interrupts.h"
 #include "kernel/fd.h"
+#include "kernel/signal_state.h"
 
 void process_system_init(void);
 uint64_t process_run_elf(const void *image, size_t image_size);
 uint64_t process_run_path(const char *path, bool startup_stack);
 struct fd_table *process_current_fd_table(void);
 uint64_t process_current_pid(void);
+void process_syscall_retry_begin(void);
+uint64_t process_kill(uint64_t pid, unsigned int signo);
+struct interrupt_frame *process_sigaction(struct interrupt_frame *frame,
+	unsigned int signo, uint64_t new_action, uint64_t old_action,
+	uint64_t *error);
 uint64_t process_user_preemptions(void);
 uint64_t process_pipe_blocked_ticks(void);
 struct interrupt_frame *process_timer_preempt(
@@ -23,6 +29,10 @@ struct interrupt_frame *process_exec(struct interrupt_frame *frame,
 	uint64_t *error);
 struct interrupt_frame *process_exec_path(struct interrupt_frame *frame,
 	const char *path, uint64_t *error);
+struct interrupt_frame *process_sigreturn(struct interrupt_frame *frame,
+	uint64_t *error);
+struct interrupt_frame *process_prepare_user_return(
+	struct interrupt_frame *frame);
 struct interrupt_frame *process_waitpid(struct interrupt_frame *frame,
 	uint64_t *error);
 struct interrupt_frame *process_sleep_ticks(struct interrupt_frame *frame,

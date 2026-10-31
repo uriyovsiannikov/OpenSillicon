@@ -465,7 +465,7 @@ address_space_destroy(struct address_space *space)
 
 static bool
 user_page_physical(const struct address_space *space, uint64_t virtual_address,
-	uint64_t *physical_address, bool writable)
+	uint64_t *physical_address, bool writable, bool executable)
 {
 	static const unsigned int shifts[] = {39, 30, 21};
 	uint64_t *table = table_virtual(space->root_physical);
@@ -479,6 +479,7 @@ user_page_physical(const struct address_space *space, uint64_t virtual_address,
 
 		if ((entry & (PTE_PRESENT | PTE_USER)) != (PTE_PRESENT | PTE_USER) ||
 		    (writable && (entry & PTE_WRITE) == 0) ||
+		    (executable && (entry & PTE_NX) != 0) ||
 		    (entry & PTE_LARGE) != 0)
 			return false;
 		table = table_virtual(entry & PTE_ADDRESS);
@@ -490,7 +491,8 @@ user_page_physical(const struct address_space *space, uint64_t virtual_address,
 		uint64_t entry = table[index];
 
 		if ((entry & (PTE_PRESENT | PTE_USER)) != (PTE_PRESENT | PTE_USER) ||
-		    (writable && (entry & PTE_WRITE) == 0))
+		    (writable && (entry & PTE_WRITE) == 0) ||
+		    (executable && (entry & PTE_NX) != 0))
 			return false;
 		*physical_address = entry & PTE_ADDRESS;
 	}
@@ -521,7 +523,7 @@ vmm_copy_from_user(const struct address_space *space, void *destination,
 
 		if (chunk > remaining)
 			chunk = remaining;
-		if (!user_page_physical(space, current, &physical, false))
+		if (!user_page_physical(space, current, &physical, false, false))
 			return false;
 		current += chunk;
 		remaining -= chunk;
@@ -536,7 +538,7 @@ vmm_copy_from_user(const struct address_space *space, void *destination,
 
 		if (chunk > remaining)
 			chunk = remaining;
-		if (!user_page_physical(space, current, &physical, false) ||
+		if (!user_page_physical(space, current, &physical, false, false) ||
 		    hhdm_offset > UINT64_MAX - physical ||
 		    chunk - 1 > UINTPTR_MAX - (uintptr_t)(hhdm_offset + physical +
 		    (current & (PAGE_SIZE - 1))))
@@ -576,7 +578,7 @@ vmm_copy_to_user(const struct address_space *space, uint64_t destination,
 
 		if (chunk > remaining)
 			chunk = remaining;
-		if (!user_page_physical(space, current, &physical, true))
+		if (!user_page_physical(space, current, &physical, true, false))
 			return false;
 		current += chunk;
 		remaining -= chunk;
@@ -591,7 +593,7 @@ vmm_copy_to_user(const struct address_space *space, uint64_t destination,
 
 		if (chunk > remaining)
 			chunk = remaining;
-		if (!user_page_physical(space, current, &physical, true) ||
+		if (!user_page_physical(space, current, &physical, true, false) ||
 		    hhdm_offset > UINT64_MAX - physical ||
 		    (current & (PAGE_SIZE - 1)) > UINTPTR_MAX -
 		    (uintptr_t)(hhdm_offset + physical) ||
@@ -631,7 +633,37 @@ vmm_validate_user_write(const struct address_space *space,
 
 		if (chunk > remaining)
 			chunk = remaining;
-		if (!user_page_physical(space, current, &physical, true))
+		if (!user_page_physical(space, current, &physical, true, false))
+			return false;
+		current += chunk;
+		remaining -= chunk;
+	}
+	return true;
+}
+
+bool
+vmm_validate_user_exec(const struct address_space *space,
+	uint64_t address, size_t length)
+{
+	uint64_t current;
+	uint64_t remaining;
+
+	if (!initialized || !address_space_valid(space) || space == &kernel_space)
+		return false;
+	if (length == 0)
+		return true;
+	if (address < USER_BASE || address >= USER_END ||
+	    length > USER_END - address)
+		return false;
+	current = address;
+	remaining = length;
+	while (remaining != 0) {
+		uint64_t physical;
+		uint64_t chunk = PAGE_SIZE - (current & (PAGE_SIZE - 1));
+
+		if (chunk > remaining)
+			chunk = remaining;
+		if (!user_page_physical(space, current, &physical, false, true))
 			return false;
 		current += chunk;
 		remaining -= chunk;

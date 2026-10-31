@@ -33,6 +33,8 @@ bool vmm_copy_to_user(const struct address_space *space, uint64_t destination,
 	const void *source, size_t length);
 bool vmm_validate_user_write(const struct address_space *space,
 	uint64_t destination, size_t length);
+bool vmm_validate_user_exec(const struct address_space *space,
+	uint64_t address, size_t length);
 bool address_space_clone(const struct address_space *source,
 	struct address_space *destination);
 bool address_space_destroy_with_pages(struct address_space *space);

@@ -495,6 +495,39 @@ deferred to separately reviewed stages. Also deferred: `dup2`, nonblocking
 mode, `poll`/`select`, named pipes, shell pipelines/redirection, signal
 interruption, libc work, and broader POSIX compatibility.
 
+### Stage 13B — Minimal Signals
+
+Goal
+
+Add the minimal signal contract in ADR-020 without changing existing syscall
+semantics or redesigning TTY blocking.
+
+Tasks
+
+- Append syscalls 15–17: `kill`, `sigaction`, and `sigreturn`.
+- Add pending/disposition state, safe Ring 3 handler entry, and trusted
+  kernel-frame restoration through the exact validated restorer stub.
+- Add executable user-range validation using page-table NX permissions.
+- Define fork and exec signal-state behavior; reject fork during an active
+  handler with `EBUSY`.
+- Add a serialized signal wake path distinct from pipe resource retry;
+  support interruption of `waitpid`, `sleep_ticks`, pipe reads, and writes.
+- Test host state transitions and QEMU delivery, return, default/ignored/
+  uncatchable behavior, invalid inputs, blocked syscall interruption, and
+  fork/exec disposition rules.
+
+Done criteria
+
+- No signal is lost between pending checks and Ring 3 return.
+- Invalid restorer sites never restore user-supplied register state.
+- Failed `sigaction` copy-out leaves the disposition unchanged.
+- Supported blocked calls return or complete according to ADR-020 race rules.
+- Stage 13A and earlier regression suites pass.
+
+TTY reads remain outside signal interruption guarantees. Scheduler-aware TTY
+blocking, terminal-generated Ctrl-C, process groups, job control, shared
+memory, SIGPIPE, and broad POSIX interfaces are deferred.
+
 ---
 
 Phase 14 — musl and Static Userspace

@@ -308,9 +308,20 @@ through an 8-byte `uint32_t[2]` at `RDI`. Pipe descriptors use existing
 `read`, `write`, and `close`; the 4096-byte ring buffer, short I/O, EOF,
 `EPIPE`, failure rollback, descriptor inheritance, and scheduler wait/wakeup
 rules are specified in ADR-019. Pipe waits block processes and never busy-wait.
-Phase 13A is limited to anonymous pipes. Signals and shared memory are
-deferred to separately reviewed stages; this phase adds no `dup2`, signal
-interruption, shell redirection, or general libc/POSIX interfaces.
+Phase 13A added anonymous pipes. Stage 13B adds only the minimal signals
+specified in ADR-020: `SIGINT`, `SIGTERM`, and `SIGKILL`, with append-only
+syscalls 15–17. Signal return uses a fixed nine-byte user restorer stub
+(`B8 11 00 00 00 CD 80 0F 0B`); the kernel checks its bytes and executable
+mapping, active-handler state, and exact syscall return site. Signal state,
+delivery, and Ring 3 return selection are serialized with interrupts disabled.
+`sigaction` validates and copies input, copies the previous action out, then
+commits the new action, so output failure cannot partially change a
+disposition. Fork during an active handler fails with `EBUSY`; other fork and
+successful/failed exec signal-state rules are in ADR-020. Wait, sleep, and
+pipe blocking can be interrupted as specified there. TTY reads are not
+interruptible and no TTY blocking redesign is included. Shared memory,
+`SIGPIPE`, job control, terminal-generated signals, and broad libc/POSIX
+interfaces remain deferred.
 
 Userspace
 

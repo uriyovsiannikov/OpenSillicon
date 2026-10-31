@@ -7,6 +7,16 @@
 #define U_O_RDONLY 0U
 #define U_O_WRONLY 1U
 #define U_O_DIRECTORY 0x10000U
+#define U_SIGINT 2U
+#define U_SIGKILL 9U
+#define U_SIGTERM 15U
+#define U_SIG_DFL 0ULL
+#define U_SIG_IGN 1ULL
+
+struct u_sigaction {
+	uint64_t handler;
+	uint64_t restorer;
+};
 
 struct u_stat {
 	uint64_t size;
@@ -33,6 +43,11 @@ long u_exec_path(const char *path);
 long u_waitpid(uint64_t pid, uint8_t *status);
 long u_sleep_ticks(uint64_t ticks);
 long u_pipe(uint32_t descriptors[2]);
+long u_getpid(void);
+long u_kill(uint64_t pid, uint64_t signo);
+long u_sigaction(uint64_t signo, const struct u_sigaction *new_action,
+	struct u_sigaction *old_action);
+_Noreturn void u_sigreturn(void);
 _Noreturn void u_exit(uint64_t status);
 size_t u_strlen(const char *string);
 int u_streq(const char *left, const char *right);

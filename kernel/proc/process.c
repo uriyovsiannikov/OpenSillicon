@@ -8,6 +8,7 @@
 #include "kernel/pmm.h"
 #include "kernel/timer.h"
 #include "kernel/process.h"
+#include "kernel/syscall.h"
 #include "kernel/vmm.h"
 #include "kernel/vfs.h"
 
@@ -20,6 +21,9 @@
 #define PROCESS_ERROR_EAGAIN 11U
 #define PROCESS_ERROR_ENOMEM 12U
 #define PROCESS_ERROR_EINVAL 22U
+#define PROCESS_ERROR_EBUSY 16U
+#define PROCESS_ERROR_ESRCH 3U
+#define PROCESS_ERROR_EINTR 4U
 #define PROCESS_ERROR_EACCES 13U
 #define PROCESS_ERROR_ENOEXEC 8U
 #define PROCESS_ERROR_EIO 5U
@@ -32,6 +36,13 @@ enum process_state {
 	PROCESS_ZOMBIE
 };
 
+enum process_block_reason {
+	PROCESS_BLOCK_NONE,
+	PROCESS_BLOCK_WAIT,
+	PROCESS_BLOCK_SLEEP,
+	PROCESS_BLOCK_CHANNEL
+};
+
 struct process {
 	uint64_t id;
 	enum process_state state;
@@ -40,6 +51,9 @@ struct process {
 	uint64_t wait_status_address;
 	uint64_t wake_tick;
 	void *blocked_channel;
+	enum process_block_reason block_reason;
+	bool retry_pending;
+	bool retry_in_progress;
 	struct process *parent;
 	struct process *previous;
 	struct process *next;
@@ -49,6 +63,11 @@ struct process {
 	struct interrupt_frame *saved_frame;
 	uint64_t initial_user_stack;
 	struct fd_table descriptors;
+	struct os_signal_state signals;
+	bool signal_active;
+	uint64_t signal_restorer;
+	uint64_t signal_handler_stack;
+	struct interrupt_frame signal_saved_frame;
 };
 
 static struct process *process_head;
@@ -57,6 +76,81 @@ static uint64_t next_process_id = 1;
 static uint64_t user_preemptions;
 static uint64_t pipe_blocked_ticks;
 static bool initialized;
+
+static struct process *find_child(struct process *parent, uint64_t pid,
+	bool zombie_only);
+
+static bool
+process_has_pending_signal(const struct process *process)
+{
+	unsigned int signo;
+
+	for (signo = 1; signo < OS_SIGNAL_COUNT; signo++) {
+		if ((process->signals.pending & (1ULL << signo)) != 0 &&
+		    os_signal_valid(signo) &&
+		    (signo == OS_SIGKILL ||
+		    process->signals.actions[signo].handler != OS_SIGNAL_IGNORE))
+			return true;
+	}
+	return false;
+}
+
+static void
+process_set_interrupted_result(struct process *process)
+{
+	process->saved_frame->rax = PROCESS_ERROR_EINTR;
+	process->saved_frame->rflags |= 1U;
+	process->waiting_for = 0;
+	process->wait_status_address = 0;
+	process->wake_tick = 0;
+	process->blocked_channel = NULL;
+	process->block_reason = PROCESS_BLOCK_NONE;
+	process->retry_pending = false;
+	process->retry_in_progress = false;
+	process->state = PROCESS_READY;
+}
+
+static void
+process_wake_retry(struct process *process)
+{
+	process->waiting_for = 0;
+	process->wait_status_address = 0;
+	process->block_reason = PROCESS_BLOCK_NONE;
+	process->retry_pending = true;
+	process->state = PROCESS_READY;
+	if (process->saved_frame->rip >= 2)
+		process->saved_frame->rip -= 2;
+}
+
+static void
+process_wake_for_signal(struct process *process)
+{
+	if (process->state != PROCESS_BLOCKED ||
+	    process->block_reason == PROCESS_BLOCK_NONE)
+		return;
+	if (process->block_reason == PROCESS_BLOCK_WAIT &&
+	    find_child(process, process->waiting_for, true) != NULL) {
+		process_wake_retry(process);
+		return;
+	}
+	if (process->block_reason == PROCESS_BLOCK_SLEEP &&
+	    timer_ticks() >= process->wake_tick) {
+		process->wake_tick = 0;
+		process->block_reason = PROCESS_BLOCK_NONE;
+		process->state = PROCESS_READY;
+		return;
+	}
+	process_set_interrupted_result(process);
+}
+
+void
+process_syscall_retry_begin(void)
+{
+	if (current_process == NULL)
+		return;
+	current_process->retry_in_progress = current_process->retry_pending;
+	current_process->retry_pending = false;
+}
 
 static uint64_t
 process_kernel_stack_top(const struct process *process)
@@ -256,6 +350,207 @@ process_current_pid(void)
 }
 
 uint64_t
+process_kill(uint64_t pid, unsigned int signo)
+{
+	struct process *process;
+
+	if (pid == 0 || (int64_t)pid < 0)
+		return PROCESS_ERROR_EINVAL;
+	if (!os_signal_valid(signo))
+		return PROCESS_ERROR_EINVAL;
+	if (process_head == NULL)
+		return PROCESS_ERROR_ESRCH;
+	process = process_head;
+	do {
+		if (process->id == pid && process->state != PROCESS_ZOMBIE) {
+			if (signo != OS_SIGKILL &&
+			    process->signals.actions[signo].handler ==
+			    OS_SIGNAL_IGNORE)
+				return 0;
+			(void)os_signal_queue(&process->signals, signo);
+			process_wake_for_signal(process);
+			return 0;
+		}
+		process = process->next;
+	} while (process != process_head);
+	return PROCESS_ERROR_ESRCH;
+}
+
+struct interrupt_frame *
+process_sigaction(struct interrupt_frame *frame, unsigned int signo,
+	uint64_t new_address, uint64_t old_address, uint64_t *error)
+{
+	static const uint8_t restorer_bytes[] = {
+		0xb8, 0x11, 0x00, 0x00, 0x00, 0xcd, 0x80, 0x0f, 0x0b
+	};
+	struct os_signal_action new_action;
+	struct os_signal_action old_action;
+	uint8_t actual_restorer[sizeof(restorer_bytes)];
+	struct process *process = current_process;
+	size_t i;
+
+	if (process == NULL || !os_signal_valid(signo) ||
+	    (new_address == 0 && old_address == 0)) {
+		*error = PROCESS_ERROR_EINVAL;
+		return frame;
+	}
+	if (old_address != 0 && !vmm_validate_user_write(process->address_space,
+	    old_address, sizeof(old_action))) {
+		*error = PROCESS_ERROR_EFAULT;
+		return frame;
+	}
+	if (new_address != 0 && !vmm_copy_from_user(process->address_space,
+	    &new_action, new_address, sizeof(new_action))) {
+		*error = PROCESS_ERROR_EFAULT;
+		return frame;
+	}
+	if (new_address != 0 && !os_signal_action_valid(signo, &new_action)) {
+		*error = PROCESS_ERROR_EINVAL;
+		return frame;
+	}
+	if (new_address != 0 && new_action.handler > OS_SIGNAL_IGNORE &&
+	    (!vmm_validate_user_exec(process->address_space, new_action.handler, 1) ||
+	    !vmm_validate_user_exec(process->address_space, new_action.restorer,
+	    sizeof(restorer_bytes)) ||
+	    !vmm_copy_from_user(process->address_space, actual_restorer,
+	    new_action.restorer, sizeof(actual_restorer)))) {
+		*error = PROCESS_ERROR_EINVAL;
+		return frame;
+	}
+	if (new_address != 0 && new_action.handler > OS_SIGNAL_IGNORE) {
+		for (i = 0; i < sizeof(restorer_bytes); i++) {
+			if (actual_restorer[i] != restorer_bytes[i]) {
+				*error = PROCESS_ERROR_EINVAL;
+				return frame;
+			}
+		}
+	}
+	old_action = process->signals.actions[signo];
+	if (old_address != 0 && !vmm_copy_to_user(process->address_space,
+	    old_address, &old_action, sizeof(old_action))) {
+		*error = PROCESS_ERROR_EFAULT;
+		return frame;
+	}
+	if (new_address != 0)
+		(void)os_signal_set_action(&process->signals, signo, &new_action, NULL);
+	frame->rax = 0;
+	*error = 0;
+	return frame;
+}
+
+struct interrupt_frame *
+process_prepare_user_return(struct interrupt_frame *frame)
+{
+	static const uint8_t restorer_bytes[] = {
+		0xb8, 0x11, 0x00, 0x00, 0x00, 0xcd, 0x80, 0x0f, 0x0b
+	};
+
+	while (frame != NULL && (frame->cs & 3U) == 3U &&
+	    current_process != NULL) {
+		struct os_signal_action action;
+		unsigned int signo;
+
+		if (current_process->retry_pending)
+			return frame;
+		current_process->retry_in_progress = false;
+		signo = os_signal_take(&current_process->signals);
+		if (signo == 0)
+			return frame;
+		action = current_process->signals.actions[signo];
+		if (action.handler == OS_SIGNAL_IGNORE && signo != OS_SIGKILL)
+			continue;
+		if (signo == OS_SIGKILL || action.handler == OS_SIGNAL_DEFAULT) {
+			frame = process_exit(frame, 128U + signo);
+			continue;
+		}
+		if (current_process->signal_active) {
+			(void)os_signal_queue(&current_process->signals, signo);
+			return frame;
+		}
+		{
+			uint64_t old_stack = frame->user_rsp;
+			uint64_t new_stack;
+			uint64_t return_address = action.restorer;
+			uint8_t actual_restorer[sizeof(restorer_bytes)];
+			size_t i;
+
+			if (!os_signal_user_stack(old_stack, &new_stack)) {
+				frame = process_exit(frame, 128U + 14U);
+				continue;
+			}
+			if (!vmm_validate_user_write(current_process->address_space,
+			    new_stack, (size_t)(old_stack - new_stack)) ||
+			    !vmm_validate_user_exec(current_process->address_space,
+			    action.handler, 1) ||
+			    !vmm_validate_user_exec(current_process->address_space,
+			    action.restorer, sizeof(restorer_bytes)) ||
+			    !vmm_copy_from_user(current_process->address_space,
+			    actual_restorer, action.restorer, sizeof(actual_restorer))) {
+				frame = process_exit(frame, 128U + 14U);
+				continue;
+			}
+			for (i = 0; i < sizeof(restorer_bytes); i++) {
+				if (actual_restorer[i] != restorer_bytes[i])
+					break;
+			}
+			if (i != sizeof(restorer_bytes) ||
+			    !vmm_copy_to_user(current_process->address_space, new_stack,
+			    &return_address, sizeof(return_address))) {
+				frame = process_exit(frame, 128U + 14U);
+				continue;
+			}
+			current_process->signal_saved_frame = *frame;
+			current_process->signal_active = true;
+			current_process->signal_restorer = action.restorer;
+			current_process->signal_handler_stack = new_stack;
+			frame->rip = action.handler;
+			frame->rdi = signo;
+			frame->user_rsp = new_stack;
+			return frame;
+		}
+	}
+	return frame;
+}
+
+struct interrupt_frame *
+process_sigreturn(struct interrupt_frame *frame, uint64_t *error)
+{
+	static const uint8_t restorer_bytes[] = {
+		0xb8, 0x11, 0x00, 0x00, 0x00, 0xcd, 0x80, 0x0f, 0x0b
+	};
+	struct process *process = current_process;
+	uint8_t actual_restorer[sizeof(restorer_bytes)];
+	size_t i;
+
+	if (process == NULL || !process->signal_active) {
+		*error = PROCESS_ERROR_EINVAL;
+		return frame;
+	}
+	if (process->signal_restorer > UINT64_MAX - 7 ||
+	    frame->vector != 128U ||
+	    frame->rax != SYSCALL_SIGRETURN ||
+	    frame->rip != process->signal_restorer + 7 ||
+	    frame->user_rsp != process->signal_handler_stack + 8 ||
+	    !vmm_validate_user_exec(process->address_space,
+	    process->signal_restorer, sizeof(restorer_bytes)) ||
+	    !vmm_copy_from_user(process->address_space, actual_restorer,
+	    process->signal_restorer, sizeof(actual_restorer)))
+		return process_exit(frame, 128U + 14U);
+	for (i = 0; i < sizeof(restorer_bytes); i++) {
+		if (actual_restorer[i] != restorer_bytes[i])
+			return process_exit(frame, 128U + 14U);
+	}
+	process->signal_active = false;
+	process->signal_restorer = 0;
+	process->signal_handler_stack = 0;
+	process->block_reason = PROCESS_BLOCK_NONE;
+	process->retry_pending = false;
+	process->retry_in_progress = false;
+	*error = 0;
+	return &process->signal_saved_frame;
+}
+
+uint64_t
 process_user_preemptions(void)
 {
 	return user_preemptions;
@@ -297,9 +592,16 @@ process_run_elf_internal(const void *image, size_t image_size,
 	root->wait_status_address = 0;
 	root->wake_tick = 0;
 	root->blocked_channel = NULL;
+	root->block_reason = PROCESS_BLOCK_NONE;
+	root->retry_pending = false;
+	root->retry_in_progress = false;
 	root->parent = NULL;
 	root->address_space = &root->loaded_image->address_space;
 	root->saved_frame = NULL;
+	os_signal_state_init(&root->signals);
+	root->signal_active = false;
+	root->signal_restorer = 0;
+	root->signal_handler_stack = 0;
 	/* The zeroed stack page supplies argc, argv[0], and envp for init. */
 	root->initial_user_stack = startup_stack ? PROCESS_STACK_TOP - 3 *
 	    sizeof(uint64_t) : PROCESS_STACK_TOP;
@@ -405,6 +707,10 @@ process_fork(struct interrupt_frame *frame, uint64_t *error)
 		*error = PROCESS_ERROR_ECHILD;
 		return frame;
 	}
+	if (current_process->signal_active) {
+		*error = PROCESS_ERROR_EBUSY;
+		return frame;
+	}
 	child = kheap_alloc(sizeof(*child));
 	if (child == NULL) {
 		*error = PROCESS_ERROR_ENOMEM;
@@ -430,9 +736,16 @@ process_fork(struct interrupt_frame *frame, uint64_t *error)
 	child->wait_status_address = 0;
 	child->wake_tick = 0;
 	child->blocked_channel = NULL;
+	child->block_reason = PROCESS_BLOCK_NONE;
+	child->retry_pending = false;
+	child->retry_in_progress = false;
 	child->parent = current_process;
 	child->loaded_image = NULL;
 	child->initial_user_stack = current_process->initial_user_stack;
+	os_signal_fork_state(&current_process->signals, &child->signals);
+	child->signal_active = false;
+	child->signal_restorer = 0;
+	child->signal_handler_stack = 0;
 	if (!fd_table_clone(&child->descriptors, &current_process->descriptors)) {
 		(void)address_space_destroy_with_pages(child->address_space);
 		(void)kheap_free(child->address_space);
@@ -523,6 +836,13 @@ replace_process_image(struct interrupt_frame *frame, const void *image,
 	process->loaded_image = replacement;
 	process->address_space = &replacement->address_space;
 	process->initial_user_stack = PROCESS_STACK_TOP;
+	os_signal_exec_state(&process->signals);
+	process->signal_active = false;
+	process->signal_restorer = 0;
+	process->signal_handler_stack = 0;
+	process->block_reason = PROCESS_BLOCK_NONE;
+	process->retry_pending = false;
+	process->retry_in_progress = false;
 	stack_top = process_kernel_stack_top(process);
 	new_frame = (struct interrupt_frame *)(stack_top - sizeof(*new_frame));
 	initialize_user_frame(new_frame, new_entry, PROCESS_STACK_TOP);
@@ -677,10 +997,20 @@ process_waitpid(struct interrupt_frame *frame, uint64_t *error)
 		frame->rflags &= ~1ULL;
 		return frame;
 	}
+	if (process_has_pending_signal(parent)) {
+		frame->rax = PROCESS_ERROR_EINTR;
+		frame->rflags |= 1U;
+		parent->retry_in_progress = false;
+		*error = 0;
+		return frame;
+	}
 	parent->state = PROCESS_BLOCKED;
 	parent->saved_frame = frame;
 	parent->waiting_for = pid;
 	parent->wait_status_address = frame->rsi;
+	parent->block_reason = PROCESS_BLOCK_WAIT;
+	parent->retry_pending = false;
+	parent->retry_in_progress = false;
 	*error = 0;
 	return schedule_from(parent);
 }
@@ -706,9 +1036,19 @@ process_sleep_ticks(struct interrupt_frame *frame, uint64_t ticks,
 		*error = PROCESS_ERROR_EINVAL;
 		return frame;
 	}
+	if (process_has_pending_signal(current_process)) {
+		frame->rax = PROCESS_ERROR_EINTR;
+		frame->rflags |= 1U;
+		current_process->retry_in_progress = false;
+		*error = 0;
+		return frame;
+	}
 	current_process->wake_tick = now + ticks;
 	current_process->state = PROCESS_BLOCKED;
 	current_process->saved_frame = frame;
+	current_process->block_reason = PROCESS_BLOCK_SLEEP;
+	current_process->retry_pending = false;
+	current_process->retry_in_progress = false;
 	frame->rax = 0;
 	frame->rflags &= ~1ULL;
 	*error = 0;
@@ -723,9 +1063,18 @@ process_block_on_channel(struct interrupt_frame *frame, void *channel)
 		frame->rflags |= 1U;
 		return frame;
 	}
+	if (process_has_pending_signal(current_process)) {
+		frame->rax = PROCESS_ERROR_EINTR;
+		frame->rflags |= 1U;
+		current_process->retry_in_progress = false;
+		return frame;
+	}
 	current_process->blocked_channel = channel;
 	current_process->state = PROCESS_BLOCKED;
 	current_process->saved_frame = frame;
+	current_process->block_reason = PROCESS_BLOCK_CHANNEL;
+	current_process->retry_pending = false;
+	current_process->retry_in_progress = false;
 	return schedule_from(current_process);
 }
 
@@ -741,9 +1090,7 @@ process_wake_channel(void *channel)
 		if (process->state == PROCESS_BLOCKED &&
 		    process->blocked_channel == channel) {
 			process->blocked_channel = NULL;
-			if (process->saved_frame->rip >= 2)
-				process->saved_frame->rip -= 2;
-			process->state = PROCESS_READY;
+			process_wake_retry(process);
 		}
 		process = process->next;
 	} while (process != process_head);
@@ -765,6 +1112,7 @@ process_timer_wakeup(uint64_t ticks)
 		    ticks >= process->wake_tick) {
 			process->wake_tick = 0;
 			process->blocked_channel = NULL;
+			process->block_reason = PROCESS_BLOCK_NONE;
 			process->state = PROCESS_READY;
 		}
 		process = process->next;
@@ -796,10 +1144,7 @@ process_exit(struct interrupt_frame *frame, uint64_t status)
 	if (parent != NULL && parent->state == PROCESS_BLOCKED &&
 	    (parent->waiting_for == PROCESS_WAIT_ANY ||
 	    parent->waiting_for == process->id)) {
-		parent->saved_frame->rip -= 2;
-		parent->waiting_for = 0;
-		parent->wait_status_address = 0;
-		parent->state = PROCESS_READY;
+		process_wake_retry(parent);
 	}
 	return schedule_from(process);
 }

@@ -33,6 +33,18 @@ long u_waitpid(uint64_t pid, uint8_t *status)
 long u_sleep_ticks(uint64_t ticks) { return syscall3(13, ticks, 0, 0); }
 long u_pipe(uint32_t descriptors[2])
 { return syscall3(14, (uintptr_t)descriptors, 0, 0); }
+long u_getpid(void) { return syscall3(3, 0, 0, 0); }
+long u_kill(uint64_t pid, uint64_t signo)
+{ return syscall3(15, pid, signo, 0); }
+long u_sigaction(uint64_t signo, const struct u_sigaction *new_action,
+	struct u_sigaction *old_action)
+{ return syscall3(16, signo, (uintptr_t)new_action, (uintptr_t)old_action); }
+__attribute__((naked, noreturn)) void u_sigreturn(void)
+{
+	__asm__ (".byte 0xb8, 0x11, 0x00, 0x00, 0x00\n"
+	    ".byte 0xcd, 0x80\n"
+	    ".byte 0x0f, 0x0b\n");
+}
 _Noreturn void u_exit(uint64_t status)
 {
 	(void)syscall3(1, status, 0, 0);

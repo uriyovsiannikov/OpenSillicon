@@ -42,7 +42,7 @@ ACPICA_CFLAGS := $(KERNEL_CFLAGS) -Wno-unused-parameter -fno-builtin \
 	interrupt-test vmm-protection-test timer-test clean acpica-check acpi-test \
 	pci-test block-test phase10-test phase11-test terminal-test \
 	terminal-qemu-test user-path-test phase12-qemu-test phase12-test \
-	pipe-test phase13a-test refresh-test-root
+	pipe-test phase13a-test signal-state-test phase13b-test refresh-test-root
 
 all: kernel
 
@@ -144,9 +144,13 @@ $(BUILD_DIR)/elf.o: kernel/elf.c include/kernel/elf.h include/kernel/vmm.h \
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/process.o: kernel/proc/process.c include/kernel/process.h \
-		include/kernel/elf.h include/kernel/vmm.h include/kernel/heap.h \
+		include/kernel/signal_state.h include/kernel/elf.h include/kernel/vmm.h include/kernel/heap.h \
 		include/kernel/pmm.h include/kernel/fd.h include/kernel/timer.h \
 		include/arch/x86_64/gdt.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/signal_state.o: kernel/proc/signal_state.c \
+		include/kernel/signal_state.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/interrupts.o: kernel/arch/x86_64/interrupts.c \
@@ -243,6 +247,29 @@ $(BUILD_DIR)/user_pipe_test.o: user/pipe_test.c user/include/os.h | $(BUILD_DIR)
 
 $(BUILD_DIR)/user_pipe_exec_child.o: user/pipe_exec_child.c user/include/os.h | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) -Iuser -c $< -o $@
+
+$(BUILD_DIR)/user_signal_test.o: user/signal_test.c user/include/os.h | $(BUILD_DIR)
+	$(CC) $(USER_CFLAGS) -mno-sse -mno-sse2 -msoft-float \
+		-Iuser -c $< -o $@
+
+$(BUILD_DIR)/signal_test.elf: $(BUILD_DIR)/user_start.o \
+		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
+		$(BUILD_DIR)/user_signal_test.o user/c_linker.ld
+	$(LD) $(USER_C_LDFLAGS) $(BUILD_DIR)/user_start.o \
+		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
+		$(BUILD_DIR)/user_signal_test.o -o $@
+
+$(BUILD_DIR)/user_signal_exec_child.o: user/signal_exec_child.c \
+		user/include/os.h | $(BUILD_DIR)
+	$(CC) $(USER_CFLAGS) -mno-sse -mno-sse2 -msoft-float \
+		-Iuser -c $< -o $@
+
+$(BUILD_DIR)/signal_exec_child.elf: $(BUILD_DIR)/user_start.o \
+		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
+		$(BUILD_DIR)/user_signal_exec_child.o user/c_linker.ld
+	$(LD) $(USER_C_LDFLAGS) $(BUILD_DIR)/user_start.o \
+		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
+		$(BUILD_DIR)/user_signal_exec_child.o -o $@
 
 $(BUILD_DIR)/pipe_test.elf: $(BUILD_DIR)/user_start.o $(BUILD_DIR)/user_os.o \
 		$(BUILD_DIR)/user_path.o $(BUILD_DIR)/user_pipe_test.o user/c_linker.ld
@@ -378,11 +405,15 @@ $(BUILD_DIR)/exec_path_child.elf: $(BUILD_DIR)/exec_path_child.o user/exec_child
 
 $(BUILD_DIR)/initramfs.cpio: $(shell find initramfs -type f -o -type d) \
 		$(BUILD_DIR)/exec_path_child.elf $(BUILD_DIR)/pipe_test.elf \
-		$(BUILD_DIR)/pipe_exec_child.elf tools/mkinitramfs.py
+		$(BUILD_DIR)/pipe_exec_child.elf $(BUILD_DIR)/signal_test.elf \
+		$(BUILD_DIR)/signal_exec_child.elf \
+		tools/mkinitramfs.py
 	python3 tools/mkinitramfs.py initramfs $@ \
 		--file bin/exec_path_child=$(BUILD_DIR)/exec_path_child.elf \
 		--file bin/pipe_test=$(BUILD_DIR)/pipe_test.elf \
-		--file bin/pipe_exec_child=$(BUILD_DIR)/pipe_exec_child.elf
+		--file bin/pipe_exec_child=$(BUILD_DIR)/pipe_exec_child.elf \
+		--file bin/signal_test=$(BUILD_DIR)/signal_test.elf \
+		--file bin/signal_exec_child=$(BUILD_DIR)/signal_exec_child.elf
 
 KERNEL_OBJECTS := $(BUILD_DIR)/main.o $(BUILD_DIR)/boot.o $(BUILD_DIR)/pmm.o \
 	$(BUILD_DIR)/vmm.o $(BUILD_DIR)/heap.o $(BUILD_DIR)/log.o \
@@ -400,6 +431,7 @@ KERNEL_OBJECTS := $(BUILD_DIR)/main.o $(BUILD_DIR)/boot.o $(BUILD_DIR)/pmm.o \
 	$(BUILD_DIR)/user_entry.o \
 	$(BUILD_DIR)/user_entry_c.o $(BUILD_DIR)/user_test_blob.o \
 	$(BUILD_DIR)/elf.o $(BUILD_DIR)/elf_test_blob.o $(BUILD_DIR)/process.o \
+	$(BUILD_DIR)/signal_state.o \
 	$(BUILD_DIR)/string.o $(BUILD_DIR)/vfs.o $(BUILD_DIR)/ramfs.o \
 	$(BUILD_DIR)/initramfs.o $(BUILD_DIR)/silliconfs.o \
 	$(BUILD_DIR)/vfs_test_blob.o $(ACPICA_OBJECTS)
@@ -558,8 +590,18 @@ $(BUILD_DIR)/pipe_test: kernel/ipc/pipe.c kernel/ipc/pipe_buffer.c kernel/fd.c \
 pipe-test: $(BUILD_DIR)/pipe_test
 	$(BUILD_DIR)/pipe_test
 
+$(BUILD_DIR)/signal_state_test: kernel/proc/signal_state.c \
+		tests/signal_state_test.c include/kernel/signal_state.h | $(BUILD_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude \
+		kernel/proc/signal_state.c tests/signal_state_test.c -o $@
+
+signal-state-test: $(BUILD_DIR)/signal_state_test
+	$(BUILD_DIR)/signal_state_test
+
 phase13a-test: pipe-test phase12-test process-test vfs-smoke-test \
 		timer-test fault-test interrupt-test vmm-protection-test acpica-check
+
+phase13b-test: signal-state-test phase13a-test
 
 vfs-smoke-test: iso $(BUILD_DIR)/test-root.img
 	@set +e; timeout 10s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \
@@ -591,6 +633,8 @@ process-test: iso $(BUILD_DIR)/test-root.img
 	@grep -F 'OpenSillicon: ELF64 process, fork, wait, and cleanup passed' \
 		$(BUILD_DIR)/process-serial.log
 	@grep -F 'OpenSillicon: anonymous pipe fork, exec, and blocking tests passed' \
+		$(BUILD_DIR)/process-serial.log
+	@grep -F 'OpenSillicon: signal delivery, sigreturn, and blocked syscall ' \
 		$(BUILD_DIR)/process-serial.log
 	@grep -E 'OpenSillicon: pipe blocked timer ticks [1-9][0-9]*' \
 		$(BUILD_DIR)/process-serial.log

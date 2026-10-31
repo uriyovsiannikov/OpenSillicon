@@ -29,6 +29,7 @@
 #define USER_TEST_CODE 0x400000ULL
 #define USER_TEST_FAULT (USER_TEST_CODE + 0x400ULL)
 #define USER_TEST_STACK (0x00007ffffffff000ULL - 0x2000ULL)
+#define USER_TEST_END 0x00007ffffffff000ULL
 #define PAGE_SIZE 4096U
 #define MAIN_EEXIST 17
 #define MAIN_ENOTDIR 20
@@ -44,6 +45,7 @@ run_user_test(void)
 	struct address_space space;
 	uint64_t code_page;
 	uint64_t stack_page;
+	uint64_t data_page;
 	uint64_t image_size = (uintptr_t)_binary_user_test_bin_end -
 	    (uintptr_t)_binary_user_test_bin_start;
 	uint64_t status;
@@ -53,6 +55,7 @@ run_user_test(void)
 
 	if (image_size == 0 || image_size > PAGE_SIZE ||
 	    !pmm_alloc_page(&code_page) || !pmm_alloc_page(&stack_page) ||
+	    !pmm_alloc_page(&data_page) ||
 	    !address_space_create(&space)) {
 		klog("OpenSillicon: user test allocation failed\n");
 		kernel_halt();
@@ -62,7 +65,15 @@ run_user_test(void)
 		code[i] = _binary_user_test_bin_start[i];
 	if (!vmm_map_page(&space, USER_TEST_CODE, code_page,
 	    VMM_USER | VMM_EXEC) || !vmm_map_page(&space, USER_TEST_STACK,
-	    stack_page, VMM_USER | VMM_WRITE) || !address_space_activate(&space)) {
+	    stack_page, VMM_USER | VMM_WRITE) ||
+	    !vmm_map_page(&space, USER_TEST_CODE + PAGE_SIZE, data_page,
+	    VMM_USER | VMM_WRITE) ||
+	    !vmm_validate_user_exec(&space, USER_TEST_CODE, 1) ||
+	    vmm_validate_user_exec(&space, USER_TEST_STACK, 1) ||
+	    vmm_validate_user_exec(&space, USER_TEST_CODE + PAGE_SIZE - 1, 2) ||
+	    vmm_validate_user_exec(&space, 0xffffffff80000000ULL, 1) ||
+	    vmm_validate_user_exec(&space, USER_TEST_END - 1, 2) ||
+	    !address_space_activate(&space)) {
 		klog("OpenSillicon: user test mapping failed\n");
 		kernel_halt();
 	}
@@ -79,9 +90,12 @@ run_user_test(void)
 	if (status != 0x10eU ||
 	    !address_space_activate(vmm_kernel_address_space()) ||
 	    !vmm_unmap_page(&space, USER_TEST_CODE, &unmapped) ||
-	    unmapped != code_page || !vmm_unmap_page(&space, USER_TEST_STACK,
+	    unmapped != code_page ||
+	    !vmm_unmap_page(&space, USER_TEST_CODE + PAGE_SIZE, &unmapped) ||
+	    unmapped != data_page || !vmm_unmap_page(&space, USER_TEST_STACK,
 	    &unmapped) || unmapped != stack_page || !address_space_destroy(&space) ||
-	    !pmm_free_page(code_page) || !pmm_free_page(stack_page)) {
+	    !pmm_free_page(code_page) || !pmm_free_page(data_page) ||
+	    !pmm_free_page(stack_page)) {
 		klog("OpenSillicon: user test failed, status ");
 		klog_u64(status);
 		klog("\n");
@@ -148,6 +162,21 @@ run_pipe_test(void)
 	klog_u64(process_pipe_blocked_ticks());
 	klog("\n");
 	klog("OpenSillicon: anonymous pipe fork, exec, and blocking tests passed\n");
+}
+
+static void
+run_signal_test(void)
+{
+	uint64_t status = process_run_path("/init/bin/signal_test", false);
+
+	if (status != 0) {
+		klog("OpenSillicon: user signal handler test failed, status ");
+		klog_u64(status);
+		klog("\n");
+		kernel_halt();
+	}
+	klog("OpenSillicon: signal delivery, sigreturn, and blocked syscall "
+	    "interruption passed\n");
 }
 
 static void
@@ -498,6 +527,7 @@ _start(void)
 	run_elf_test();
 	run_vfs_test();
 	run_pipe_test();
+	run_signal_test();
 	if (block_flush(&ahci_block_device) != 0) {
 		klog("OpenSillicon: root block flush failed\n");
 		kernel_halt();

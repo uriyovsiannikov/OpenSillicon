@@ -71,6 +71,7 @@ syscall_interrupt(struct interrupt_frame *frame)
 	struct fd_table *table;
 	size_t amount;
 
+	process_syscall_retry_begin();
 	frame->rflags &= ~1ULL;
 	switch (number) {
 	case SYSCALL_GET_ABI_VERSION:
@@ -181,6 +182,24 @@ syscall_interrupt(struct interrupt_frame *frame)
 			}
 			frame->rax = 0;
 		}
+		break;
+	case SYSCALL_KILL:
+		error = frame->rsi > UINT32_MAX ? ERRNO_EINVAL :
+		    process_kill(frame->rdi, (unsigned int)frame->rsi);
+		if (error != 0)
+			syscall_error(frame, error);
+		else
+			frame->rax = 0;
+		break;
+	case SYSCALL_SIGACTION:
+		if (frame->rdi > UINT32_MAX)
+			syscall_error(frame, ERRNO_EINVAL);
+		else
+			frame = process_sigaction(frame, (unsigned int)frame->rdi,
+			    frame->rsi, frame->rdx, &error);
+		break;
+	case SYSCALL_SIGRETURN:
+		frame = process_sigreturn(frame, &error);
 		break;
 	case SYSCALL_OPEN:
 		{

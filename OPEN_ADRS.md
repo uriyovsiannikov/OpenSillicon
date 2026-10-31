@@ -48,6 +48,11 @@ unchanged and releases all allocated endpoint references. Pipe reads and
 writes use existing syscalls 9 and 2, respectively. No existing syscall
 number or behavior changes, and the ABI version remains 1.
 
+Stage 13B appends syscall 15 (`kill(pid, signo)`), 16
+(`sigaction(signo, new_action, old_action)`), and 17 (`sigreturn()`). The
+exact signal contract, including restorer bytes, delivery atomicity, and
+transactional action updates, is defined by ADR-020. ABI version remains 1.
+
 Rationale: the interrupt gate offers a simple, debuggable entry path while
 Ring 3 support is new. The explicit CF error convention distinguishes errors
 from successful values without reserving a range of successful returns.
@@ -394,8 +399,9 @@ descriptors retain their existing serial behavior.
 
 The scheduler remains single-CPU. LAPIC timer interrupts preempt userspace by
 saving and restoring the complete user interrupt frame on each process's
-kernel stack. Kernel threads continue to use cooperative Round Robin. Signals,
-shared memory, and multithreaded processes remain deferred.
+kernel stack. Kernel threads continue to use cooperative Round Robin. Stage
+13B adds only the signals defined by ADR-020. Shared memory and
+multithreaded processes remain deferred.
 
 Phase 13A adds anonymous pipes only. Each pipe has a bounded 4096-byte kernel
 ring buffer and distinct read and write open-file objects. Descriptor
@@ -419,10 +425,10 @@ request. A blocked operation retries after wakeup. Pipes are not seekable.
 The process syscall numbers append to ABI v1: 4 (`fork`), 5 (`exec`), and 6
 (`waitpid`). `wait()` uses `waitpid(-1, status)`. PID allocation is monotonic
 for the lifetime of the kernel and does not reuse identifiers. Syscall 14 is
-reserved for `pipe` as described in ADR-001. Signals and shared memory remain
-deferred to separately reviewed stages; no signal interruption, `dup2`,
-shared-memory mapping, process groups, or libc/POSIX expansion is part of
-Phase 13A.
+reserved for `pipe` as described in ADR-001. Stage 13B adds only the signals
+defined by ADR-020; shared memory remains deferred. There is no `dup2`,
+shared-memory mapping, process groups, or broad libc/POSIX expansion in
+Phase 13.
 
 Rationale: eager copying keeps address-space ownership explicit before
 copy-on-write exists. Direct-child waits and a memory-buffer `exec` avoid
@@ -450,14 +456,14 @@ Questions:
 Use practical Unix/POSIX behavior as a reference without promising full POSIX compliance.
 
 These decisions resolve process creation, replacement, exit, wait, descriptor
-inheritance, and Phase 13A anonymous pipe behavior. Signal semantics and
-shared-memory lifecycle remain open for later milestones.
+inheritance, Phase 13A anonymous pipe behavior, and Stage 13B signal semantics.
+Shared-memory lifecycle remains open for a later milestone.
 
 ---
 
 ADR-007 — Synchronization and Interrupt Context
 
-Status: Accepted for Phase 13A pipe waits
+Status: Accepted for Phase 13A pipe waits and Stage 13B signal wakeups
 
 Pipe operations execute on the single active CPU and are serialized while
 kernel syscall handling has interrupts disabled. A blocked pipe operation
@@ -466,8 +472,11 @@ to leave the runnable set. Data arrival, buffer space, and final endpoint
 closure wake the corresponding waiters. Wakeups only change process state;
 pipe operations retry in syscall context after they run again. No spinning,
 sleeping from interrupt context, or SMP-safety guarantee is introduced. This
-decision is limited to anonymous pipes. A future SMP or general kernel-thread
-synchronization design requires a separate decision.
+decision covers anonymous pipes and serialized signal state/wakeup on the
+single active CPU. Signal checks, state updates, and interrupt-frame return
+selection occur with interrupts disabled; a signal wake is distinct from a
+resource-ready retry. A future SMP or general kernel-thread synchronization
+design requires a separate decision.
 
 Define synchronization primitives.
 
@@ -549,12 +558,13 @@ process or terminal semantics. Phase 12 init and shell are freestanding,
 statically linked ELF64 programs using the syscall ABI directly. Broader
 POSIX compatibility remains open and out of scope.
 
-Phase 13A's supported userspace IPC subset is syscall 14 `pipe(fds)` plus
-existing `read`, `write`, `close`, `fork`, `exec_path`, and `waitpid` behavior.
-It supports anonymous pipes and inherited descriptors only. This is not a
-general POSIX compatibility claim. Signals, shared memory, `dup2`, process
-groups, shell pipelines/redirection, libc, and unrelated interfaces are
-deferred.
+Phase 13's supported userspace subset includes Stage 13A anonymous pipes and
+the minimal Stage 13B signal calls 15–17 defined in ADR-020. Signal behavior
+is limited to `SIGINT`, `SIGTERM`, and `SIGKILL`; it does not claim general
+POSIX compatibility. Shared memory, `dup2`, process groups, shell
+pipelines/redirection, libc, and unrelated interfaces are deferred. TTY reads
+are not interruptible; scheduler-aware TTY blocking requires a separate
+decision.
 
 Define the practical POSIX subset.
 
@@ -929,6 +939,78 @@ invalid and cross-page output pointers, failed user copies without data loss,
 blocked-reader/writer wakeups, process cleanup, and absence of busy-spinning.
 
 ---
+
+ADR-020 — Stage 13B Minimal Signals
+
+Status: Accepted for Stage 13B implementation
+
+Stage 13B appends syscall 15 `kill(pid, signo)`, 16
+`sigaction(signo, new_action, old_action)`, and 17 `sigreturn()` to ABI v1.
+Existing syscall numbers and behavior do not change. The supported signals
+are `SIGINT` (2), `SIGKILL` (9), and `SIGTERM` (15). All default to process
+termination with status `128 + signo`; INT and TERM may be ignored or caught.
+KILL cannot be caught or ignored. Pending signals coalesce. `kill` accepts a
+positive PID only; in the absence of kernel identities and permission checks,
+any process may signal any live process. This is not a security boundary.
+
+`sigaction` uses an OpenSillicon structure of two `uint64_t` fields: handler
+then restorer. Handler 0 selects default and 1 selects ignore; other handler
+values are user handler entry addresses. KILL only accepts default. Both
+action pointers null is `EINVAL`. When both pointers are supplied, the kernel
+first validates both user ranges, copies `new_action` into a kernel local,
+snapshots the current action, copies that old action to `old_action`, and only
+then commits the new disposition. The copy-in precedes copy-out so aliased
+pointers have defined behavior. Any validation or copy failure leaves the
+disposition unchanged; `old_action` may contain the prior value only when the
+call succeeds. Invalid action structure pointers or output ranges return
+`EFAULT`; unsupported signal numbers, non-executable handler/restorer ranges,
+and restorer byte mismatches return `EINVAL`. Values outside the syscall's
+32-bit signal-number range also return `EINVAL` rather than truncating.
+
+Caught delivery occurs only on a Ring 3 return. The kernel keeps the original
+interrupt frame in the owning process structure. The user stack receives one
+64-bit restorer return address; `RDI` receives the signal number and `RIP`
+receives the handler. Entry `RSP` is adjusted downward with checked arithmetic
+to satisfy SysV x86_64 function-entry alignment (`RSP % 16 == 8`). The full
+range from that slot through the interrupted stack pointer must be writable
+user memory. Insufficient or invalid stack space terminates the process using
+the existing user-fault exit convention. Only one handler may be active;
+additional caught signals remain pending. Fork while a handler is active
+fails with `EBUSY` and creates no child.
+
+The restorer is an exact nine-byte executable stub at the registered restorer
+entry: bytes `B8 11 00 00 00 CD 80 0F 0B`. This is `mov eax,17`, `int 0x80`,
+`ud2`; the interrupt instruction begins at byte offset 5 and its following
+instruction address is offset 7. The kernel validates the bytes and
+executable mapping when installing the action, and revalidates them on
+`sigreturn`. A return is accepted only with an active handler, syscall number
+17, and saved user `RIP` exactly equal to restorer entry + 7. A wrong call
+site during an active handler terminates via the existing user-fault exit
+convention. Calling `sigreturn` without an active handler returns `EINVAL`.
+Valid return restores only the trusted kernel-side frame; there is no
+user-supplied context pointer.
+
+Pending-state changes, delivery decisions, disposition changes, block/wakeup
+state, and selection of the frame returned to Ring 3 are serialized with
+interrupts disabled on the single CPU. The return hook checks and consumes
+pending signals while interrupts are disabled immediately before returning a
+user frame. No maskable interrupt or other process syscall can run between
+that check and `iretq`; a signal arriving after `iretq` is handled on the next
+user interrupt/return boundary. Signal wakes are distinct from resource-ready
+retries. For waitpid and pipes, an already-completed operation wins; otherwise
+a caught signal returns `EINTR` without retry. An expired sleep deadline wins;
+otherwise sleep returns `EINTR` and clears its deadline. If resource readiness
+wakes a pipe operation first but the retry would block again, an already
+pending caught signal interrupts that new block. Ignored signals do not wake
+waiters. TTY reads are outside the interruption guarantee because they do not
+use scheduler-aware blocking; no TTY redesign is included.
+
+Fork outside a handler inherits dispositions and clears pending signals.
+Successful exec resets caught actions to default, preserves ignored actions,
+clears active-handler state, and preserves pending signals. Failed exec leaves
+all signal state unchanged. Shared memory, signal masks, nested handlers,
+SIGPIPE, terminal-generated signals, process groups, job control, and broad
+POSIX compatibility remain deferred.
 
 ADR Process
 

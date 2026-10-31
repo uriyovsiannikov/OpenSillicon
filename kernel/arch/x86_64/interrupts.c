@@ -82,14 +82,16 @@ interrupt_register_handler(uint8_t vector, interrupt_handler handler)
 struct interrupt_frame *
 interrupt_dispatch(struct interrupt_frame *frame)
 {
+	struct interrupt_frame *next;
+
 	if (frame == NULL) {
 		klog("OpenSillicon panic: missing interrupt frame\n");
 		kernel_halt();
 	}
 	if (frame->vector < 32) {
-		if ((frame->cs & 3U) == 3U) {
-			return process_user_exception(frame);
-		}
+		if ((frame->cs & 3U) == 3U)
+			return process_prepare_user_return(
+			    process_user_exception(frame));
 		klog("OpenSillicon exception: vector ");
 		klog_u64(frame->vector);
 		klog(" error ");
@@ -105,12 +107,12 @@ interrupt_dispatch(struct interrupt_frame *frame)
 		}
 		klog("\n");
 	} else if (frame->vector == 255) {
-		return frame;
+		return process_prepare_user_return(frame);
 	} else if (frame->vector < IDT_ENTRIES && handlers[frame->vector] != NULL) {
-		struct interrupt_frame *next = handlers[frame->vector](frame);
+		next = handlers[frame->vector](frame);
 
 		if (next != NULL)
-			return next;
+			return process_prepare_user_return(next);
 		klog("OpenSillicon panic: interrupt handler returned no frame\n");
 	} else {
 		klog("OpenSillicon panic: unexpected interrupt vector ");
