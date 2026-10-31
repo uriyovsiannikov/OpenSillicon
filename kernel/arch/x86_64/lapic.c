@@ -1,7 +1,6 @@
 #include <stdint.h>
 
 #include "arch/x86_64/lapic.h"
-#include "kernel/pmm.h"
 #include "kernel/vmm.h"
 
 #define IA32_APIC_BASE 0x1bU
@@ -17,8 +16,33 @@
 #define LAPIC_LVT_LINT1 0x360U
 #define LAPIC_LVT_ERROR 0x370U
 #define LAPIC_LVT_MASKED (1U << 16)
+#define LAPIC_TIMER_DIVIDE 0x3e0U
+#define LAPIC_TIMER_INITIAL 0x380U
+#define LAPIC_TIMER_CURRENT 0x390U
+#define LAPIC_EOI 0x0b0U
+#define LAPIC_TIMER_PERIODIC (1U << 17)
+#define PIT_CHANNEL2 0x42U
+#define PIT_COMMAND 0x43U
+#define PIT_SPEAKER 0x61U
+#define PIT_FREQUENCY 1193182U
+#define PIT_POLL_LIMIT 10000000U
 
 static volatile uint32_t *lapic_registers;
+
+static inline void
+outb(uint16_t port, uint8_t value)
+{
+	__asm__ volatile ("outb %0, %1" : : "a" (value), "Nd" (port));
+}
+
+static inline uint8_t
+inb(uint16_t port)
+{
+	uint8_t value;
+
+	__asm__ volatile ("inb %1, %0" : "=a" (value) : "Nd" (port));
+	return value;
+}
 
 static uint64_t
 read_msr(uint32_t msr)
@@ -100,4 +124,74 @@ uint32_t
 lapic_id(void)
 {
 	return lapic_registers == NULL ? UINT32_MAX : lapic_read(LAPIC_ID) >> 24;
+}
+
+bool
+lapic_timer_calibrate(uint32_t frequency, uint32_t *initial_count)
+{
+	uint32_t pit_count;
+	uint32_t current;
+	uint32_t elapsed;
+	uint32_t i;
+	uint8_t speaker_state;
+	bool started = false;
+	bool completed = false;
+
+	if (lapic_registers == NULL || frequency == 0 || initial_count == NULL)
+		return false;
+	pit_count = PIT_FREQUENCY / frequency;
+	if (pit_count == 0 || pit_count > UINT16_MAX)
+		return false;
+	lapic_write(LAPIC_TIMER_DIVIDE, 0x3U);
+	lapic_write(LAPIC_LVT_TIMER, LAPIC_LVT_MASKED | 0x20U);
+	lapic_write(LAPIC_TIMER_INITIAL, UINT32_MAX);
+	speaker_state = inb(PIT_SPEAKER);
+	outb(PIT_SPEAKER, speaker_state & (uint8_t)~0x03U);
+	outb(PIT_COMMAND, 0xb0U);
+	outb(PIT_CHANNEL2, (uint8_t)pit_count);
+	outb(PIT_CHANNEL2, (uint8_t)(pit_count >> 8));
+	outb(PIT_SPEAKER, (speaker_state & (uint8_t)~0x02U) | 0x01U);
+	for (i = 0; i < PIT_POLL_LIMIT; i++) {
+		if ((inb(PIT_SPEAKER) & 0x20U) == 0) {
+			started = true;
+			break;
+		}
+	}
+	if (started) {
+		for (i = 0; i < PIT_POLL_LIMIT; i++) {
+			if ((inb(PIT_SPEAKER) & 0x20U) != 0) {
+				completed = true;
+				break;
+			}
+		}
+	}
+	current = lapic_read(LAPIC_TIMER_CURRENT);
+	lapic_write(LAPIC_TIMER_INITIAL, 0);
+	outb(PIT_SPEAKER, speaker_state);
+	if (!completed)
+		return false;
+	elapsed = UINT32_MAX - current;
+	if (elapsed == 0)
+		return false;
+	*initial_count = elapsed;
+	return true;
+}
+
+bool
+lapic_timer_start(uint8_t vector, uint32_t initial_count)
+{
+	if (lapic_registers == NULL || vector < 32 || vector == 255 ||
+	    initial_count == 0)
+		return false;
+	lapic_write(LAPIC_TIMER_DIVIDE, 0x3U);
+	lapic_write(LAPIC_LVT_TIMER, LAPIC_TIMER_PERIODIC | vector);
+	lapic_write(LAPIC_TIMER_INITIAL, initial_count);
+	return true;
+}
+
+void
+lapic_eoi(void)
+{
+	if (lapic_registers != NULL)
+		lapic_write(LAPIC_EOI, 0);
 }

@@ -16,7 +16,8 @@ KERNEL_LDFLAGS := -nostdlib -static -no-pie -z max-page-size=0x1000 \
 	-T kernel/linker.ld
 KERNEL_ASFLAGS := -m64 -mno-red-zone
 
-.PHONY: all kernel iso run test fault-test interrupt-test vmm-protection-test clean
+.PHONY: all kernel iso run test fault-test interrupt-test vmm-protection-test \
+	timer-test clean
 
 all: kernel
 
@@ -24,6 +25,7 @@ kernel: $(BUILD_DIR)/kernel.elf
 
 $(BUILD_DIR)/main.o: kernel/main.c include/kernel/boot.h include/kernel/log.h \
 		include/kernel/pmm.h include/kernel/vmm.h include/kernel/heap.h \
+		include/kernel/timer.h include/kernel/scheduler.h \
 		include/arch/x86_64/lapic.h include/arch/x86_64/interrupts.h \
 		limine/limine.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
@@ -59,16 +61,30 @@ $(BUILD_DIR)/lapic.o: kernel/arch/x86_64/lapic.c \
 		include/arch/x86_64/lapic.h include/kernel/vmm.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
+$(BUILD_DIR)/timer.o: kernel/arch/x86_64/timer.c \
+		include/arch/x86_64/lapic.h include/arch/x86_64/interrupts.h \
+		include/kernel/timer.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/scheduler.o: kernel/sched/scheduler.c \
+		include/kernel/scheduler.h include/kernel/heap.h include/kernel/vmm.h \
+		include/kernel/log.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
 $(BUILD_DIR)/gdt_asm.o: kernel/arch/x86_64/gdt.S | $(BUILD_DIR)
 	$(CC) $(KERNEL_ASFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/interrupts_asm.o: kernel/arch/x86_64/interrupts.S | $(BUILD_DIR)
 	$(CC) $(KERNEL_ASFLAGS) -c $< -o $@
 
+$(BUILD_DIR)/context.o: kernel/arch/x86_64/context.S | $(BUILD_DIR)
+	$(CC) $(KERNEL_ASFLAGS) -c $< -o $@
+
 KERNEL_OBJECTS := $(BUILD_DIR)/main.o $(BUILD_DIR)/boot.o $(BUILD_DIR)/pmm.o \
 	$(BUILD_DIR)/vmm.o $(BUILD_DIR)/heap.o $(BUILD_DIR)/log.o \
-	$(BUILD_DIR)/gdt.o $(BUILD_DIR)/lapic.o $(BUILD_DIR)/interrupts.o $(BUILD_DIR)/gdt_asm.o \
-	$(BUILD_DIR)/interrupts_asm.o
+	$(BUILD_DIR)/gdt.o $(BUILD_DIR)/lapic.o $(BUILD_DIR)/timer.o \
+	$(BUILD_DIR)/scheduler.o $(BUILD_DIR)/interrupts.o $(BUILD_DIR)/gdt_asm.o \
+	$(BUILD_DIR)/interrupts_asm.o $(BUILD_DIR)/context.o
 
 $(BUILD_DIR)/kernel.elf: $(KERNEL_OBJECTS) kernel/linker.ld
 	$(LD) $(KERNEL_LDFLAGS) $(KERNEL_OBJECTS) -o $@
@@ -126,6 +142,15 @@ vmm-protection-test:
 		-no-reboot -no-shutdown; status=$$?; test $$status -eq 124
 	@grep -F 'OpenSillicon exception: vector 14 error 3' \
 		$(BUILD_DIR)/vmm-protection/serial.log
+
+timer-test: iso
+	@set +e; timeout 8s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \
+		-cdrom $(BUILD_DIR)/opensillicon.iso \
+		-serial file:$(BUILD_DIR)/timer-serial.log -display none \
+		-no-reboot -no-shutdown; status=$$?; test $$status -eq 124
+	@grep -F 'OpenSillicon: Round Robin scheduler passed' \
+		$(BUILD_DIR)/timer-serial.log
+	@grep -F 'OpenSillicon: timer tick count ' $(BUILD_DIR)/timer-serial.log
 
 clean:
 	rm -rf $(BUILD_DIR)

@@ -1,0 +1,55 @@
+#include <stdint.h>
+
+#include "arch/x86_64/interrupts.h"
+#include "arch/x86_64/lapic.h"
+#include "kernel/timer.h"
+
+#define TIMER_HZ 100U
+#define TIMER_VECTOR 32U
+#define PIC_MASTER_DATA 0x21U
+#define PIC_SLAVE_DATA 0xa1U
+
+static volatile uint64_t ticks;
+static bool initialized;
+
+static void
+timer_interrupt(struct interrupt_frame *frame)
+{
+	(void)frame;
+	ticks++;
+	lapic_eoi();
+}
+
+bool
+timer_init(void)
+{
+	uint32_t initial_count;
+	uint64_t flags;
+	bool success = false;
+
+	__asm__ volatile ("pushfq; popq %0; cli" : "=r" (flags) : : "memory");
+	if (initialized)
+		goto out;
+	__asm__ volatile ("outb %0, %1" : : "a" ((uint8_t)0xff),
+	    "Nd" ((uint16_t)PIC_MASTER_DATA));
+	__asm__ volatile ("outb %0, %1" : : "a" ((uint8_t)0xff),
+	    "Nd" ((uint16_t)PIC_SLAVE_DATA));
+	if (!lapic_timer_calibrate(TIMER_HZ, &initial_count) ||
+	    !interrupt_register_handler(TIMER_VECTOR, timer_interrupt))
+		goto out;
+	ticks = 0;
+	if (!lapic_timer_start(TIMER_VECTOR, initial_count))
+		goto out;
+	initialized = true;
+	success = true;
+out:
+	if ((flags & (1ULL << 9)) != 0)
+		__asm__ volatile ("sti" : : : "memory");
+	return success;
+}
+
+uint64_t
+timer_ticks(void)
+{
+	return initialized ? ticks : 0;
+}

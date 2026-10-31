@@ -5,8 +5,33 @@
 #include "kernel/pmm.h"
 #include "kernel/vmm.h"
 #include "kernel/heap.h"
+#include "kernel/timer.h"
+#include "kernel/scheduler.h"
 #include "arch/x86_64/lapic.h"
 #include "arch/x86_64/interrupts.h"
+
+#define SCHEDULER_TEST_STEPS 4U
+
+static volatile uint64_t scheduler_test_order[SCHEDULER_TEST_STEPS * 2];
+static volatile uint64_t scheduler_test_count;
+static volatile uint64_t scheduler_test_finished;
+
+static void
+scheduler_test_worker(void *argument)
+{
+	uint64_t worker = (uintptr_t)argument;
+	unsigned int i;
+
+	for (i = 0; i < SCHEDULER_TEST_STEPS; i++) {
+		uint64_t index = scheduler_test_count;
+
+		if (index < SCHEDULER_TEST_STEPS * 2)
+			scheduler_test_order[index] = worker;
+		scheduler_test_count = index + 1;
+		thread_yield();
+	}
+	scheduler_test_finished++;
+}
 
 __attribute__((used, section(".limine_requests_start")))
 static volatile uint64_t limine_requests_start[] = LIMINE_REQUESTS_START_MARKER;
@@ -110,6 +135,11 @@ _start(void)
 		kernel_halt();
 	}
 	klog("OpenSillicon: LAPIC initialized\n");
+	if (!timer_init()) {
+		klog("OpenSillicon: LAPIC timer initialization failed\n");
+		kernel_halt();
+	}
+	klog("OpenSillicon: 100 Hz LAPIC timer initialized\n");
 	if (!kheap_init()) {
 		klog("OpenSillicon: kernel heap initialization failed\n");
 		kernel_halt();
@@ -158,6 +188,32 @@ _start(void)
 		kernel_halt();
 	}
 	klog("OpenSillicon: address space destroyed\n");
+	if (!scheduler_init() ||
+	    !thread_create(scheduler_test_worker, (void *)(uintptr_t)0) ||
+	    !thread_create(scheduler_test_worker, (void *)(uintptr_t)1)) {
+		klog("OpenSillicon: scheduler initialization failed\n");
+		kernel_halt();
+	}
+	__asm__ volatile ("sti" : : : "memory");
+	while (scheduler_test_finished < 2)
+		thread_yield();
+	thread_yield();
+	if (scheduler_test_count != SCHEDULER_TEST_STEPS * 2) {
+		klog("OpenSillicon: scheduler lost a thread step\n");
+		kernel_halt();
+	}
+	for (uint64_t i = 0; i < SCHEDULER_TEST_STEPS * 2; i++) {
+		if (scheduler_test_order[i] != i % 2) {
+			klog("OpenSillicon: Round Robin order test failed\n");
+			kernel_halt();
+		}
+	}
+	while (timer_ticks() < 5)
+		__asm__ volatile ("hlt" : : : "memory");
+	klog("OpenSillicon: Round Robin scheduler passed\n");
+	klog("OpenSillicon: timer tick count ");
+	klog_u64(timer_ticks());
+	klog("\n");
 	klog("OpenSillicon: UEFI boot information parsed\n");
 	klog("OpenSillicon: memory map entries ");
 	klog_u64(info.memmap->entry_count);

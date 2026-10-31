@@ -177,7 +177,8 @@ Tasks
 
 - Initialize LAPIC Timer.
 - Mask the legacy PIC before enabling LAPIC timer interrupts.
-- Add HPET support for calibration and timekeeping where available.
+- Calibrate the LAPIC timer against PIT channel 2 at 100 Hz.
+- Defer HPET discovery and timekeeping until ACPI support in Phase 10.
 - Implement timer interrupt handling.
 - Implement kernel thread abstraction.
 - Implement Round Robin scheduler.

@@ -155,8 +155,9 @@ Interrupt controllers
 Timers
 
 - LAPIC Timer is the primary scheduling interrupt source.
-- HPET is a secondary time source and may be used for calibration.
-- Timer calibration and timekeeping details require an ADR.
+- The Phase 5 LAPIC timer runs at 100 Hz and is calibrated against PIT channel 2.
+- The timer interrupt advances a monotonic tick count and acknowledges the
+  LAPIC. HPET and TSC timekeeping are deferred until ACPI support in Phase 10.
 
 Scheduling
 
@@ -165,6 +166,8 @@ Initial scheduling model:
 - Round Robin.
 - Equal priority for all processes initially.
 - Kernel initially uses a non-preemptive execution model.
+- Kernel threads use cooperative Round Robin switching at explicit yield
+  points; timer interrupts do not switch threads.
 - Userspace processes are preempted by timer interrupts.
 - SMP interfaces should be considered from the beginning.
 - Only one CPU is activated initially.

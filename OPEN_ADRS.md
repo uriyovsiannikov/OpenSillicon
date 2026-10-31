@@ -425,24 +425,23 @@ UEFI is the initial target. Legacy BIOS is deferred.
 
 ADR-017 — Timer Calibration and Timekeeping
 
-Status: Open
+Status: Accepted
 
-Define the timer and timekeeping subsystem.
+Decision (Phase 5): run the LAPIC timer periodically at 100 Hz with divide-by-16.
+Calibrate its initial count against PIT channel 2 over one 10 ms interval.
+Mask both legacy PICs before enabling the LAPIC timer. The timer interrupt
+increments a 64-bit monotonic tick count and sends LAPIC EOI; it does not
+schedule from interrupt context. Kernel threads use cooperative Round Robin
+switching at explicit yield points, consistent with the non-preemptive kernel
+policy. User preemption begins with Ring 3 support in Phase 6. HPET discovery
+and timekeeping are deferred until ACPI table support in Phase 10. TSC and wall
+clock support are deferred. The timer tick is the initial time unit; sleeps
+and sub-tick timeouts are not provided in this phase.
 
-Questions:
-
-- LAPIC Timer calibration.
-- HPET availability.
-- TSC support.
-- Invariant TSC detection.
-- Clock source selection.
-- Monotonic clock.
-- Wall clock.
-- Tick frequency.
-- Timer resolution.
-- Sleep and timeout APIs.
-
-LAPIC Timer is the primary scheduling interrupt source. HPET is a secondary source for calibration and timekeeping where available.
+PIT channel 2 is a small, widely available calibration source that does not
+depend on ACPI table discovery. An HPET reference would improve the timer
+profile but would pull ACPI discovery earlier; using TSC frequency data would
+depend on CPU features and firmware reporting. Both alternatives are deferred.
 
 ---
 

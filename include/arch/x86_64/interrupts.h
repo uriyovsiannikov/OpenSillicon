@@ -1,6 +1,7 @@
 #ifndef ARCH_X86_64_INTERRUPTS_H
 #define ARCH_X86_64_INTERRUPTS_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 struct interrupt_frame {
@@ -26,7 +27,10 @@ struct interrupt_frame {
 	uint64_t rflags;
 };
 
+typedef void (*interrupt_handler)(struct interrupt_frame *frame);
+
 void idt_init(void);
+bool interrupt_register_handler(uint8_t vector, interrupt_handler handler);
 void interrupt_dispatch(struct interrupt_frame *frame);
 
 #endif

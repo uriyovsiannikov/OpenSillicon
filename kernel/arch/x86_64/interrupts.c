@@ -25,6 +25,7 @@ struct table_pointer {
 } __attribute__((packed));
 
 static struct idt_gate idt[IDT_ENTRIES];
+static interrupt_handler handlers[IDT_ENTRIES];
 extern void *isr_stub_table[IDT_ENTRIES];
 
 static void
@@ -57,6 +58,23 @@ idt_init(void)
 	__asm__ volatile ("lidt %0" : : "m" (pointer));
 }
 
+bool
+interrupt_register_handler(uint8_t vector, interrupt_handler handler)
+{
+	uint64_t flags;
+	bool available;
+
+	if (vector < 32 || vector == 255 || handler == NULL)
+		return false;
+	__asm__ volatile ("pushfq; popq %0; cli" : "=r" (flags) : : "memory");
+	available = handlers[vector] == NULL;
+	if (available)
+		handlers[vector] = handler;
+	if ((flags & (1ULL << 9)) != 0)
+		__asm__ volatile ("sti" : : : "memory");
+	return available;
+}
+
 void
 interrupt_dispatch(struct interrupt_frame *frame)
 {
@@ -64,8 +82,6 @@ interrupt_dispatch(struct interrupt_frame *frame)
 		klog("OpenSillicon panic: missing interrupt frame\n");
 		kernel_halt();
 	}
-	if (frame->vector == 255)
-		return;
 	if (frame->vector < 32) {
 		klog("OpenSillicon exception: vector ");
 		klog_u64(frame->vector);
@@ -81,6 +97,11 @@ interrupt_dispatch(struct interrupt_frame *frame)
 			klog_u64(fault_address);
 		}
 		klog("\n");
+	} else if (frame->vector == 255) {
+		return;
+	} else if (frame->vector < IDT_ENTRIES && handlers[frame->vector] != NULL) {
+		handlers[frame->vector](frame);
+		return;
 	} else {
 		klog("OpenSillicon panic: unexpected interrupt vector ");
 		klog_u64(frame->vector);
