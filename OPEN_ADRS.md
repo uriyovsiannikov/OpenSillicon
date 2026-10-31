@@ -85,39 +85,140 @@ paging is the compatibility constraint; five-level paging is deferred.
 
 ADR-003 — SilliconFS On-Disk Format
 
-Status: Open
+Status: Accepted for SilliconFS v1
 
-Define the complete filesystem format.
+Decision (user-approved): use a native, little-endian inode filesystem with
+4096-byte logical blocks. Phase 9 implements its formatter, validator,
+read/write mount, and VFS adapter. It uses a narrow block callback for tests
+and mounting; the general block layer and hardware drivers remain Phase 10.
 
-Questions:
+### Geometry and superblock
 
-- Superblock layout.
-- Superblock location.
-- Inode table layout.
-- Inode structure.
-- Directory entry structure.
-- Free block bitmap.
-- Free inode bitmap.
-- Block mapping strategy.
-- Maximum file size.
-- Maximum filesystem size.
-- Filename limits.
-- Metadata timestamps.
-- Feature flags.
-- Version compatibility.
-- Filesystem corruption detection.
+The filesystem occupies an image whose byte length is a nonzero multiple of
+4096. Filesystem block numbers are absolute within that image and are unsigned
+32-bit values. Block 0 contains the superblock. Its fields are little-endian:
 
-Initial requirements:
+| Byte offset | Size | Field | v1 value or meaning |
+| --- | ---: | --- | --- |
+| 0 | 8 | magic | bytes `SILFS1\0\0` |
+| 8 | 2 | major version | 1 |
+| 10 | 2 | header size | 80 |
+| 12 | 4 | block size | 4096 |
+| 16 | 4 | compatible features | 0 |
+| 20 | 4 | read-only-compatible features | 0 |
+| 24 | 4 | incompatible features | 0 |
+| 28 | 4 | total blocks | image length / 4096 |
+| 32 | 4 | inode count | format-time inode capacity |
+| 36 | 4 | root inode | 1 |
+| 40 | 4 | block bitmap start | 1 |
+| 44 | 4 | block bitmap block count | ceil(total blocks / 32768) |
+| 48 | 4 | inode bitmap start | immediately after block bitmap |
+| 52 | 4 | inode bitmap block count | ceil(inode count / 32768) |
+| 56 | 4 | inode table start | immediately after inode bitmap |
+| 60 | 4 | inode table block count | ceil(inode count / 32) |
+| 64 | 4 | data start | immediately after inode table |
+| 68 | 4 | reserved | zero |
+| 72 | 4 | superblock CRC-32 | CRC-32/ISO-HDLC of all 4096 bytes with this field zero |
+| 76 | 4 | reserved | zero |
+| 80 | 4016 | reserved | zero |
 
-- Inode-based.
-- 4 KiB logical filesystem blocks.
-- Little-endian.
-- Versioned format.
-- Feature flags.
-- No journaling initially.
-- Unix-style permissions.
+Every region must fit within `total_blocks`, have the exact derived length,
+and appear at the specified contiguous offset. `data_start` must be less than
+`total_blocks`. Unknown features, nonzero reserved bytes, invalid checksums,
+or inconsistent geometry cause mount/validation failure. v1 writes all feature
+bits as zero. CRC uses reflected polynomial `0xEDB88320`, initial value
+`0xFFFFFFFF`, and final XOR `0xFFFFFFFF`. `total_blocks` and `inode_count`
+must each be in `[1, UINT32_MAX]`; metadata geometry must still leave at least
+one data block. Thus the representational image-size ceiling is
+`UINT32_MAX * 4096` bytes, and actual capacity is reduced by metadata.
 
-A formatter and validation tool should be developed alongside the filesystem.
+The block bitmap uses least-significant-bit-first numbering: bit `b` describes
+filesystem block `b`; one means allocated. The inode bitmap bit `i-1`
+describes inode `i`. Bits in either bitmap beyond the declared count are set
+and treated as reserved. All blocks before `data_start` are allocated. Block
+and inode allocation use first-fit scanning and never return reserved bits.
+Inode numbers are one-based; zero is invalid and inode 1 is the root.
+
+### Inodes and block mapping
+
+The inode table is a dense array of 128-byte records; inode `n` is at byte
+offset `(n-1)*128` from `inode_table_start`. Fields are:
+
+| Byte offset | Size | Field |
+| --- | ---: | --- |
+| 0 | 2 | POSIX mode: regular `0100000` or directory `0040000`, plus `07777` permissions |
+| 2 | 2 | flags, zero in v1 |
+| 4 | 4 | uid |
+| 8 | 4 | gid |
+| 12 | 4 | reserved, zero |
+| 16 | 8 | file size in bytes |
+| 24 | 48 | twelve little-endian `uint32_t` direct data block numbers |
+| 72 | 4 | little-endian `uint32_t` single-indirect block number |
+| 76 | 52 | reserved, zero |
+
+Zero block pointers mean holes for regular files. Nonzero data pointers must
+refer to allocated blocks in `[data_start, total_blocks)`. Direct pointers
+cover logical blocks 0–11. The indirect pointer names one allocated block
+containing 1024 little-endian `uint32_t` data block numbers for logical blocks
+12–1035. Indirect entries follow the same zero/hole and range rules. Directories
+may not contain holes. Files and directories are limited to 1036 data blocks;
+the maximum file size is exactly `1036 * 4096 = 4,243,456` bytes (4 MiB plus
+48 KiB). Inode records with invalid modes, flags, sizes, reserved bytes, or
+block references are rejected. v1 has no timestamps, link count, hard links,
+symbolic links, special files, or journaling.
+
+### Directory records
+
+Directories are byte streams whose size is a multiple of 4096. Each record is
+contained within one block and starts at a four-byte-aligned offset. Its
+8-byte header contains: inode number (`uint32_t`, offset 0), record length
+(`uint16_t`, offset 4), name length (`uint8_t`, offset 6), and type (`uint8_t`,
+offset 7; 1 regular, 2 directory). The name bytes immediately follow, with no
+NUL terminator; zero padding extends the record to a four-byte boundary.
+`record_length` is aligned, at least `align4(8 + name_length)`, and does not
+cross a block boundary. Records exactly tile each directory data block.
+Names are 1–255 bytes and may not contain NUL or `/`. Names within a directory
+must be unique. Each directory contains exactly one `.` entry naming itself
+and one `..` entry naming its parent; root's `..` names inode 1. Other entries
+must reference allocated inodes of the matching type. Since unlink and hard
+links are absent, every allocated non-root inode has exactly one non-dot
+directory reference. Every such reference has one directory parent; parent
+links must agree with `..`, and following parent links must terminate at root
+inode 1 rather than a disconnected tree or cycle.
+
+### I/O, errors, and validation
+
+The filesystem I/O seam reads or writes exactly one 4096-byte block by its
+filesystem block number. A callback returns zero on success or a negative
+errno. A device's physical/logical sector size is outside this interface.
+There is no filesystem block cache or locking in v1. Operations are ordered so
+new data/metadata is written before its directory reference; crash recovery
+and atomic multi-block updates are not guaranteed without journaling.
+
+Mount and the host validator check the superblock checksum and reserved bytes,
+all geometry and arithmetic bounds, bitmap lengths and reserved bits, inode
+table records, every block reference and allocation bit, directory record
+bounds, unique names and contents, inode parent/reference relationships,
+root reachability, unique ownership of referenced data/indirect blocks, and
+supported feature bits. Allocated but unreferenced data blocks are tolerated
+as leaks from interrupted unjournaled operations.
+Malformed images fail with an error and are never exposed as a partially
+mounted filesystem. The formatter zeroes the whole image, reserves metadata,
+allocates root inode 1 and its first directory data block, and initializes its
+`.` and `..` records.
+
+Alternatives considered:
+
+- An ext2-compatible subset has more existing tooling and interoperability,
+  but imports group descriptors, broader feature negotiation, and legacy
+  compatibility obligations beyond this milestone.
+- A compact native format keeps the implementation and validation surface
+  small, while explicit versions, feature masks, and reserved fields leave a
+  controlled path for future revisions. It does not claim ext2 compatibility.
+
+This decision resolves the superblock, inode, directory, allocation, pointer,
+size, naming, feature, and corruption-detection questions for v1. Any incompatible
+format change requires a new major version or an accepted ADR.
 
 ---
 

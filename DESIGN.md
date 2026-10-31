@@ -406,7 +406,12 @@ Initial design:
 
 The filesystem must be designed to support future expansion without breaking older disk images unnecessarily.
 
-The exact on-disk format requires an ADR.
+SilliconFS v1's exact little-endian 4 KiB on-disk layout, 128-byte inode,
+bitmap geometry, direct/single-indirect mapping, variable-length directory
+records, validation rules, and limits are specified by accepted ADR-003 in
+`OPEN_ADRS.md`. Phase 9 uses one-block read/write callbacks so host disk-image
+tests and VFS mounting do not depend on hardware discovery. The general block
+device layer and AHCI driver remain Phase 10.
 
 Block device considerations
 
@@ -420,6 +425,8 @@ The block layer must account for devices exposing:
 - 4Kn sectors.
 
 A 4 KiB filesystem block must not imply that every disk uses 4 KiB sectors.
+The Phase 9 callback addresses filesystem blocks; the Phase 10 block layer
+will translate those operations to device sectors.
 
 Initial filesystems
 

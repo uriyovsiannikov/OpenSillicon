@@ -286,9 +286,15 @@ Goal
 
 Implement the native filesystem.
 
+ADR-003 is accepted for a custom v1 format: 4 KiB blocks, fixed metadata
+regions and 128-byte inodes, 12 direct plus one single-indirect pointer,
+variable-length directory records, and a maximum 4,243,456-byte file. Phase 9
+uses a narrow 4 KiB block callback for host disk-image tests and VFS mounting;
+AHCI and the general block-device layer remain in Phase 10.
+
 Tasks
 
-- Finalize on-disk format through ADR.
+- Finalize on-disk format through accepted ADR-003.
 - Implement filesystem formatter.
 - Implement superblock handling.
 - Implement inode allocation.
@@ -297,6 +303,7 @@ Tasks
 - Implement file read/write.
 - Implement metadata and permissions.
 - Implement filesystem validation.
+- Add malformed-image and host disk-image tests.
 
 Done criteria
 

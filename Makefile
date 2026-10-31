@@ -18,7 +18,8 @@ KERNEL_ASFLAGS := -m64 -mno-red-zone
 USER_ASFLAGS := -m64 -ffreestanding -fno-pic -fno-pie -mno-red-zone
 USER_LDFLAGS := -nostdlib -static -no-pie -T user/linker.ld
 
-.PHONY: all kernel iso run test elf-test process-test vfs-test vfs-smoke-test fault-test \
+.PHONY: all kernel iso run test elf-test process-test vfs-test vfs-smoke-test \
+	silliconfs-test silliconfs-image fault-test \
 	interrupt-test vmm-protection-test timer-test clean
 
 all: kernel
@@ -69,6 +70,11 @@ $(BUILD_DIR)/ramfs.o: kernel/vfs/ramfs.c include/kernel/vfs.h \
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/initramfs.o: kernel/vfs/initramfs.c include/kernel/vfs.h \
+		include/kernel/heap.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/silliconfs.o: kernel/vfs/silliconfs.c \
+		include/kernel/silliconfs.h include/kernel/vfs.h \
 		include/kernel/heap.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
@@ -193,7 +199,8 @@ KERNEL_OBJECTS := $(BUILD_DIR)/main.o $(BUILD_DIR)/boot.o $(BUILD_DIR)/pmm.o \
 	$(BUILD_DIR)/user_entry_c.o $(BUILD_DIR)/user_test_blob.o \
 	$(BUILD_DIR)/elf.o $(BUILD_DIR)/elf_test_blob.o $(BUILD_DIR)/process.o \
 	$(BUILD_DIR)/string.o $(BUILD_DIR)/vfs.o $(BUILD_DIR)/ramfs.o \
-	$(BUILD_DIR)/initramfs.o $(BUILD_DIR)/vfs_test_blob.o
+	$(BUILD_DIR)/initramfs.o $(BUILD_DIR)/silliconfs.o \
+	$(BUILD_DIR)/vfs_test_blob.o
 
 $(BUILD_DIR)/kernel.elf: $(KERNEL_OBJECTS) kernel/linker.ld
 	$(LD) $(KERNEL_LDFLAGS) $(KERNEL_OBJECTS) -o $@
@@ -236,6 +243,17 @@ vfs-test: $(BUILD_DIR)/initramfs.cpio | $(BUILD_DIR)
 		kernel/vfs/vfs.c kernel/vfs/ramfs.c kernel/vfs/initramfs.c \
 		kernel/fd.c tests/vfs_test.c -o $(BUILD_DIR)/vfs_test
 	$(BUILD_DIR)/vfs_test $(BUILD_DIR)/initramfs.cpio
+
+silliconfs-image: | $(BUILD_DIR)
+	python3 tools/mksilliconfs.py $(BUILD_DIR)/silliconfs.img \
+		--blocks 512 --inodes 128
+
+silliconfs-test: silliconfs-image | $(BUILD_DIR)
+	python3 tests/mksilliconfs_test.py
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude \
+		kernel/vfs/vfs.c kernel/vfs/silliconfs.c kernel/fd.c \
+		tests/silliconfs_test.c -o $(BUILD_DIR)/silliconfs_test
+	$(BUILD_DIR)/silliconfs_test $(BUILD_DIR)/silliconfs.img
 
 vfs-smoke-test: iso
 	@set +e; timeout 10s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \
