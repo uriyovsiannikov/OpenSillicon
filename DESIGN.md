@@ -273,12 +273,22 @@ arguments in `RDI`, `RSI`, `RDX`, `R10`, `R8`, and `R9`; success clears CF,
 while errors return positive errno in `RAX` with CF set. Initial calls are
 append-only: 0 (ABI version), 1 (exit), 2 (write), and 3 (getpid). Phase 6
 provides standard serial output descriptors 1 and 2 and a 4096-byte write
-limit. Full process and VFS-backed descriptor semantics arrive in later
-phases.
+limit. Write also accepts open file descriptors when VFS support is present.
 
 Phase 7 appends `fork` (4), `exec` (5), and `waitpid` (6); `wait()` is
-`waitpid(-1, status)`. ADR-006 defines eager-copy fork, static ELF exec from a
-user memory buffer, direct-child wait behavior, and single-threaded processes.
+`waitpid(-1, status)`. Phase 8 appends VFS calls 7–11 and `exec_path` (12).
+ADR-006 defines eager-copy fork, static ELF exec from a user memory buffer
+(syscall 5), static ELF path exec through the VFS (syscall 12), direct-child
+wait behavior, and single-threaded processes. Both exec calls replace the
+image only after successful loading; syscall 5's ABI remains unchanged.
+
+Phase 8 appends `open` (7), `close` (8), `read` (9), `stat` (10),
+`readdir` (11), and static ELF `exec_path` (12). `exec_path` takes a VFS path
+in `RDI`, requires an executable regular file, and returns errors without
+changing the current image. `write` remains syscall 2. File reads and writes
+have a 4096-byte limit; `stat` returns a fixed-width type, mode, and size structure.
+`readdir` returns one entry per call, then zero at end of directory. See
+ADR-001 and ADR-005 for the ABI and VFS contracts.
 
 Userspace
 
@@ -354,7 +364,7 @@ Secure Boot is not a requirement.
 
 Virtual File System
 
-Implement a full VFS abstraction.
+Implement a full VFS abstraction under ADR-005.
 
 Use a BSD-like vnode model.
 
@@ -374,7 +384,10 @@ The VFS must provide a consistent interface for:
 - Permissions.
 - Path resolution.
 
-Exact VFS contracts require an ADR.
+The Phase 8 baseline uses reference-counted vnodes and open-file descriptions,
+mount-aware absolute path lookup, a writable RAMFS root, and a read-only
+`newc` initramfs mounted at `/init`. The persistent root transition remains
+for Phase 10.
 
 SilliconFS
 

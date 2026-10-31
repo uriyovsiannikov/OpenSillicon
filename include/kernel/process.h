@@ -18,6 +18,8 @@ struct interrupt_frame *process_fork(struct interrupt_frame *frame,
 	uint64_t *error);
 struct interrupt_frame *process_exec(struct interrupt_frame *frame,
 	uint64_t *error);
+struct interrupt_frame *process_exec_path(struct interrupt_frame *frame,
+	const char *path, uint64_t *error);
 struct interrupt_frame *process_waitpid(struct interrupt_frame *frame,
 	uint64_t *error);
 struct interrupt_frame *process_exit(struct interrupt_frame *frame,

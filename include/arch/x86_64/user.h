@@ -9,5 +9,7 @@ extern const unsigned char _binary_user_test_bin_start[];
 extern const unsigned char _binary_user_test_bin_end[];
 extern const unsigned char _binary_elf_test_bin_start[];
 extern const unsigned char _binary_elf_test_bin_end[];
+extern const unsigned char _binary_vfs_test_bin_start[];
+extern const unsigned char _binary_vfs_test_bin_end[];
 
 #endif

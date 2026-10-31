@@ -11,6 +11,7 @@
 #include "kernel/syscall.h"
 #include "kernel/elf.h"
 #include "kernel/process.h"
+#include "kernel/vfs.h"
 #include "arch/x86_64/user.h"
 #include "arch/x86_64/lapic.h"
 #include "arch/x86_64/interrupts.h"
@@ -97,6 +98,58 @@ run_elf_test(void)
 	klog("OpenSillicon: ELF64 process, fork, wait, and cleanup passed\n");
 }
 
+static void
+run_vfs_test(void)
+{
+	uint64_t image_size = (uintptr_t)_binary_vfs_test_bin_end -
+	    (uintptr_t)_binary_vfs_test_bin_start;
+	uint64_t status = process_run_elf(_binary_vfs_test_bin_start,
+	    (size_t)image_size);
+
+	if (status != 0) {
+		klog("OpenSillicon: VFS userspace test failed, status ");
+		klog_u64(status);
+		klog("\n");
+		kernel_halt();
+	}
+	klog("OpenSillicon: VFS userspace operations passed\n");
+}
+
+static void
+initialize_filesystems(const struct boot_info *info)
+{
+	struct vnode *ramfs_root;
+	struct vnode *initramfs_root;
+	struct vnode *created;
+	int error;
+
+	if (!vfs_init()) {
+		klog("OpenSillicon: VFS initialization failed\n");
+		kernel_halt();
+	}
+	ramfs_root = ramfs_create_root();
+	if (ramfs_root == NULL || vfs_mount("/", ramfs_root) != 0) {
+		klog("OpenSillicon: RAMFS root mount failed\n");
+		kernel_halt();
+	}
+	vnode_put(ramfs_root);
+	error = vfs_create_path("/init", VNODE_DIRECTORY, 0755, &created);
+	if (error == 0)
+		vnode_put(created);
+	if (error == 0)
+		error = vfs_create_path("/tmp", VNODE_DIRECTORY, 01777, &created);
+	if (error == 0)
+		vnode_put(created);
+	if (error != 0 || initramfs_mount(info->initramfs->address,
+	    (size_t)info->initramfs->size, &initramfs_root) != 0 ||
+	    vfs_mount("/init", initramfs_root) != 0) {
+		klog("OpenSillicon: initramfs mount failed\n");
+		kernel_halt();
+	}
+	vnode_put(initramfs_root);
+	klog("OpenSillicon: initramfs and RAMFS mounted\n");
+}
+
 static volatile uint64_t scheduler_test_order[SCHEDULER_TEST_STEPS * 2];
 static volatile uint64_t scheduler_test_count;
 static volatile uint64_t scheduler_test_finished;
@@ -144,6 +197,12 @@ static volatile struct limine_framebuffer_request framebuffer_request = {
 	.id = LIMINE_FRAMEBUFFER_REQUEST_ID
 };
 
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_module_request module_request = {
+	.id = LIMINE_MODULE_REQUEST_ID,
+	.revision = 0
+};
+
 __attribute__((used, section(".limine_requests_end")))
 static volatile uint64_t limine_requests_end[] = LIMINE_REQUESTS_END_MARKER;
 
@@ -162,7 +221,8 @@ _start(void)
 
 	serial_init();
 	error = boot_info_parse(firmware_request.response, hhdm_request.response,
-	    memmap_request.response, framebuffer_request.response, &info);
+	    memmap_request.response, framebuffer_request.response,
+	    module_request.response, &info);
 	if (error != BOOT_INFO_OK) {
 		klog("OpenSillicon: invalid boot information, error ");
 		klog_u64((uint64_t)error);
@@ -230,6 +290,7 @@ _start(void)
 		kernel_halt();
 	}
 	process_system_init();
+	initialize_filesystems(&info);
 	klog("OpenSillicon: heap initialized\n");
 	if (!pmm_alloc_page(&user_page) || !address_space_create(&user_space) ||
 	    vmm_map_page(&user_space, 0x400000, user_page,
@@ -276,6 +337,7 @@ _start(void)
 	klog("OpenSillicon: address space destroyed\n");
 	run_user_test();
 	run_elf_test();
+	run_vfs_test();
 	if (!scheduler_init() ||
 	    !thread_create(scheduler_test_worker, (void *)(uintptr_t)0) ||
 	    !thread_create(scheduler_test_worker, (void *)(uintptr_t)1)) {

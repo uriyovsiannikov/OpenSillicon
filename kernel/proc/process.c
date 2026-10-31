@@ -8,6 +8,7 @@
 #include "kernel/pmm.h"
 #include "kernel/process.h"
 #include "kernel/vmm.h"
+#include "kernel/vfs.h"
 
 #define PROCESS_KERNEL_STACK_SIZE 16384U
 #define PROCESS_STACK_TOP (0x00007ffffffff000ULL - 0x1000ULL)
@@ -18,6 +19,9 @@
 #define PROCESS_ERROR_EAGAIN 11U
 #define PROCESS_ERROR_ENOMEM 12U
 #define PROCESS_ERROR_EINVAL 22U
+#define PROCESS_ERROR_EACCES 13U
+#define PROCESS_ERROR_ENOEXEC 8U
+#define PROCESS_ERROR_EIO 5U
 
 enum process_state {
 	PROCESS_READY,
@@ -100,6 +104,7 @@ release_loaded_image(struct elf_loaded_image *image)
 static void
 release_process(struct process *process)
 {
+	fd_table_destroy(&process->descriptors);
 	if (process->loaded_image != NULL) {
 		release_loaded_image(process->loaded_image);
 	} else if (process->address_space != NULL) {
@@ -345,7 +350,14 @@ process_fork(struct interrupt_frame *frame, uint64_t *error)
 	child->parent = current_process;
 	child->loaded_image = NULL;
 	child->initial_user_stack = current_process->initial_user_stack;
-	child->descriptors = current_process->descriptors;
+	if (!fd_table_clone(&child->descriptors, &current_process->descriptors)) {
+		(void)address_space_destroy_with_pages(child->address_space);
+		(void)kheap_free(child->address_space);
+		(void)kheap_free(child->kernel_stack);
+		(void)kheap_free(child);
+		*error = PROCESS_ERROR_EAGAIN;
+		return frame;
+	}
 	stack_top = process_kernel_stack_top(child);
 	child_frame = (struct interrupt_frame *)(stack_top - sizeof(*child_frame));
 	destination_words = (uint64_t *)child_frame;
@@ -361,13 +373,12 @@ process_fork(struct interrupt_frame *frame, uint64_t *error)
 	return frame;
 }
 
-struct interrupt_frame *
-process_exec(struct interrupt_frame *frame, uint64_t *error)
+static struct interrupt_frame *
+replace_process_image(struct interrupt_frame *frame, const void *image,
+	size_t image_size, uint64_t invalid_elf_error, uint64_t *error)
 {
 	struct process *process = current_process;
 	struct elf_loaded_image *replacement;
-	void *image_copy;
-	uint64_t image_size = frame->rsi;
 	uint64_t new_entry;
 	uint64_t stack_physical;
 	volatile uint8_t *stack;
@@ -377,31 +388,18 @@ process_exec(struct interrupt_frame *frame, uint64_t *error)
 	struct interrupt_frame *new_frame;
 	uintptr_t stack_top;
 
-	if (process == NULL || image_size == 0 || image_size > SIZE_MAX) {
-		*error = PROCESS_ERROR_EFAULT;
-		return frame;
-	}
-	image_copy = kheap_alloc((size_t)image_size);
-	if (image_copy == NULL) {
-		*error = PROCESS_ERROR_ENOMEM;
-		return frame;
-	}
-	if (!vmm_copy_from_user(process->address_space, image_copy, frame->rdi,
-	    (size_t)image_size)) {
-		(void)kheap_free(image_copy);
-		*error = PROCESS_ERROR_EFAULT;
-		return frame;
-	}
-	replacement = kheap_alloc(sizeof(*replacement));
-	if (replacement == NULL || !elf_image_load(image_copy, (size_t)image_size,
-	    replacement)) {
-		if (replacement != NULL)
-			(void)kheap_free(replacement);
-		(void)kheap_free(image_copy);
+	if (process == NULL || image == NULL || image_size == 0) {
 		*error = PROCESS_ERROR_EINVAL;
 		return frame;
 	}
-	(void)kheap_free(image_copy);
+	replacement = kheap_alloc(sizeof(*replacement));
+	if (replacement == NULL || !elf_image_load(image, image_size,
+	    replacement)) {
+		if (replacement != NULL)
+			(void)kheap_free(replacement);
+		*error = invalid_elf_error;
+		return frame;
+	}
 	if (!pmm_alloc_page(&stack_physical)) {
 		release_loaded_image(replacement);
 		*error = PROCESS_ERROR_ENOMEM;
@@ -448,6 +446,93 @@ process_exec(struct interrupt_frame *frame, uint64_t *error)
 	process->saved_frame = new_frame;
 	*error = 0;
 	return new_frame;
+}
+
+struct interrupt_frame *
+process_exec(struct interrupt_frame *frame, uint64_t *error)
+{
+	void *image_copy;
+	struct interrupt_frame *result;
+	uint64_t image_size = frame->rsi;
+
+	if (current_process == NULL || image_size == 0 || image_size > SIZE_MAX) {
+		*error = PROCESS_ERROR_EFAULT;
+		return frame;
+	}
+	image_copy = kheap_alloc((size_t)image_size);
+	if (image_copy == NULL) {
+		*error = PROCESS_ERROR_ENOMEM;
+		return frame;
+	}
+	if (!vmm_copy_from_user(current_process->address_space, image_copy,
+	    frame->rdi, (size_t)image_size)) {
+		(void)kheap_free(image_copy);
+		*error = PROCESS_ERROR_EFAULT;
+		return frame;
+	}
+	result = replace_process_image(frame, image_copy, (size_t)image_size,
+	    PROCESS_ERROR_EINVAL, error);
+	(void)kheap_free(image_copy);
+	return result;
+}
+
+struct interrupt_frame *
+process_exec_path(struct interrupt_frame *frame, const char *path,
+	uint64_t *error)
+{
+	struct vfs_stat status;
+	struct fd_object *file = NULL;
+	void *image;
+	struct interrupt_frame *result;
+	size_t offset = 0;
+	int rc;
+
+	if (current_process == NULL || path == NULL) {
+		*error = PROCESS_ERROR_EFAULT;
+		return frame;
+	}
+	rc = vfs_stat_path(path, &status);
+	if (rc != 0) {
+		*error = (uint64_t)-rc;
+		return frame;
+	}
+	if (status.type != VNODE_REGULAR || (status.mode & 0111U) == 0) {
+		*error = PROCESS_ERROR_EACCES;
+		return frame;
+	}
+	if (status.size == 0 || status.size > SIZE_MAX) {
+		*error = PROCESS_ERROR_ENOEXEC;
+		return frame;
+	}
+	rc = vfs_open(path, VFS_O_RDONLY, 0, &file);
+	if (rc != 0) {
+		*error = (uint64_t)-rc;
+		return frame;
+	}
+	image = kheap_alloc((size_t)status.size);
+	if (image == NULL) {
+		fd_object_put(file);
+		*error = PROCESS_ERROR_ENOMEM;
+		return frame;
+	}
+	while (offset < status.size) {
+		size_t amount = 0;
+
+		rc = fd_object_read(file, (uint8_t *)image + offset,
+		    (size_t)(status.size - offset), &amount);
+		if (rc != 0 || amount == 0) {
+			(void)kheap_free(image);
+			fd_object_put(file);
+			*error = rc == 0 ? PROCESS_ERROR_EIO : (uint64_t)-rc;
+			return frame;
+		}
+		offset += amount;
+	}
+	fd_object_put(file);
+	result = replace_process_image(frame, image, (size_t)status.size,
+	    PROCESS_ERROR_ENOEXEC, error);
+	(void)kheap_free(image);
+	return result;
 }
 
 static struct process *

@@ -5,6 +5,9 @@
 #include "kernel/boot.h"
 #include "kernel/pmm.h"
 
+#define BOOT_PARSE(firmware, hhdm, memmap, framebuffers, info) \
+	boot_info_parse(firmware, hhdm, memmap, framebuffers, &modules, info)
+
 #define PHYS_BASE 0x100000ULL
 #define TEST_MEMORY_SIZE 8192U
 
@@ -20,6 +23,11 @@ static struct limine_hhdm_response hhdm;
 static struct limine_framebuffer framebuffer;
 static struct limine_framebuffer *framebuffer_entries[1];
 static struct limine_framebuffer_response framebuffers;
+static struct limine_file initramfs;
+static struct limine_file *module_entries[65];
+static struct limine_module_response modules;
+static const char initramfs_name[] = "initramfs";
+static struct limine_file duplicate_module;
 
 static void
 setup(void)
@@ -59,6 +67,16 @@ setup(void)
 		.framebuffer_count = 1,
 		.framebuffers = framebuffer_entries
 	};
+	initramfs = (struct limine_file){
+		.address = test_memory,
+		.size = sizeof(test_memory),
+		.string = (char *)initramfs_name
+	};
+	module_entries[0] = &initramfs;
+	modules = (struct limine_module_response){
+		.module_count = 1,
+		.modules = module_entries
+	};
 }
 
 static struct boot_info
@@ -66,8 +84,9 @@ parse_valid(void)
 {
 	struct boot_info info;
 
-	assert(boot_info_parse(&firmware, &hhdm, &memmap, &framebuffers, &info) ==
+	assert(BOOT_PARSE(&firmware, &hhdm, &memmap, &framebuffers, &info) ==
 	    BOOT_INFO_OK);
+	assert(info.initramfs == &initramfs);
 	return info;
 }
 
@@ -77,10 +96,50 @@ test_missing_responses(void)
 	struct boot_info info;
 
 	setup();
-	assert(boot_info_parse(NULL, &hhdm, &memmap, &framebuffers, &info) ==
+	assert(BOOT_PARSE(NULL, &hhdm, &memmap, &framebuffers, &info) ==
 	    BOOT_INFO_MISSING_RESPONSE);
-	assert(boot_info_parse(&firmware, &hhdm, &memmap, &framebuffers, NULL) ==
+	assert(BOOT_PARSE(&firmware, &hhdm, &memmap, &framebuffers, NULL) ==
 	    BOOT_INFO_MISSING_RESPONSE);
+	assert(boot_info_parse(&firmware, &hhdm, &memmap, &framebuffers, NULL,
+	    &info) == BOOT_INFO_INVALID_MODULE);
+}
+
+static void
+test_module_validation(void)
+{
+	struct boot_info info;
+
+	setup();
+	modules.module_count = 0;
+	assert(BOOT_PARSE(&firmware, &hhdm, &memmap, NULL, &info) ==
+	    BOOT_INFO_INVALID_MODULE);
+	setup();
+	initramfs.string = "other";
+	assert(BOOT_PARSE(&firmware, &hhdm, &memmap, NULL, &info) ==
+	    BOOT_INFO_INVALID_MODULE);
+	setup();
+	initramfs.size = 0;
+	assert(BOOT_PARSE(&firmware, &hhdm, &memmap, NULL, &info) ==
+	    BOOT_INFO_INVALID_MODULE);
+	setup();
+	initramfs.address = NULL;
+	assert(BOOT_PARSE(&firmware, &hhdm, &memmap, NULL, &info) ==
+	    BOOT_INFO_INVALID_MODULE);
+	setup();
+	initramfs.address = (void *)(uintptr_t)(UINTPTR_MAX - 3);
+	initramfs.size = 8;
+	assert(BOOT_PARSE(&firmware, &hhdm, &memmap, NULL, &info) ==
+	    BOOT_INFO_INVALID_MODULE);
+	setup();
+	duplicate_module = initramfs;
+	module_entries[1] = &duplicate_module;
+	modules.module_count = 2;
+	assert(BOOT_PARSE(&firmware, &hhdm, &memmap, NULL, &info) ==
+	    BOOT_INFO_INVALID_MODULE);
+	setup();
+	modules.module_count = 65;
+	assert(BOOT_PARSE(&firmware, &hhdm, &memmap, NULL, &info) ==
+	    BOOT_INFO_INVALID_MODULE);
 }
 
 static void
@@ -90,11 +149,11 @@ test_firmware_and_hhdm_validation(void)
 
 	setup();
 	firmware.firmware_type = LIMINE_FIRMWARE_TYPE_X86BIOS;
-	assert(boot_info_parse(&firmware, &hhdm, &memmap, &framebuffers, &info) ==
+	assert(BOOT_PARSE(&firmware, &hhdm, &memmap, &framebuffers, &info) ==
 	    BOOT_INFO_INVALID_FIRMWARE);
 	setup();
 	hhdm.offset++;
-	assert(boot_info_parse(&firmware, &hhdm, &memmap, &framebuffers, &info) ==
+	assert(BOOT_PARSE(&firmware, &hhdm, &memmap, &framebuffers, &info) ==
 	    BOOT_INFO_INVALID_HHDM);
 }
 
@@ -105,16 +164,16 @@ test_memmap_validation(void)
 
 	setup();
 	memmap.entry_count = 0;
-	assert(boot_info_parse(&firmware, &hhdm, &memmap, NULL, &info) ==
+	assert(BOOT_PARSE(&firmware, &hhdm, &memmap, NULL, &info) ==
 	    BOOT_INFO_INVALID_MEMMAP);
 	setup();
 	reserved.base = usable.base + 2048;
-	assert(boot_info_parse(&firmware, &hhdm, &memmap, NULL, &info) ==
+	assert(BOOT_PARSE(&firmware, &hhdm, &memmap, NULL, &info) ==
 	    BOOT_INFO_INVALID_MEMMAP);
 	setup();
 	usable.base = UINT64_MAX - 7;
 	usable.length = 16;
-	assert(boot_info_parse(&firmware, &hhdm, &memmap, NULL, &info) ==
+	assert(BOOT_PARSE(&firmware, &hhdm, &memmap, NULL, &info) ==
 	    BOOT_INFO_INVALID_MEMMAP);
 }
 
@@ -125,19 +184,19 @@ test_framebuffer_validation(void)
 
 	setup();
 	framebuffer.pitch = 100;
-	assert(boot_info_parse(&firmware, &hhdm, &memmap, &framebuffers, &info) ==
+	assert(BOOT_PARSE(&firmware, &hhdm, &memmap, &framebuffers, &info) ==
 	    BOOT_INFO_INVALID_FRAMEBUFFER);
 	setup();
 	framebuffers.framebuffers = NULL;
-	assert(boot_info_parse(&firmware, &hhdm, &memmap, &framebuffers, &info) ==
+	assert(BOOT_PARSE(&firmware, &hhdm, &memmap, &framebuffers, &info) ==
 	    BOOT_INFO_INVALID_FRAMEBUFFER);
 	setup();
 	framebuffer.height = UINT64_MAX;
-	assert(boot_info_parse(&firmware, &hhdm, &memmap, &framebuffers, &info) ==
+	assert(BOOT_PARSE(&firmware, &hhdm, &memmap, &framebuffers, &info) ==
 	    BOOT_INFO_INVALID_FRAMEBUFFER);
 	setup();
 	framebuffers.framebuffer_count = 0;
-	assert(boot_info_parse(&firmware, &hhdm, &memmap, &framebuffers, &info) ==
+	assert(BOOT_PARSE(&firmware, &hhdm, &memmap, &framebuffers, &info) ==
 	    BOOT_INFO_OK);
 	assert(info.framebuffer == NULL);
 }
@@ -220,6 +279,7 @@ int
 main(void)
 {
 	test_missing_responses();
+	test_module_validation();
 	test_firmware_and_hhdm_validation();
 	test_memmap_validation();
 	test_framebuffer_validation();

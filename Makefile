@@ -18,8 +18,8 @@ KERNEL_ASFLAGS := -m64 -mno-red-zone
 USER_ASFLAGS := -m64 -ffreestanding -fno-pic -fno-pie -mno-red-zone
 USER_LDFLAGS := -nostdlib -static -no-pie -T user/linker.ld
 
-.PHONY: all kernel iso run test elf-test process-test fault-test interrupt-test vmm-protection-test \
-	timer-test clean
+.PHONY: all kernel iso run test elf-test process-test vfs-test vfs-smoke-test fault-test \
+	interrupt-test vmm-protection-test timer-test clean
 
 all: kernel
 
@@ -30,7 +30,7 @@ $(BUILD_DIR)/main.o: kernel/main.c include/kernel/boot.h include/kernel/log.h \
 		include/kernel/timer.h include/kernel/scheduler.h \
 		include/arch/x86_64/lapic.h include/arch/x86_64/interrupts.h \
 		include/arch/x86_64/user.h include/kernel/fd.h include/kernel/syscall.h \
-		include/kernel/elf.h include/kernel/process.h \
+		include/kernel/elf.h include/kernel/process.h include/kernel/vfs.h \
 		limine/limine.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
@@ -53,12 +53,28 @@ $(BUILD_DIR)/heap.o: kernel/mm/heap.c include/kernel/heap.h \
 $(BUILD_DIR)/log.o: kernel/log.c include/kernel/log.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/fd.o: kernel/fd.c include/kernel/fd.h include/kernel/log.h | $(BUILD_DIR)
+$(BUILD_DIR)/fd.o: kernel/fd.c include/kernel/fd.h include/kernel/log.h \
+		include/kernel/heap.h include/kernel/vfs.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/string.o: kernel/lib/string.c | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/vfs.o: kernel/vfs/vfs.c include/kernel/vfs.h \
+		include/kernel/fd.h include/kernel/heap.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/ramfs.o: kernel/vfs/ramfs.c include/kernel/vfs.h \
+		include/kernel/heap.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/initramfs.o: kernel/vfs/initramfs.c include/kernel/vfs.h \
+		include/kernel/heap.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/syscall.o: kernel/syscall.c include/kernel/syscall.h \
 		include/kernel/fd.h include/kernel/vmm.h include/kernel/log.h \
-		include/kernel/process.h \
+		include/kernel/process.h include/kernel/vfs.h \
 		include/arch/x86_64/user.h include/arch/x86_64/interrupts.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
@@ -68,7 +84,7 @@ $(BUILD_DIR)/elf.o: kernel/elf.c include/kernel/elf.h include/kernel/vmm.h \
 
 $(BUILD_DIR)/process.o: kernel/proc/process.c include/kernel/process.h \
 		include/kernel/elf.h include/kernel/vmm.h include/kernel/heap.h \
-		include/kernel/pmm.h include/arch/x86_64/gdt.h | $(BUILD_DIR)
+		include/kernel/pmm.h include/kernel/fd.h include/arch/x86_64/gdt.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/interrupts.o: kernel/arch/x86_64/interrupts.c \
@@ -144,6 +160,30 @@ $(BUILD_DIR)/elf_test_blob.o: $(BUILD_DIR)/elf_test_user.elf
 		--redefine-sym _binary_elf_test_user_elf_end=_binary_elf_test_bin_end \
 		elf_test_user.elf elf_test_blob.o
 
+$(BUILD_DIR)/vfs_test_user.o: user/vfs_test.S | $(BUILD_DIR)
+	$(CC) $(USER_ASFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/vfs_test_user.elf: $(BUILD_DIR)/vfs_test_user.o user/vfs_test.ld
+	$(LD) -nostdlib -static -no-pie -T user/vfs_test.ld $< -o $@
+
+$(BUILD_DIR)/vfs_test_blob.o: $(BUILD_DIR)/vfs_test_user.elf
+	cd $(BUILD_DIR) && objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
+		--rename-section .data=.rodata,alloc,load,readonly,data,contents \
+		--redefine-sym _binary_vfs_test_user_elf_start=_binary_vfs_test_bin_start \
+		--redefine-sym _binary_vfs_test_user_elf_end=_binary_vfs_test_bin_end \
+		vfs_test_user.elf vfs_test_blob.o
+
+$(BUILD_DIR)/exec_path_child.o: user/exec_path_child.S | $(BUILD_DIR)
+	$(CC) $(USER_ASFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/exec_path_child.elf: $(BUILD_DIR)/exec_path_child.o user/exec_child.ld
+	$(LD) -nostdlib -static -no-pie -T user/exec_child.ld $< -o $@
+
+$(BUILD_DIR)/initramfs.cpio: $(shell find initramfs -type f -o -type d) \
+		$(BUILD_DIR)/exec_path_child.elf tools/mkinitramfs.py
+	python3 tools/mkinitramfs.py initramfs $@ \
+		--file bin/exec_path_child=$(BUILD_DIR)/exec_path_child.elf
+
 KERNEL_OBJECTS := $(BUILD_DIR)/main.o $(BUILD_DIR)/boot.o $(BUILD_DIR)/pmm.o \
 	$(BUILD_DIR)/vmm.o $(BUILD_DIR)/heap.o $(BUILD_DIR)/log.o \
 	$(BUILD_DIR)/gdt.o $(BUILD_DIR)/lapic.o $(BUILD_DIR)/timer.o \
@@ -151,7 +191,9 @@ KERNEL_OBJECTS := $(BUILD_DIR)/main.o $(BUILD_DIR)/boot.o $(BUILD_DIR)/pmm.o \
 	$(BUILD_DIR)/interrupts_asm.o $(BUILD_DIR)/context.o $(BUILD_DIR)/fd.o \
 	$(BUILD_DIR)/syscall.o $(BUILD_DIR)/user_entry.o \
 	$(BUILD_DIR)/user_entry_c.o $(BUILD_DIR)/user_test_blob.o \
-	$(BUILD_DIR)/elf.o $(BUILD_DIR)/elf_test_blob.o $(BUILD_DIR)/process.o
+	$(BUILD_DIR)/elf.o $(BUILD_DIR)/elf_test_blob.o $(BUILD_DIR)/process.o \
+	$(BUILD_DIR)/string.o $(BUILD_DIR)/vfs.o $(BUILD_DIR)/ramfs.o \
+	$(BUILD_DIR)/initramfs.o $(BUILD_DIR)/vfs_test_blob.o
 
 $(BUILD_DIR)/kernel.elf: $(KERNEL_OBJECTS) kernel/linker.ld
 	$(LD) $(KERNEL_LDFLAGS) $(KERNEL_OBJECTS) -o $@
@@ -161,13 +203,15 @@ $(BUILD_DIR):
 
 iso: $(BUILD_DIR)/opensillicon.iso
 
-$(BUILD_DIR)/opensillicon.iso: $(BUILD_DIR)/kernel.elf limine/BOOTX64.EFI limine/limine-uefi-cd.bin
+$(BUILD_DIR)/opensillicon.iso: $(BUILD_DIR)/kernel.elf $(BUILD_DIR)/initramfs.cpio \
+		limine/BOOTX64.EFI limine/limine-uefi-cd.bin
 	rm -rf $(ISO_ROOT)
 	mkdir -p $(ISO_ROOT)/EFI/BOOT $(ISO_ROOT)/boot $(ISO_ROOT)/limine
 	cp limine/BOOTX64.EFI $(ISO_ROOT)/EFI/BOOT/BOOTX64.EFI
 	cp limine/limine-uefi-cd.bin $(ISO_ROOT)/limine/limine-uefi-cd.bin
 	cp $(BUILD_DIR)/kernel.elf $(ISO_ROOT)/boot/kernel.elf
-	printf 'timeout: 0\n/ OpenSillicon\n    protocol: limine\n    path: boot():/boot/kernel.elf\n' > $(ISO_ROOT)/limine.conf
+	cp $(BUILD_DIR)/initramfs.cpio $(ISO_ROOT)/boot/initramfs.cpio
+	printf 'timeout: 0\n/ OpenSillicon\n    protocol: limine\n    path: boot():/boot/kernel.elf\n    module_path: boot():/boot/initramfs.cpio\n    module_string: initramfs\n' > $(ISO_ROOT)/limine.conf
 	$(XORRISO) -as mkisofs -R -r -J \
 		--efi-boot limine/limine-uefi-cd.bin \
 		-efi-boot-part --efi-boot-image --protective-msdos-label \
@@ -186,6 +230,24 @@ elf-test: | $(BUILD_DIR)
 	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Ilimine \
 		kernel/elf.c tests/elf_test.c -o $(BUILD_DIR)/elf_test
 	$(BUILD_DIR)/elf_test
+
+vfs-test: $(BUILD_DIR)/initramfs.cpio | $(BUILD_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Ilimine \
+		kernel/vfs/vfs.c kernel/vfs/ramfs.c kernel/vfs/initramfs.c \
+		kernel/fd.c tests/vfs_test.c -o $(BUILD_DIR)/vfs_test
+	$(BUILD_DIR)/vfs_test $(BUILD_DIR)/initramfs.cpio
+
+vfs-smoke-test: iso
+	@set +e; timeout 10s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \
+		-cdrom $(BUILD_DIR)/opensillicon.iso \
+		-serial file:$(BUILD_DIR)/vfs-serial.log -display none \
+		-no-reboot -no-shutdown; status=$$?; test $$status -eq 124
+	@grep -F 'OpenSillicon: initramfs and RAMFS mounted' \
+		$(BUILD_DIR)/vfs-serial.log
+	@grep -F 'OpenSillicon: syscall 12 exec_path passed' \
+		$(BUILD_DIR)/vfs-serial.log
+	@grep -F 'OpenSillicon: VFS userspace operations passed' \
+		$(BUILD_DIR)/vfs-serial.log
 
 process-test: iso
 	@set +e; timeout 10s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \

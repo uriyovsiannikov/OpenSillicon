@@ -10,6 +10,12 @@
 #define SYSCALL_FORK 4U
 #define SYSCALL_EXEC 5U
 #define SYSCALL_WAITPID 6U
+#define SYSCALL_OPEN 7U
+#define SYSCALL_CLOSE 8U
+#define SYSCALL_READ 9U
+#define SYSCALL_STAT 10U
+#define SYSCALL_READDIR 11U
+#define SYSCALL_EXEC_PATH 12U
 #define SYSCALL_ABI_VERSION 1U
 
 void syscall_init(struct fd_table *table);

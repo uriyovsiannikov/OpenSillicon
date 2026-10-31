@@ -1,6 +1,8 @@
 #include "kernel/boot.h"
 
 #define PAGE_SIZE 4096U
+#define MAX_MODULES 64U
+#define MODULE_NAME "initramfs"
 
 static bool
 is_power_of_two(size_t value)
@@ -76,14 +78,64 @@ framebuffer_valid(const struct limine_framebuffer *framebuffer)
 	    (uintptr_t)framebuffer->address;
 }
 
+static bool
+bounded_string_equal(const char *string, const char *expected, size_t limit)
+{
+	size_t i;
+
+	if (string == NULL)
+		return false;
+	for (i = 0; i < limit; i++) {
+		if (string[i] != expected[i])
+			return false;
+		if (expected[i] == '\0')
+			return true;
+	}
+	return false;
+}
+
+static const struct limine_file *
+find_initramfs(const struct limine_module_response *modules)
+{
+	const struct limine_file *found = NULL;
+	uintptr_t files_address;
+	uint64_t i;
+
+	if (modules == NULL || modules->module_count == 0 ||
+	    modules->module_count > MAX_MODULES || modules->modules == NULL)
+		return NULL;
+	files_address = (uintptr_t)modules->modules;
+	if (modules->module_count > (UINTPTR_MAX - files_address) /
+	    sizeof(*modules->modules))
+		return NULL;
+	for (i = 0; i < modules->module_count; i++) {
+		const struct limine_file *file = modules->modules[i];
+
+		if (file == NULL || file->address == NULL || file->size == 0 ||
+		    file->size > SIZE_MAX || file->size - 1 > UINTPTR_MAX -
+	    (uintptr_t)file->address)
+			return NULL;
+		if (file->string == NULL ||
+		    !bounded_string_equal(file->string, MODULE_NAME,
+	    sizeof(MODULE_NAME)))
+			continue;
+		if (found != NULL)
+			return NULL;
+		found = file;
+	}
+	return found;
+}
+
 enum boot_info_error
 boot_info_parse(const struct limine_firmware_type_response *firmware,
 	const struct limine_hhdm_response *hhdm,
 	const struct limine_memmap_response *memmap,
 	const struct limine_framebuffer_response *framebuffers,
+	const struct limine_module_response *modules,
 	struct boot_info *info)
 {
 	const struct limine_framebuffer *framebuffer = NULL;
+	const struct limine_file *initramfs;
 
 	if (info == NULL)
 		return BOOT_INFO_MISSING_RESPONSE;
@@ -96,6 +148,9 @@ boot_info_parse(const struct limine_firmware_type_response *firmware,
 		return BOOT_INFO_INVALID_HHDM;
 	if (!memmap_valid(memmap))
 		return BOOT_INFO_INVALID_MEMMAP;
+	initramfs = find_initramfs(modules);
+	if (initramfs == NULL)
+		return BOOT_INFO_INVALID_MODULE;
 
 	if (framebuffers != NULL && framebuffers->framebuffer_count != 0) {
 		if (framebuffers->framebuffers == NULL ||
@@ -112,6 +167,7 @@ boot_info_parse(const struct limine_firmware_type_response *firmware,
 	info->hhdm_offset = hhdm->offset;
 	info->memmap = memmap;
 	info->framebuffer = framebuffer;
+	info->initramfs = initramfs;
 	return BOOT_INFO_OK;
 }
 
