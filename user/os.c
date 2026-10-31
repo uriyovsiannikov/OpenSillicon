@@ -28,6 +28,9 @@ long u_readdir(uint64_t fd, struct u_dirent *entry)
 { return syscall3(11, fd, (uintptr_t)entry, 0); }
 long u_fork(void) { return syscall3(4, 0, 0, 0); }
 long u_exec_path(const char *path) { return syscall3(12, (uintptr_t)path, 0, 0); }
+long u_exec_path_argv(const char *path, size_t argc,
+	const char *const argv[])
+{ return syscall3(27, (uintptr_t)path, argc, (uintptr_t)argv); }
 long u_waitpid(uint64_t pid, uint8_t *status)
 { return syscall3(6, pid, (uintptr_t)status, 0); }
 long u_sleep_ticks(uint64_t ticks) { return syscall3(13, ticks, 0, 0); }
@@ -41,6 +44,7 @@ long u_sigaction(uint64_t signo, const struct u_sigaction *new_action,
 { return syscall3(16, signo, (uintptr_t)new_action, (uintptr_t)old_action); }
 long u_shm_create(uint64_t size) { return syscall3(18, size, 0, 0); }
 long u_shm_detach(uint64_t base) { return syscall3(19, base, 0, 0); }
+long u_set_fs_base(uint64_t base) { return syscall3(20, base, 0, 0); }
 __attribute__((naked, noreturn)) void u_sigreturn(void)
 {
 	__asm__ (".byte 0xb8, 0x11, 0x00, 0x00, 0x00\n"

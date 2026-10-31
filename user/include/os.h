@@ -12,6 +12,8 @@
 #define U_SIGTERM 15U
 #define U_SIG_DFL 0ULL
 #define U_SIG_IGN 1ULL
+#define U_EXEC_ARG_MAX 16U
+#define U_EXEC_ARG_BYTES_MAX 2048U
 
 struct u_sigaction {
 	uint64_t handler;
@@ -40,6 +42,8 @@ long u_stat_path(const char *path, struct u_stat *status);
 long u_readdir(uint64_t fd, struct u_dirent *entry);
 long u_fork(void);
 long u_exec_path(const char *path);
+long u_exec_path_argv(const char *path, size_t argc,
+	const char *const argv[]);
 long u_waitpid(uint64_t pid, uint8_t *status);
 long u_sleep_ticks(uint64_t ticks);
 long u_pipe(uint32_t descriptors[2]);
@@ -49,6 +53,7 @@ long u_sigaction(uint64_t signo, const struct u_sigaction *new_action,
 	struct u_sigaction *old_action);
 long u_shm_create(uint64_t size);
 long u_shm_detach(uint64_t base);
+long u_set_fs_base(uint64_t base);
 _Noreturn void u_sigreturn(void);
 _Noreturn void u_exit(uint64_t status);
 size_t u_strlen(const char *string);

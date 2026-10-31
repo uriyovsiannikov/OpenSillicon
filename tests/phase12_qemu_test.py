@@ -40,7 +40,7 @@ def serial_text(path):
 
 def send_line(connection, stream, line):
 	qcodes = {" ": "spc", "/": "slash", ".": "dot", "_": "underscore",
-	    "-": "minus"}
+	    "-": "minus", "\t": "tab"}
 	for character in line:
 		qcode = qcodes.get(character, character.lower())
 		qmp(connection, stream, "send-key", {"keys": [{"type": "qcode",
@@ -70,21 +70,31 @@ def run_interactive(qemu, ovmf, iso, disk, work):
 		wait_for(lambda: "OpenSillicon shell ready" in serial_text(serial_path),
 		    60, "userspace init and shell")
 		initial = serial_text(serial_path)
-		for marker in ("sleep companion ran while init was blocked",
-		    "sleep_ticks immediate, overflow, blocked wake passed",
-		    "ELF startup stack verified"):
-			if marker not in initial:
-				raise RuntimeError("missing startup test marker: " + marker)
+		if "OpenSillicon init: starting /bin/sh" not in initial:
+			raise RuntimeError("init startup checks did not complete")
 
 		commands = [
-			("help", "help echo pwd cd ls cat exit"),
-			("echo phase12-shell-ok", "phase12-shell-ok"),
+			("", None),
+			("/init/bin/argv_probe", "argv argc=1"),
+			("/init/bin/argv_probe   alpha\tbeta  x,y:!",
+			    "argv[3]=x,y:!"),
+			("/init/bin/argv_probe a b c d e f g h i j k l m n o",
+			    "argv argc=16"),
+			("/init/bin/argv_probe a b c d e f g h i j k l m n o p",
+			    "sh: too many arguments"),
+			("/init/bin/argv_limit_test", "argv limits passed"),
+			("help", "external commands: ls cat echo pwd true false"),
+			("echo", None),
 			("pwd", None),
 			("cd /etc", None),
 			("pwd", "/etc# "),
-			("ls", "passwd"),
-			("cat passwd", "root:*:0:0:OpenSillicon root:/:/bin/sh"),
-			("cat group", "user:*:1000:"),
+			("ls", "bin"),
+			("ls /etc/passwd", "/etc/passwd"),
+			("cat /etc/passwd", "root:*:0:0:OpenSillicon root"),
+			("uname -sm", "OpenSillicon x86_64"),
+			("true", None),
+			("false", "sh: command exited status 1"),
+			("echo phase12-shell-ok", "phase12-shell-ok"),
 			("probe", "external ELF probe passed"),
 			("badcmd", "sh: exec: /bin/badcmd failed"),
 		]

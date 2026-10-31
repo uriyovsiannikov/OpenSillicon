@@ -119,9 +119,28 @@ main(int argc, char **argv)
 	struct vnode *root = NULL;
 	FILE *image;
 	int error;
+	int coreutils_start = 0;
+	int coreutils_count = 0;
 
-	if (argc != 5) {
-		fprintf(stderr, "usage: %s image init-elf shell-elf probe-elf\n", argv[0]);
+	if (argc >= 6 && strcmp(argv[5], "--coreutils") == 0 && argc == 15) {
+		coreutils_start = 6;
+		coreutils_count = 9;
+	} else if (argc >= 9 && strcmp(argv[8], "--coreutils") == 0 && argc == 18) {
+		coreutils_start = 9;
+		coreutils_count = 9;
+	} else if (argc >= 6 && strcmp(argv[5], "--coreutils") == 0 && argc == 12) {
+		coreutils_start = 6;
+		coreutils_count = 6;
+	} else if (argc >= 9 && strcmp(argv[8], "--coreutils") == 0 && argc == 17) {
+		coreutils_start = 9;
+		coreutils_count = 8;
+	} else if (argc >= 6 && strcmp(argv[5], "--coreutils") == 0 && argc == 14) {
+		coreutils_start = 6;
+		coreutils_count = 8;
+	}
+	if (argc < 5 || (argc > 8 && coreutils_start == 0)) {
+		fprintf(stderr, "usage: %s image init-elf shell-elf probe-elf [musl-hello-elf [musl-alloc-elf [musl-stdio-elf]]] [--coreutils ls cat echo pwd true false clear uname fetch]\n",
+		    argv[0]);
 		return 2;
 	}
 	image = fopen(argv[1], "r+b");
@@ -155,6 +174,46 @@ main(int argc, char **argv)
 		fprintf(stderr, "SilliconFS population failed: %d\n", error);
 		fclose(image);
 		return 1;
+	}
+	if (argc >= 6 && strcmp(argv[5], "--coreutils") != 0 &&
+	    (error = add_file("/bin/musl_hello", argv[5], 0755)) != 0) {
+		fprintf(stderr, "SilliconFS musl test population failed: %d\n", error);
+		fclose(image);
+		return 1;
+	}
+	if (argc >= 7 && strcmp(argv[5], "--coreutils") != 0 &&
+	    (error = add_file("/bin/musl_alloc", argv[6], 0755)) != 0) {
+		fprintf(stderr, "SilliconFS musl allocation test population failed: %d\n",
+		    error);
+		fclose(image);
+		return 1;
+	}
+	if (argc >= 8 && strcmp(argv[5], "--coreutils") != 0 &&
+	    (error = add_file("/bin/musl_stdio", argv[7], 0755)) != 0) {
+		fprintf(stderr, "SilliconFS musl stdio test population failed: %d\n",
+		    error);
+		fclose(image);
+		return 1;
+	}
+	if (coreutils_start != 0) {
+		static const char *names[] = {
+			"ls", "cat", "echo", "pwd", "true", "false", "clear", "uname",
+			"fetch"
+		};
+		int index;
+		for (index = 0; index < coreutils_count; index++) {
+			char destination[32] = "/bin/";
+			size_t position = 5;
+			const char *name = names[index];
+			while (*name != '\0') destination[position++] = *name++;
+			destination[position] = '\0';
+			if ((error = add_file(destination,
+			    argv[coreutils_start + index], 0755)) != 0) {
+				fprintf(stderr, "SilliconFS coreutils population failed: %d\n", error);
+				fclose(image);
+				return 1;
+			}
+		}
 	}
 	{
 		static const char passwd[] =
