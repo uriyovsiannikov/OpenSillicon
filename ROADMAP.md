@@ -380,26 +380,42 @@ Phase 11 — Input, TTY and Terminal
 
 Goal
 
-Provide usable keyboard input and terminal output.
+Provide a usable framebuffer text terminal with canonical keyboard input.
 
 Tasks
 
-- Implement PS/2 keyboard driver.
-- Implement PS/2 mouse driver.
-- Add raw keycode handling.
-- Add keyboard layout translation.
-- Implement TTY.
-- Implement virtual terminals.
-- Implement ANSI/VT100-compatible subset.
-- Add bitmap font rendering.
+- Implement a polling i8042 PS/2 keyboard driver that emits key events from
+  translated Set 1 scancodes; yield with `sti; hlt; cli` between polls while
+  waiting for input so the LAPIC timer wakes the CPU without busy-spinning.
+- Add a US keymap with Shift, Caps Lock, and Control handling.
+- Implement canonical TTY input on standard input, including echo, backspace,
+  newline, a 256-byte line limit, and the approved Ctrl-D EOF/line behavior.
+- Implement four virtual terminals with independent screen buffers, cursors,
+  parser states, current input lines, and completed-input queues; switch with
+  Alt+F1 through Alt+F4.
+- Render Limine's RGB framebuffer with a built-in 8-by-16 bitmap font.
+- Implement newline, carriage return, backspace, tab, scrolling, CSI `2J`,
+  `H`, `K`, and SGR reset/basic 8-color foreground/background sequences.
+- Route standard output once through a console fan-out to framebuffer and
+  serial; keep kernel diagnostics on the serial logger.
+- Log unavailable i8042 hardware and keep terminal output usable when no
+  keyboard controller initializes; timer-driven initialization waits time
+  out after 100 ticks (one second at 100 Hz).
 
 Done criteria
 
-- Keyboard input works.
-- Mouse input works.
-- Terminal input is reliable.
-- Terminal output supports basic control sequences.
-- Multiple virtual terminals work.
+- Host tests cover framebuffer drawing, keyboard decoding, terminal parsing,
+  scrolling, independent virtual-terminal screen/input state, TTY buffer
+  limits, and Ctrl-D with empty and nonempty input.
+- QEMU UEFI boots with framebuffer output and serial diagnostics.
+- Keyboard input is available when the emulated i8042 controller initializes;
+  absent hardware is reported without a busy-spin.
+- Four virtual terminals retain their screen and input state when switched.
+- Terminal input and the documented control-sequence subset work.
+- The full regression suite passes.
+
+Deferred: mouse, USB HID, keyboard IRQ routing, Unicode, alternate layouts,
+termios, signals, window systems, and graphical desktop features.
 
 ---
 

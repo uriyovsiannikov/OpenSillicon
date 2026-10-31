@@ -36,7 +36,8 @@ ACPICA_CFLAGS := $(KERNEL_CFLAGS) -Wno-unused-parameter -fno-builtin \
 .PHONY: all kernel iso run test elf-test process-test vfs-test vfs-smoke-test \
 	silliconfs-test silliconfs-image fault-test \
 	interrupt-test vmm-protection-test timer-test clean acpica-check acpi-test \
-	pci-test block-test phase10-test
+	pci-test block-test phase10-test phase11-test terminal-test \
+	terminal-qemu-test
 
 all: kernel
 
@@ -52,6 +53,7 @@ $(BUILD_DIR)/main.o: kernel/main.c include/kernel/boot.h include/kernel/log.h \
 		include/arch/x86_64/pci.h \
 		include/arch/x86_64/ahci.h include/kernel/block.h \
 		include/kernel/block_silliconfs.h include/kernel/silliconfs.h \
+		include/kernel/tty.h \
 		limine/limine.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
@@ -75,7 +77,28 @@ $(BUILD_DIR)/log.o: kernel/log.c include/kernel/log.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/fd.o: kernel/fd.c include/kernel/fd.h include/kernel/log.h \
-		include/kernel/heap.h include/kernel/vfs.h | $(BUILD_DIR)
+		include/kernel/heap.h include/kernel/vfs.h include/kernel/tty.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/terminal.o: kernel/tty/terminal.c include/kernel/terminal.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/keyboard.o: kernel/tty/keyboard.c \
+		include/arch/x86_64/ps2_keyboard.h include/kernel/terminal.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/framebuffer.o: kernel/tty/framebuffer.c \
+		include/kernel/framebuffer.h include/kernel/terminal.h \
+		third_party/font8x8/font8x8_basic.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -Ithird_party -c $< -o $@
+
+$(BUILD_DIR)/tty.o: kernel/tty/tty.c include/kernel/tty.h \
+		include/kernel/terminal.h include/kernel/framebuffer.h \
+		include/arch/x86_64/ps2_keyboard.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -Ithird_party -c $< -o $@
+
+$(BUILD_DIR)/ps2_keyboard.o: kernel/arch/x86_64/ps2_keyboard.c \
+		include/arch/x86_64/ps2_keyboard.h include/kernel/terminal.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/string.o: kernel/lib/string.c | $(BUILD_DIR)
@@ -280,6 +303,9 @@ KERNEL_OBJECTS := $(BUILD_DIR)/main.o $(BUILD_DIR)/boot.o $(BUILD_DIR)/pmm.o \
 	$(BUILD_DIR)/timer.o \
 	$(BUILD_DIR)/scheduler.o $(BUILD_DIR)/interrupts.o $(BUILD_DIR)/gdt_asm.o \
 	$(BUILD_DIR)/interrupts_asm.o $(BUILD_DIR)/context.o $(BUILD_DIR)/fd.o \
+	$(BUILD_DIR)/terminal.o $(BUILD_DIR)/keyboard.o \
+	$(BUILD_DIR)/framebuffer.o $(BUILD_DIR)/tty.o \
+	$(BUILD_DIR)/ps2_keyboard.o \
 	$(BUILD_DIR)/syscall.o $(BUILD_DIR)/user_entry.o \
 	$(BUILD_DIR)/user_entry_c.o $(BUILD_DIR)/user_test_blob.o \
 	$(BUILD_DIR)/elf.o $(BUILD_DIR)/elf_test_blob.o $(BUILD_DIR)/process.o \
@@ -344,7 +370,10 @@ elf-test: | $(BUILD_DIR)
 vfs-test: $(BUILD_DIR)/initramfs.cpio | $(BUILD_DIR)
 	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Ilimine \
 		kernel/vfs/vfs.c kernel/vfs/ramfs.c kernel/vfs/initramfs.c \
-		kernel/fd.c tests/vfs_test.c -o $(BUILD_DIR)/vfs_test
+		kernel/fd.c kernel/tty/tty.c kernel/tty/terminal.c \
+		kernel/tty/keyboard.c kernel/tty/framebuffer.c \
+		kernel/arch/x86_64/ps2_keyboard.c tests/timer_stub.c \
+		-Ithird_party tests/vfs_test.c -o $(BUILD_DIR)/vfs_test
 	$(BUILD_DIR)/vfs_test $(BUILD_DIR)/initramfs.cpio
 
 silliconfs-image: | $(BUILD_DIR)
@@ -353,11 +382,35 @@ silliconfs-image: | $(BUILD_DIR)
 
 silliconfs-test: silliconfs-image | $(BUILD_DIR)
 	python3 tests/mksilliconfs_test.py
-	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude \
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Ilimine \
 		kernel/vfs/vfs.c kernel/vfs/silliconfs.c kernel/fd.c \
 		kernel/block.c kernel/block_silliconfs.c \
+		kernel/tty/tty.c kernel/tty/terminal.c kernel/tty/framebuffer.c \
+		kernel/tty/keyboard.c kernel/arch/x86_64/ps2_keyboard.c \
+		tests/timer_stub.c -Ithird_party \
 		tests/silliconfs_test.c -o $(BUILD_DIR)/silliconfs_test
 	$(BUILD_DIR)/silliconfs_test $(BUILD_DIR)/silliconfs.img
+
+$(BUILD_DIR)/terminal_test: kernel/tty/terminal.c kernel/tty/tty.c \
+		kernel/tty/keyboard.c kernel/tty/framebuffer.c \
+		kernel/arch/x86_64/ps2_keyboard.c tests/timer_stub.c \
+		tests/terminal_test.c include/kernel/terminal.h \
+		third_party/font8x8/font8x8_basic.h
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Ilimine -Ithird_party \
+		kernel/tty/terminal.c kernel/tty/tty.c kernel/tty/keyboard.c \
+		kernel/tty/framebuffer.c kernel/arch/x86_64/ps2_keyboard.c \
+		tests/timer_stub.c tests/terminal_test.c -o $@
+
+terminal-test: $(BUILD_DIR)/terminal_test
+	$(BUILD_DIR)/terminal_test
+
+terminal-qemu-test: iso $(BUILD_DIR)/test-root.img
+	python3 tools/mksilliconfs.py $(BUILD_DIR)/test-root.img \
+		--blocks 32768 --inodes 1024
+	python3 tests/terminal_qemu_test.py $(QEMU) $(OVMF_CODE) \
+		$(BUILD_DIR)/opensillicon.iso $(BUILD_DIR)/test-root.img
+
+phase11-test: terminal-test phase10-test terminal-qemu-test
 
 vfs-smoke-test: iso $(BUILD_DIR)/test-root.img
 	python3 tools/mksilliconfs.py $(BUILD_DIR)/test-root.img --blocks 32768 --inodes 1024

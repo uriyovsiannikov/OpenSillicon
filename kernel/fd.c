@@ -3,6 +3,7 @@
 #include "kernel/fd.h"
 #include "kernel/heap.h"
 #include "kernel/log.h"
+#include "kernel/tty.h"
 #include "kernel/vfs.h"
 
 #define FD_ERROR_EBADF 9
@@ -20,14 +21,30 @@ console_write(void *context, uint64_t offset, const void *buffer,
 		return -FD_ERROR_EINVAL;
 	if (write_length == NULL)
 		return -FD_ERROR_EINVAL;
-	if (!serial_write(buffer, length))
+	if (!tty_write(buffer, length) || !serial_write(buffer, length))
 		return -FD_ERROR_EIO;
 	*write_length = length;
 	return 0;
 }
 
+static int
+console_read(void *context, uint64_t offset, void *buffer, size_t length,
+	size_t *read_length)
+{
+	(void)context;
+	(void)offset;
+	return tty_read(buffer, length, read_length);
+}
+
 static const struct fd_operations console_operations = {
+	.read = console_read,
 	.write = console_write
+};
+
+static struct fd_object standard_input = {
+	.operations = &console_operations,
+	.references = UINT32_MAX,
+	.immortal = true
 };
 
 static struct fd_object standard_output = {
@@ -101,6 +118,7 @@ fd_table_init_standard(struct fd_table *table)
 		return;
 	for (i = 0; i < FD_TABLE_CAPACITY; i++)
 		table->entries[i] = NULL;
+	table->entries[0] = &standard_input;
 	table->entries[1] = &standard_output;
 	table->entries[2] = &standard_error;
 }

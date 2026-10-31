@@ -23,9 +23,11 @@ version`), 1 (`exit`), 2 (`write`), and 3 (`getpid`). The ABI version returned
 by syscall 0 is 1. Phase 7 appends syscall 4 (`fork`), 5 (`exec`), and 6
 (`waitpid`); `wait()` uses `waitpid(-1, status)`. Phase 8 appends VFS calls
 7–11 and `exec_path` (12). New calls append numbers;
-assigned numbers and semantics are not reused or changed. This initial kernel supports a 4096-byte maximum
-single `write`, standard descriptors 1 and 2 for serial output, and the
-minimal process identity value 1.
+assigned numbers and semantics are not reused or changed. The kernel supports
+a 4096-byte maximum single `write`; Phase 6 initially bound standard
+descriptors 1 and 2 to serial output. Phase 11 binds descriptor 0 to the
+canonical TTY and routes each descriptor 1/2 write through the framebuffer
+terminal and serial console once. The minimal process identity value remains 1.
 
 Rationale: the interrupt gate offers a simple, debuggable entry path while
 Ring 3 support is new. The explicit CF error convention distinguishes errors
@@ -654,22 +656,46 @@ them.
 
 ADR-015 — Keyboard Layouts and Terminal Input
 
-Status: Open
+Status: Accepted for Phase 11
 
-Define keyboard input architecture.
+Decision: the initial keyboard is an i8042 PS/2 keyboard polled by the
+kernel. The driver decodes translated Set 1 scancodes into key events; it does
+not generate terminal characters. A separate US keymap translates key events
+with Shift, Caps Lock, and Control modifiers. Unicode, dead keys, alternate
+layouts, and layout switching are deferred. If the controller is absent or
+does not initialize, keyboard input remains unavailable and the kernel logs
+the reason; framebuffer and serial output remain usable.
 
-Questions:
+Polling must not busy-spin. A blocked canonical TTY read polls the controller,
+then yields the CPU with `sti; hlt; cli`; the existing LAPIC timer wakes it to
+poll again. This is compatible with the current one-CPU scheduler, where a
+timer interrupt does not switch away from a kernel-mode syscall. No keyboard
+IRQ routing is added in this phase. Controller initialization waits use the
+same timer-driven sleep and time out after 100 timer ticks (one second at the
+approved 100 Hz rate).
 
-- Raw scancode representation.
-- Keycode abstraction.
-- Keyboard layout format.
-- Modifier handling.
-- Dead keys.
-- Unicode input.
-- Layout switching.
-- Terminal line discipline.
-- Input buffering.
-- TTY signal generation.
+The kernel provides four virtual terminals. Each terminal owns an independent
+screen cell buffer, cursor and escape parser state, canonical input line, and
+queued completed input. Alt+F1 through Alt+F4 selects a terminal. Terminal
+input uses a 256-byte line buffer including the newline terminator; excess
+characters are rejected and do not overwrite buffered data. Backspace edits
+the current line. Enter queues the line with a newline. Ctrl-D on an empty
+line queues one EOF indication; on a nonempty line it queues the buffered
+line without adding a Ctrl-D character or newline. Ctrl-C and process signal
+delivery are deferred.
+
+The initial terminal renderer uses Limine's RGB framebuffer and a built-in
+8-by-16 bitmap font. It supports newline, carriage return, backspace, tab,
+scrolling, and CSI `2J`, `H`, `K`, and SGR reset/basic 8-color foreground and
+background sequences. Each standard-output write is sent once through the
+console fan-out to the active framebuffer terminal and serial; kernel
+diagnostics continue to use the serial logger directly. No separate logger
+path writes terminal output back into the framebuffer.
+
+These decisions resolve the Phase 11 keyboard, keymap, buffering, EOF,
+virtual-terminal, output-routing, and initial control-sequence behavior.
+POSIX terminal compatibility, termios, job control, Unicode, mouse input,
+USB HID, and interrupt-driven keyboard input remain deferred.
 
 The keyboard driver must not directly convert raw hardware input into terminal characters.
 

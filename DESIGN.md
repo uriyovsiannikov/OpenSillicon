@@ -274,8 +274,10 @@ ADR-001 defines ABI version 1: `int 0x80`, syscall number/result in `RAX`,
 arguments in `RDI`, `RSI`, `RDX`, `R10`, `R8`, and `R9`; success clears CF,
 while errors return positive errno in `RAX` with CF set. Initial calls are
 append-only: 0 (ABI version), 1 (exit), 2 (write), and 3 (getpid). Phase 6
-provides standard serial output descriptors 1 and 2 and a 4096-byte write
-limit. Write also accepts open file descriptors when VFS support is present.
+initially provides serial output descriptors 1 and 2 and a 4096-byte write
+limit. Phase 11 binds descriptor 0 to the canonical TTY and routes each
+descriptor 1/2 write to the framebuffer terminal and serial console once.
+Write also accepts open file descriptors when VFS support is present.
 
 Phase 7 appends `fork` (4), `exec` (5), and `waitpid` (6); `wait()` is
 `waitpid(-1, status)`. Phase 8 appends VFS calls 7–11 and `exec_path` (12).
@@ -482,18 +484,16 @@ Later:
 
 Input
 
-Initial input:
-
-- PS/2 keyboard.
-- PS/2 mouse.
-
-Later:
-
-- USB HID.
-
-Keyboard drivers should provide raw keycodes/scancodes.
-
-A separate input and TTY layer converts key events into characters and terminal input.
+Phase 11 input uses a polled i8042 PS/2 keyboard. The driver decodes
+translated Set 1 scancodes into key events; a separate US keymap handles
+Shift, Caps Lock, and Control and produces terminal input. Polling must yield
+with `sti; hlt; cli` between attempts while a canonical read is blocked, so
+the existing LAPIC timer wakes the CPU without a busy-spin. Keyboard IRQ
+routing, mouse input, and USB HID are deferred. If the i8042 controller is
+missing or initialization fails, log the failure and leave keyboard input
+unavailable while retaining serial and framebuffer output.
+Initialization waits use the same timer-driven sleep and time out after 100
+ticks (one second at the approved 100 Hz timer rate).
 
 Audio
 
@@ -513,13 +513,22 @@ Implement an OpenSillicon framebuffer API.
 
 Terminal
 
-Implement:
+Phase 11 provides four virtual terminals. Each owns its screen cell buffer,
+cursor and parser state, canonical input line, and completed-input queue.
+Alt+F1 through Alt+F4 switches the active terminal without discarding screen
+or input state. The initial renderer uses Limine's RGB framebuffer and a
+built-in 8-by-16 bitmap font. It supports newline, carriage return,
+backspace, tab, scrolling, CSI `2J`, `H`, `K`, and SGR reset/basic 8-color
+foreground/background sequences.
 
-- Virtual terminals.
-- TTY subsystem.
-- ANSI/VT100-compatible terminal subset.
-- Bitmap fonts initially.
-- TrueType font support later.
+Standard input is a canonical TTY: Enter queues the line with a newline;
+backspace edits the current line; Ctrl-D on an empty line delivers EOF, while
+Ctrl-D on a nonempty line queues that line without inserting Ctrl-D or a
+newline. The line buffer is 256 bytes including newline, and excess input is
+rejected without overwriting buffered data. Standard output is routed once
+through a console fan-out to the active framebuffer terminal and serial.
+Kernel diagnostics continue through the serial logger directly. Unicode,
+termios, signal delivery, mouse input, and TrueType fonts remain deferred.
 
 Graphics architecture
 

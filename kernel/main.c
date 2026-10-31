@@ -15,6 +15,7 @@
 #include "kernel/block.h"
 #include "kernel/block_silliconfs.h"
 #include "kernel/silliconfs.h"
+#include "kernel/tty.h"
 #include "arch/x86_64/ahci.h"
 #include "arch/x86_64/user.h"
 #include "arch/x86_64/lapic.h"
@@ -22,6 +23,7 @@
 #include "arch/x86_64/ioapic.h"
 #include "arch/x86_64/pci.h"
 #include "arch/x86_64/interrupts.h"
+#include "arch/x86_64/ps2_keyboard.h"
 
 #define SCHEDULER_TEST_STEPS 4U
 #define USER_TEST_CODE 0x400000ULL
@@ -368,6 +370,40 @@ _start(void)
 		klog("OpenSillicon: kernel heap initialization failed\n");
 		kernel_halt();
 	}
+	if (!tty_init(info.framebuffer)) {
+		klog("OpenSillicon: terminal initialization failed\n");
+		kernel_halt();
+	}
+	if (tty_framebuffer_available())
+		klog("OpenSillicon: framebuffer text renderer initialized\n");
+	else
+		klog("OpenSillicon: framebuffer renderer unavailable; serial console active\n");
+	if (tty_keyboard_available())
+		klog("OpenSillicon: polled PS/2 keyboard initialized\n");
+	else {
+		klog("OpenSillicon: PS/2 keyboard unavailable: ");
+		switch (ps2_keyboard_last_error()) {
+		case PS2_KEYBOARD_CONTROLLER_TIMEOUT:
+			klog("i8042 controller timeout\n");
+			break;
+		case PS2_KEYBOARD_CONFIG_READ_TIMEOUT:
+			klog("controller configuration read timeout\n");
+			break;
+		case PS2_KEYBOARD_CONFIG_WRITE_TIMEOUT:
+			klog("controller configuration write timeout\n");
+			break;
+		case PS2_KEYBOARD_PORT_ENABLE_FAILED:
+			klog("keyboard port enable timeout\n");
+			break;
+		case PS2_KEYBOARD_SCAN_ENABLE_FAILED:
+			klog("keyboard did not acknowledge scan enable\n");
+			break;
+		case PS2_KEYBOARD_OK:
+		default:
+			klog("initialization failed\n");
+			break;
+		}
+	}
 	klog("OpenSillicon: Limine RSDP address ");
 	klog_u64(info.rsdp_physical);
 	klog("\n");
@@ -494,5 +530,6 @@ _start(void)
 	klog("OpenSillicon: local APIC id ");
 	klog_u64(lapic_id());
 	klog("\nOpenSillicon: kernel heap ready\n");
-	kernel_halt();
+	klog("OpenSillicon terminal ready\n");
+	tty_console_loop();
 }
