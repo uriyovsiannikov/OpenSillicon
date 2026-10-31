@@ -89,6 +89,10 @@ Goal
 
 Establish reliable CPU initialization and exception handling.
 
+Per the approved dependency adjustment, LAPIC initialization moves to Phase 4
+after MMIO mapping is available, and IOAPIC initialization moves to Phase 10
+after ACPI MADT support.
+
 Tasks
 
 - Implement GDT.
@@ -96,16 +100,12 @@ Tasks
 - Configure TSS.
 - Implement CPU exception handlers.
 - Implement interrupt dispatch.
-- Add LAPIC initialization.
-- Add IOAPIC initialization.
-- Keep legacy PIC handling only where necessary.
 
 Done criteria
 
 - CPU exceptions are reported correctly.
 - Invalid memory access causes a diagnostic page fault.
 - Interrupt dispatch works.
-- LAPIC and IOAPIC initialize in QEMU.
 - Kernel panic is reliable.
 
 ---
@@ -146,6 +146,7 @@ Tasks
 
 - Implement four-level x86_64 paging.
 - Implement page mapping and unmapping.
+- Map the LAPIC MMIO page and initialize the local APIC.
 - Implement kernel higher-half mappings.
 - Establish userspace address-space layout.
 - Implement page fault handling.
@@ -156,6 +157,7 @@ Done criteria
 
 - Kernel mappings work.
 - Page permissions are enforced.
+- LAPIC MMIO is accessible and local APIC initialization succeeds in QEMU.
 - Address spaces can be created and destroyed.
 - Invalid accesses are detected.
 - Kernel heap allocation works.
@@ -172,6 +174,7 @@ Introduce scheduling and preemption.
 Tasks
 
 - Initialize LAPIC Timer.
+- Mask the legacy PIC before enabling LAPIC timer interrupts.
 - Add HPET support for calibration and timekeeping where available.
 - Implement timer interrupt handling.
 - Implement kernel thread abstraction.
@@ -309,6 +312,7 @@ Tasks
 
 - Implement PCI/PCIe enumeration.
 - Integrate ACPICA with OpenSillicon glue.
+- Discover ACPI MADT through ACPICA and initialize the IOAPIC.
 - Implement AHCI driver.
 - Implement block device interface.
 - Support 512-byte and 4096-byte logical sectors.
@@ -320,6 +324,7 @@ Done criteria
 
 - PCI devices are enumerated.
 - ACPI tables are parsed.
+- IOAPIC initializes using ACPI MADT data.
 - AHCI controller is detected.
 - SATA storage is accessible.
 - SilliconFS mounts from a disk image or virtual disk.

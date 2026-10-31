@@ -14,21 +14,45 @@ KERNEL_CFLAGS := -std=c11 -O2 -g -ffreestanding -fno-stack-protector \
 	-Wall -Wextra -Werror -Ilimine
 KERNEL_LDFLAGS := -nostdlib -static -no-pie -z max-page-size=0x1000 \
 	-T kernel/linker.ld
+KERNEL_ASFLAGS := -m64 -mno-red-zone
 
-.PHONY: all kernel iso run test clean
+.PHONY: all kernel iso run test fault-test interrupt-test clean
 
 all: kernel
 
 kernel: $(BUILD_DIR)/kernel.elf
 
-$(BUILD_DIR)/main.o: kernel/main.c include/kernel/boot.h limine/limine.h | $(BUILD_DIR)
+$(BUILD_DIR)/main.o: kernel/main.c include/kernel/boot.h include/kernel/log.h \
+		include/arch/x86_64/interrupts.h \
+		limine/limine.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/boot.o: kernel/boot.c include/kernel/boot.h limine/limine.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/kernel.elf: $(BUILD_DIR)/main.o $(BUILD_DIR)/boot.o kernel/linker.ld
-	$(LD) $(KERNEL_LDFLAGS) $(BUILD_DIR)/main.o $(BUILD_DIR)/boot.o -o $@
+$(BUILD_DIR)/log.o: kernel/log.c include/kernel/log.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/interrupts.o: kernel/arch/x86_64/interrupts.c \
+		include/arch/x86_64/gdt.h include/arch/x86_64/interrupts.h \
+		include/kernel/log.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/gdt.o: kernel/arch/x86_64/gdt.c include/arch/x86_64/gdt.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/gdt_asm.o: kernel/arch/x86_64/gdt.S | $(BUILD_DIR)
+	$(CC) $(KERNEL_ASFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/interrupts_asm.o: kernel/arch/x86_64/interrupts.S | $(BUILD_DIR)
+	$(CC) $(KERNEL_ASFLAGS) -c $< -o $@
+
+KERNEL_OBJECTS := $(BUILD_DIR)/main.o $(BUILD_DIR)/boot.o $(BUILD_DIR)/log.o \
+	$(BUILD_DIR)/gdt.o $(BUILD_DIR)/interrupts.o $(BUILD_DIR)/gdt_asm.o \
+	$(BUILD_DIR)/interrupts_asm.o
+
+$(BUILD_DIR)/kernel.elf: $(KERNEL_OBJECTS) kernel/linker.ld
+	$(LD) $(KERNEL_LDFLAGS) $(KERNEL_OBJECTS) -o $@
 
 $(BUILD_DIR):
 	mkdir -p $@
@@ -55,6 +79,24 @@ test: | $(BUILD_DIR)
 	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Ilimine \
 		kernel/boot.c tests/boot_test.c -o $(BUILD_DIR)/boot_test
 	$(BUILD_DIR)/boot_test
+
+fault-test:
+	$(MAKE) BUILD_DIR=$(BUILD_DIR)/fault \
+		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DKERNEL_TEST_PAGE_FAULT' iso
+	@set +e; timeout 8s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \
+		-cdrom $(BUILD_DIR)/fault/opensillicon.iso \
+		-serial file:$(BUILD_DIR)/fault/serial.log -display none \
+		-no-reboot -no-shutdown; status=$$?; test $$status -eq 124
+	@grep -F 'OpenSillicon exception: vector 14' $(BUILD_DIR)/fault/serial.log
+
+interrupt-test:
+	$(MAKE) BUILD_DIR=$(BUILD_DIR)/interrupt \
+		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DKERNEL_TEST_INTERRUPT' iso
+	@set +e; timeout 8s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \
+		-cdrom $(BUILD_DIR)/interrupt/opensillicon.iso \
+		-serial file:$(BUILD_DIR)/interrupt/serial.log -display none \
+		-no-reboot -no-shutdown; status=$$?; test $$status -eq 124
+	@grep -F 'unexpected interrupt vector 128' $(BUILD_DIR)/interrupt/serial.log
 
 clean:
 	rm -rf $(BUILD_DIR)

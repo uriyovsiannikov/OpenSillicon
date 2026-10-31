@@ -148,8 +148,8 @@ The kernel must implement:
 
 Interrupt controllers
 
-- LAPIC.
-- IOAPIC.
+- LAPIC initializes after the VMM can map its MMIO page.
+- IOAPIC initialization waits for ACPI table support and ACPICA in Phase 10.
 - PIC compatibility only where necessary during early boot.
 
 Timers

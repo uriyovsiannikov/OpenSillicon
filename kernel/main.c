@@ -1,6 +1,8 @@
 #include <stdint.h>
 #include "limine.h"
 #include "kernel/boot.h"
+#include "kernel/log.h"
+#include "arch/x86_64/interrupts.h"
 
 __attribute__((used, section(".limine_requests_start")))
 static volatile uint64_t limine_requests_start[] = LIMINE_REQUESTS_START_MARKER;
@@ -31,74 +33,6 @@ static volatile struct limine_framebuffer_request framebuffer_request = {
 __attribute__((used, section(".limine_requests_end")))
 static volatile uint64_t limine_requests_end[] = LIMINE_REQUESTS_END_MARKER;
 
-#define COM1 0x3f8
-
-static inline void
-outb(uint16_t port, uint8_t value)
-{
-	__asm__ volatile ("outb %0, %1" : : "a" (value), "Nd" (port));
-}
-
-static inline uint8_t
-inb(uint16_t port)
-{
-	uint8_t value;
-	__asm__ volatile ("inb %1, %0" : "=a" (value) : "Nd" (port));
-	return value;
-}
-
-static void
-serial_init(void)
-{
-	outb(COM1 + 1, 0x00);
-	outb(COM1 + 3, 0x80);
-	outb(COM1 + 0, 0x03);
-	outb(COM1 + 1, 0x00);
-	outb(COM1 + 3, 0x03);
-	outb(COM1 + 2, 0xc7);
-	outb(COM1 + 4, 0x0b);
-}
-
-static void
-serial_putc(char c)
-{
-	while ((inb(COM1 + 5) & 0x20) == 0)
-		;
-	outb(COM1, (uint8_t)c);
-}
-
-static void
-klog(const char *message)
-{
-	while (*message != '\0') {
-		if (*message == '\n')
-			serial_putc('\r');
-		serial_putc(*message++);
-	}
-}
-
-static void
-klog_u64(uint64_t value)
-{
-	char digits[20];
-	size_t count = 0;
-
-	do {
-		digits[count++] = (char)('0' + value % 10);
-		value /= 10;
-	} while (value != 0 && count < sizeof(digits));
-	while (count != 0)
-		serial_putc(digits[--count]);
-}
-
-static void
-halt(void)
-{
-	for (;;) {
-		__asm__ volatile ("cli; hlt");
-	}
-}
-
 void
 _start(void)
 {
@@ -114,17 +48,28 @@ _start(void)
 		klog("OpenSillicon: invalid boot information, error ");
 		klog_u64((uint64_t)error);
 		klog("\n");
-		halt();
+		kernel_halt();
 	}
 	if (!bootstrap_allocator_init(&allocator, &info)) {
 		klog("OpenSillicon: bootstrap allocator initialization failed\n");
-		halt();
+		kernel_halt();
 	}
 	allocation = bootstrap_alloc(&allocator, 16, 16);
 	if (allocation == NULL) {
 		klog("OpenSillicon: bootstrap allocation failed\n");
-		halt();
+		kernel_halt();
 	}
+	idt_init();
+#ifdef KERNEL_TEST_INTERRUPT
+	__asm__ volatile ("int $128");
+#endif
+#ifdef KERNEL_TEST_PAGE_FAULT
+	{
+		volatile uintptr_t test_address = 0;
+		__asm__ volatile ("" : "+r" (test_address));
+		*(volatile uint64_t *)test_address = 1;
+	}
+#endif
 	klog("OpenSillicon: UEFI boot information parsed\n");
 	klog("OpenSillicon: memory map entries ");
 	klog_u64(info.memmap->entry_count);
@@ -134,12 +79,12 @@ _start(void)
 	if (info.framebuffer != NULL) {
 		klog("OpenSillicon: framebuffer ");
 		klog_u64(info.framebuffer->width);
-		serial_putc('x');
+		klog("x");
 		klog_u64(info.framebuffer->height);
 		klog("\n");
 	} else {
 		klog("OpenSillicon: no framebuffer available\n");
 	}
 	klog("OpenSillicon: bootstrap allocator ready\n");
-	halt();
+	kernel_halt();
 }
