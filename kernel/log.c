@@ -39,6 +39,21 @@ serial_putc(char c)
 	outb(COM1, (uint8_t)c);
 }
 
+bool
+serial_write(const char *buffer, size_t length)
+{
+	size_t i;
+
+	if (buffer == NULL && length != 0)
+		return false;
+	for (i = 0; i < length; i++) {
+		if (buffer[i] == '\n')
+			serial_putc('\r');
+		serial_putc(buffer[i]);
+	}
+	return true;
+}
+
 void
 klog(const char *message)
 {

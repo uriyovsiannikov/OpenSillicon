@@ -268,6 +268,14 @@ FreeBSD may be used as a reference, but binary compatibility is not a goal.
 
 The syscall ABI must be documented and versioned carefully.
 
+ADR-001 defines ABI version 1: `int 0x80`, syscall number/result in `RAX`,
+arguments in `RDI`, `RSI`, `RDX`, `R10`, `R8`, and `R9`; success clears CF,
+while errors return positive errno in `RAX` with CF set. Initial calls are
+append-only: 0 (ABI version), 1 (exit), 2 (write), and 3 (getpid). Phase 6
+provides standard serial output descriptors 1 and 2 and a 4096-byte write
+limit. Full process and VFS-backed descriptor semantics arrive in later
+phases.
+
 Userspace
 
 The system will provide:

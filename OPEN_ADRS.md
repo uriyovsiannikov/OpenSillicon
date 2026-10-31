@@ -13,7 +13,23 @@ When implementation depends on one of them, stop and request clarification or pr
 
 ADR-001 — System Call ABI
 
-Status: Open
+Status: Accepted
+
+Decision (Phase 6): use `int 0x80` for syscall entry. `RAX` carries the
+syscall number and return value; arguments use `RDI`, `RSI`, `RDX`, `R10`,
+`R8`, and `R9` in order. Success clears CF. Errors return a positive errno
+value in `RAX` and set CF. Initial append-only numbers are 0 (`get ABI
+version`), 1 (`exit`), 2 (`write`), and 3 (`getpid`). The ABI version returned
+by syscall 0 is 1. New calls append numbers; assigned numbers and semantics
+are not reused or changed. This initial kernel supports a 4096-byte maximum
+single `write`, standard descriptors 1 and 2 for serial output, and the
+minimal process identity value 1.
+
+Rationale: the interrupt gate offers a simple, debuggable entry path while
+Ring 3 support is new. The explicit CF error convention distinguishes errors
+from successful values without reserving a range of successful returns.
+Fast `syscall`/`sysret` entry can be considered later without changing this
+userspace calling convention.
 
 Define the exact syscall ABI.
 
@@ -25,6 +41,9 @@ Questions:
 - How are errors represented?
 - Which initial syscall numbers are required?
 - How should the ABI evolve without breaking userspace?
+
+These questions are resolved by this decision for ABI version 1. Later calls
+require a compatible append-only extension.
 
 Reference: BSD and FreeBSD syscall conventions.
 

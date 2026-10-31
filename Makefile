@@ -15,6 +15,8 @@ KERNEL_CFLAGS := -std=c11 -O2 -g -ffreestanding -fno-stack-protector \
 KERNEL_LDFLAGS := -nostdlib -static -no-pie -z max-page-size=0x1000 \
 	-T kernel/linker.ld
 KERNEL_ASFLAGS := -m64 -mno-red-zone
+USER_ASFLAGS := -m64 -ffreestanding -fno-pic -fno-pie -mno-red-zone
+USER_LDFLAGS := -nostdlib -static -no-pie -T user/linker.ld
 
 .PHONY: all kernel iso run test fault-test interrupt-test vmm-protection-test \
 	timer-test clean
@@ -27,6 +29,7 @@ $(BUILD_DIR)/main.o: kernel/main.c include/kernel/boot.h include/kernel/log.h \
 		include/kernel/pmm.h include/kernel/vmm.h include/kernel/heap.h \
 		include/kernel/timer.h include/kernel/scheduler.h \
 		include/arch/x86_64/lapic.h include/arch/x86_64/interrupts.h \
+		include/arch/x86_64/user.h include/kernel/fd.h include/kernel/syscall.h \
 		limine/limine.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
@@ -47,6 +50,14 @@ $(BUILD_DIR)/heap.o: kernel/mm/heap.c include/kernel/heap.h \
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/log.o: kernel/log.c include/kernel/log.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/fd.o: kernel/fd.c include/kernel/fd.h include/kernel/log.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/syscall.o: kernel/syscall.c include/kernel/syscall.h \
+		include/kernel/fd.h include/kernel/vmm.h include/kernel/log.h \
+		include/arch/x86_64/user.h include/arch/x86_64/interrupts.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/interrupts.o: kernel/arch/x86_64/interrupts.c \
@@ -80,11 +91,33 @@ $(BUILD_DIR)/interrupts_asm.o: kernel/arch/x86_64/interrupts.S | $(BUILD_DIR)
 $(BUILD_DIR)/context.o: kernel/arch/x86_64/context.S | $(BUILD_DIR)
 	$(CC) $(KERNEL_ASFLAGS) -c $< -o $@
 
+$(BUILD_DIR)/user_entry.o: kernel/arch/x86_64/user_entry.S | $(BUILD_DIR)
+	$(CC) $(KERNEL_ASFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/user_entry_c.o: kernel/arch/x86_64/user_entry.c | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/user_test.o: user/test.S | $(BUILD_DIR)
+	$(CC) $(USER_ASFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/user_test.elf: $(BUILD_DIR)/user_test.o user/linker.ld
+	$(LD) $(USER_LDFLAGS) $< -o $@
+
+$(BUILD_DIR)/user_test.bin: $(BUILD_DIR)/user_test.elf
+	objcopy -O binary $< $@
+
+$(BUILD_DIR)/user_test_blob.o: $(BUILD_DIR)/user_test.bin
+	cd $(BUILD_DIR) && objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
+		--rename-section .data=.rodata,alloc,load,readonly,data,contents \
+		user_test.bin user_test_blob.o
+
 KERNEL_OBJECTS := $(BUILD_DIR)/main.o $(BUILD_DIR)/boot.o $(BUILD_DIR)/pmm.o \
 	$(BUILD_DIR)/vmm.o $(BUILD_DIR)/heap.o $(BUILD_DIR)/log.o \
 	$(BUILD_DIR)/gdt.o $(BUILD_DIR)/lapic.o $(BUILD_DIR)/timer.o \
 	$(BUILD_DIR)/scheduler.o $(BUILD_DIR)/interrupts.o $(BUILD_DIR)/gdt_asm.o \
-	$(BUILD_DIR)/interrupts_asm.o $(BUILD_DIR)/context.o
+	$(BUILD_DIR)/interrupts_asm.o $(BUILD_DIR)/context.o $(BUILD_DIR)/fd.o \
+	$(BUILD_DIR)/syscall.o $(BUILD_DIR)/user_entry.o \
+	$(BUILD_DIR)/user_entry_c.o $(BUILD_DIR)/user_test_blob.o
 
 $(BUILD_DIR)/kernel.elf: $(KERNEL_OBJECTS) kernel/linker.ld
 	$(LD) $(KERNEL_LDFLAGS) $(KERNEL_OBJECTS) -o $@

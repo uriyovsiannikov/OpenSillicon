@@ -7,10 +7,70 @@
 #include "kernel/heap.h"
 #include "kernel/timer.h"
 #include "kernel/scheduler.h"
+#include "kernel/fd.h"
+#include "kernel/syscall.h"
+#include "arch/x86_64/user.h"
 #include "arch/x86_64/lapic.h"
 #include "arch/x86_64/interrupts.h"
 
 #define SCHEDULER_TEST_STEPS 4U
+#define USER_TEST_CODE 0x400000ULL
+#define USER_TEST_FAULT (USER_TEST_CODE + 0x400ULL)
+#define USER_TEST_STACK (0x00007ffffffff000ULL - 0x1000ULL)
+#define PAGE_SIZE 4096U
+
+static void
+run_user_test(void)
+{
+	struct address_space space;
+	struct fd_table descriptors;
+	uint64_t code_page;
+	uint64_t stack_page;
+	uint64_t image_size = (uintptr_t)_binary_user_test_bin_end -
+	    (uintptr_t)_binary_user_test_bin_start;
+	uint64_t status;
+	uint64_t unmapped;
+	uint8_t *code;
+	uint64_t i;
+
+	if (image_size == 0 || image_size > PAGE_SIZE ||
+	    !pmm_alloc_page(&code_page) || !pmm_alloc_page(&stack_page) ||
+	    !address_space_create(&space)) {
+		klog("OpenSillicon: user test allocation failed\n");
+		kernel_halt();
+	}
+	code = (uint8_t *)(uintptr_t)(vmm_hhdm_offset() + code_page);
+	for (i = 0; i < image_size; i++)
+		code[i] = _binary_user_test_bin_start[i];
+	if (!vmm_map_page(&space, USER_TEST_CODE, code_page,
+	    VMM_USER | VMM_EXEC) || !vmm_map_page(&space, USER_TEST_STACK,
+	    stack_page, VMM_USER | VMM_WRITE) || !address_space_activate(&space)) {
+		klog("OpenSillicon: user test mapping failed\n");
+		kernel_halt();
+	}
+	fd_table_init_standard(&descriptors);
+	syscall_init(&descriptors);
+	status = user_enter(USER_TEST_CODE, USER_TEST_STACK + PAGE_SIZE);
+	if (status != 0) {
+		klog("OpenSillicon: user syscall test failed, status ");
+		klog_u64(status);
+		klog("\n");
+		kernel_halt();
+	}
+	status = user_enter(USER_TEST_FAULT, USER_TEST_STACK + PAGE_SIZE);
+	if (status != 0x10eU ||
+	    !address_space_activate(vmm_kernel_address_space()) ||
+	    !vmm_unmap_page(&space, USER_TEST_CODE, &unmapped) ||
+	    unmapped != code_page || !vmm_unmap_page(&space, USER_TEST_STACK,
+	    &unmapped) || unmapped != stack_page || !address_space_destroy(&space) ||
+	    !pmm_free_page(code_page) || !pmm_free_page(stack_page)) {
+		klog("OpenSillicon: user test failed, status ");
+		klog_u64(status);
+		klog("\n");
+		kernel_halt();
+	}
+	klog("OpenSillicon: Ring 3 isolation and syscall tests passed\n");
+}
 
 static volatile uint64_t scheduler_test_order[SCHEDULER_TEST_STEPS * 2];
 static volatile uint64_t scheduler_test_count;
@@ -188,6 +248,7 @@ _start(void)
 		kernel_halt();
 	}
 	klog("OpenSillicon: address space destroyed\n");
+	run_user_test();
 	if (!scheduler_init() ||
 	    !thread_create(scheduler_test_worker, (void *)(uintptr_t)0) ||
 	    !thread_create(scheduler_test_worker, (void *)(uintptr_t)1)) {

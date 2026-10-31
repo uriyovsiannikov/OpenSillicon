@@ -2,6 +2,7 @@
 #define KERNEL_VMM_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "kernel/boot.h"
@@ -24,7 +25,10 @@ bool vmm_unmap_page(struct address_space *space, uint64_t virtual_address,
 bool address_space_create(struct address_space *space);
 bool address_space_activate(const struct address_space *space);
 bool address_space_destroy(struct address_space *space);
+struct address_space *vmm_active_address_space(void);
 uint64_t vmm_hhdm_offset(void);
+bool vmm_copy_from_user(const struct address_space *space, void *destination,
+	uint64_t source, size_t length);
 struct address_space *vmm_kernel_address_space(void);
 uint64_t vmm_heap_start(void);
 uint64_t vmm_heap_end(void);

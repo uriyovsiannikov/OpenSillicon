@@ -209,6 +209,11 @@ Tasks
 - Implement basic process memory protection.
 - Implement basic file descriptor abstractions.
 
+The initial ABI is recorded in ADR-001. Phase 6 uses a small user-mode smoke
+image to exercise ABI version, process ID, standard output, invalid descriptor
+and pointer handling, unknown calls, and process exit. File descriptors are
+limited to serial descriptors 1 and 2 until VFS work in Phase 8.
+
 Done criteria
 
 - Kernel can enter Ring 3.
@@ -216,6 +221,7 @@ Done criteria
 - User code cannot access protected kernel memory.
 - System calls work.
 - Invalid syscall requests are handled safely.
+- User mappings cannot access supervisor-only kernel mappings.
 
 ---
 

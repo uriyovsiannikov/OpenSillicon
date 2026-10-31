@@ -27,6 +27,7 @@ extern char __kernel_end[];
 
 static uint64_t hhdm_offset;
 static struct address_space kernel_space;
+static struct address_space *active_space;
 static struct address_space *address_spaces;
 static bool initialized;
 
@@ -168,6 +169,7 @@ vmm_init(const struct boot_info *info)
 	__asm__ volatile ("mov %%cr0, %%rax; or $0x10000, %%rax; mov %%rax, %%cr0"
 	    : : : "rax", "memory");
 	kernel_space.root_physical = read_cr3();
+	active_space = &kernel_space;
 	initialized = true;
 	return true;
 }
@@ -369,6 +371,7 @@ address_space_activate(const struct address_space *space)
 	    table_virtual(space->root_physical) == NULL)
 		return false;
 	__asm__ volatile ("mov %0, %%cr3" : : "r" (space->root_physical) : "memory");
+	active_space = (struct address_space *)space;
 	return true;
 }
 
@@ -460,10 +463,103 @@ address_space_destroy(struct address_space *space)
 	return true;
 }
 
+static bool
+user_page_physical(const struct address_space *space, uint64_t virtual_address,
+	uint64_t *physical_address)
+{
+	static const unsigned int shifts[] = {39, 30, 21};
+	uint64_t *table = table_virtual(space->root_physical);
+	unsigned int i;
+
+	if (table == NULL)
+		return false;
+	for (i = 0; i < sizeof(shifts) / sizeof(shifts[0]); i++) {
+		unsigned int index = (unsigned int)((virtual_address >> shifts[i]) & 0x1ff);
+		uint64_t entry = table[index];
+
+		if ((entry & (PTE_PRESENT | PTE_USER)) != (PTE_PRESENT | PTE_USER) ||
+		    (entry & PTE_LARGE) != 0)
+			return false;
+		table = table_virtual(entry & PTE_ADDRESS);
+		if (table == NULL)
+			return false;
+	}
+	{
+		unsigned int index = (unsigned int)((virtual_address >> 12) & 0x1ff);
+		uint64_t entry = table[index];
+
+		if ((entry & (PTE_PRESENT | PTE_USER)) != (PTE_PRESENT | PTE_USER))
+			return false;
+		*physical_address = entry & PTE_ADDRESS;
+	}
+	return true;
+}
+
+bool
+vmm_copy_from_user(const struct address_space *space, void *destination,
+	uint64_t source, size_t length)
+{
+	uint64_t current;
+	uint64_t remaining;
+	uintptr_t output = (uintptr_t)destination;
+
+	if (!initialized || !address_space_valid(space) || space == &kernel_space ||
+	    (length != 0 && destination == NULL))
+		return false;
+	if (length == 0)
+		return true;
+	if (source < USER_BASE || source >= USER_END || length > USER_END - source ||
+	    length - 1 > UINTPTR_MAX - output)
+		return false;
+	current = source;
+	remaining = length;
+	while (remaining != 0) {
+		uint64_t physical;
+		uint64_t chunk = PAGE_SIZE - (current & (PAGE_SIZE - 1));
+
+		if (chunk > remaining)
+			chunk = remaining;
+		if (!user_page_physical(space, current, &physical))
+			return false;
+		current += chunk;
+		remaining -= chunk;
+	}
+	current = source;
+	remaining = length;
+	while (remaining != 0) {
+		uint64_t physical;
+		uint64_t chunk = PAGE_SIZE - (current & (PAGE_SIZE - 1));
+		const volatile uint8_t *input;
+		uint64_t i;
+
+		if (chunk > remaining)
+			chunk = remaining;
+		if (!user_page_physical(space, current, &physical) ||
+		    hhdm_offset > UINT64_MAX - physical ||
+		    chunk - 1 > UINTPTR_MAX - (uintptr_t)(hhdm_offset + physical +
+		    (current & (PAGE_SIZE - 1))))
+			return false;
+		input = (const volatile uint8_t *)(uintptr_t)(hhdm_offset + physical +
+		    (current & (PAGE_SIZE - 1)));
+		for (i = 0; i < chunk; i++)
+			((uint8_t *)output)[i] = input[i];
+		output += chunk;
+		current += chunk;
+		remaining -= chunk;
+	}
+	return true;
+}
+
 uint64_t
 vmm_hhdm_offset(void)
 {
 	return initialized ? hhdm_offset : 0;
+}
+
+struct address_space *
+vmm_active_address_space(void)
+{
+	return initialized ? active_space : NULL;
 }
 
 struct address_space *

@@ -3,11 +3,13 @@
 
 #include "arch/x86_64/gdt.h"
 #include "arch/x86_64/interrupts.h"
+#include "arch/x86_64/user.h"
 #include "kernel/log.h"
 
 #define IDT_ENTRIES 256
 #define KERNEL_CODE_SELECTOR 0x08
 #define IDT_INTERRUPT_GATE 0x8e
+#define USER_SYSCALL_VECTOR 128
 
 struct idt_gate {
 	uint16_t offset_low;
@@ -35,7 +37,8 @@ idt_set_gate(unsigned int vector, uintptr_t address)
 		.offset_low = address & 0xffff,
 		.selector = KERNEL_CODE_SELECTOR,
 		.ist = 0,
-		.type_attributes = IDT_INTERRUPT_GATE,
+		.type_attributes = vector == USER_SYSCALL_VECTOR ? 0xee :
+		    IDT_INTERRUPT_GATE,
 		.offset_middle = (address >> 16) & 0xffff,
 		.offset_high = address >> 32,
 		.reserved = 0
@@ -83,6 +86,12 @@ interrupt_dispatch(struct interrupt_frame *frame)
 		kernel_halt();
 	}
 	if (frame->vector < 32) {
+		if ((frame->cs & 3U) == 3U) {
+			klog("OpenSillicon: user exception vector ");
+			klog_u64(frame->vector);
+			klog("\n");
+			user_return_to_kernel(0x100U + frame->vector);
+		}
 		klog("OpenSillicon exception: vector ");
 		klog_u64(frame->vector);
 		klog(" error ");
