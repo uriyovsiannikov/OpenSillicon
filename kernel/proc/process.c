@@ -76,6 +76,10 @@ static uint64_t next_process_id = 1;
 static uint64_t user_preemptions;
 static uint64_t pipe_blocked_ticks;
 static bool initialized;
+#ifdef KERNEL_TEST_SHM_LIFECYCLE
+static uint64_t test_shm_reap_releases;
+static uint64_t test_shm_exec_releases;
+#endif
 
 static struct process *find_child(struct process *parent, uint64_t pid,
 	bool zombie_only);
@@ -334,6 +338,10 @@ process_system_init(void)
 	next_process_id = 1;
 	user_preemptions = 0;
 	pipe_blocked_ticks = 0;
+#ifdef KERNEL_TEST_SHM_LIFECYCLE
+	test_shm_reap_releases = 0;
+	test_shm_exec_releases = 0;
+#endif
 	initialized = true;
 }
 
@@ -561,6 +569,20 @@ process_pipe_blocked_ticks(void)
 {
 	return pipe_blocked_ticks;
 }
+
+#ifdef KERNEL_TEST_SHM_LIFECYCLE
+uint64_t
+process_test_shm_reap_releases(void)
+{
+	return test_shm_reap_releases;
+}
+
+uint64_t
+process_test_shm_exec_releases(void)
+{
+	return test_shm_exec_releases;
+}
+#endif
 
 static uint64_t
 process_run_elf_internal(const void *image, size_t image_size,
@@ -827,11 +849,27 @@ replace_process_image(struct interrupt_frame *frame, const void *image,
 		return frame;
 	}
 	if (old_image != NULL) {
+#ifdef KERNEL_TEST_SHM_LIFECYCLE
+		uint64_t live_before = shm_test_live_pages();
+#endif
 		release_loaded_image(old_image);
-	} else if (!address_space_destroy_with_pages(old_space) ||
-	    !kheap_free(old_space)) {
-		klog("OpenSillicon panic: exec could not release old address space\n");
-		kernel_halt();
+#ifdef KERNEL_TEST_SHM_LIFECYCLE
+		if (shm_test_live_pages() < live_before)
+			test_shm_exec_releases++;
+#endif
+	} else {
+#ifdef KERNEL_TEST_SHM_LIFECYCLE
+		uint64_t live_before = shm_test_live_pages();
+#endif
+		if (!address_space_destroy_with_pages(old_space) ||
+		    !kheap_free(old_space)) {
+			klog("OpenSillicon panic: exec could not release old address space\n");
+			kernel_halt();
+		}
+#ifdef KERNEL_TEST_SHM_LIFECYCLE
+		if (shm_test_live_pages() < live_before)
+			test_shm_exec_releases++;
+#endif
 	}
 	process->loaded_image = replacement;
 	process->address_space = &replacement->address_space;
@@ -966,7 +1004,17 @@ reap_child(struct process *parent, struct process *child,
 		return false;
 	}
 	remove_process(child);
+#ifdef KERNEL_TEST_SHM_LIFECYCLE
+	{
+		uint64_t live_before = shm_test_live_pages();
+
+		release_process(child);
+		if (shm_test_live_pages() < live_before)
+			test_shm_reap_releases++;
+	}
+#else
 	release_process(child);
+#endif
 	*error = 0;
 	return true;
 }

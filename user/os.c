@@ -39,6 +39,8 @@ long u_kill(uint64_t pid, uint64_t signo)
 long u_sigaction(uint64_t signo, const struct u_sigaction *new_action,
 	struct u_sigaction *old_action)
 { return syscall3(16, signo, (uintptr_t)new_action, (uintptr_t)old_action); }
+long u_shm_create(uint64_t size) { return syscall3(18, size, 0, 0); }
+long u_shm_detach(uint64_t base) { return syscall3(19, base, 0, 0); }
 __attribute__((naked, noreturn)) void u_sigreturn(void)
 {
 	__asm__ (".byte 0xb8, 0x11, 0x00, 0x00, 0x00\n"

@@ -525,8 +525,57 @@ Done criteria
 - Stage 13A and earlier regression suites pass.
 
 TTY reads remain outside signal interruption guarantees. Scheduler-aware TTY
-blocking, terminal-generated Ctrl-C, process groups, job control, shared
-memory, SIGPIPE, and broad POSIX interfaces are deferred.
+blocking, terminal-generated Ctrl-C, process groups, job control, SIGPIPE, and
+broad POSIX interfaces are deferred. Stage 13C defines the bounded anonymous
+shared-memory subset below; named shared memory and independent attach remain
+deferred.
+
+### Stage 13C — Anonymous Shared Memory
+
+Goal
+
+Add zero-filled shared mappings that processes can share through `fork()`,
+with explicit ownership and safe address-space teardown.
+
+Tasks
+
+- Append syscall 18 `shm_create(size)` and syscall 19 `shm_detach(base)`;
+  preserve ABI v1 calls 0–17.
+- Reserve arena `[0x0000700000000000, 0x00007fffffffc000)` with unmapped
+  boundary and inter-mapping guard pages. Use a monotonic per-address-space
+  cursor and do not reuse detached virtual addresses during that address
+  space's lifetime.
+- Reject ELF segments whose page-rounded ranges intersect the shared arena.
+- Create zero-filled user-readable, user-writable, non-executable mappings.
+- Preserve shared mappings at identical virtual addresses during fork while
+  eagerly copying ordinary private pages.
+- Track one shared-object reference per address-space mapping. Acquire a
+  child's reference before installing shared PTEs; roll back partial mappings
+  and release committed child mappings exactly once if fork later fails.
+- Make private-page destruction skip shared leaves. Remove page-table mappings
+  before releasing the final backing-page reference.
+- Release mappings on detach or address-space destruction. Successful exec
+  drops old mappings; failed exec preserves them. Zombie references remain
+  until reap under current process lifetime rules.
+- Test accounting and rollback on the host, and mapping, fork, exec, detach,
+  zombie/reap, and permissions under QEMU. Run Stage 13B and earlier
+  regression suites.
+
+Done criteria
+
+- Parent, child, and later fork descendants see writes to the same backing
+  pages; private pages retain eager-copy behavior.
+- Failed mapping and fork paths leave the parent unchanged and free no page
+  still mapped by another process. A fork failure after one completed shared
+  mapping releases that child reference exactly once.
+- Detach and address-space destruction release one reference each; backing
+  pages are freed exactly once after the final reference disappears.
+- Successful/failed exec and zombie/reap behavior match ADR-021.
+- Host, QEMU, and previous regression tests pass.
+
+ADR-021 defines Stage 13C. Named shared memory, independent attach, global
+object IDs, synchronization primitives, read-only or executable mappings,
+and POSIX shared-memory compatibility remain deferred.
 
 ---
 

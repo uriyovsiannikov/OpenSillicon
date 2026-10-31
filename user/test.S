@@ -46,6 +46,116 @@ _start:
 	cmpq $78, %rax
 	jne fail6
 
+	cmpq $1, 0x401000
+	je shm_success_phase
+
+	/* The kernel placed a private page on the second page of the first
+	 * candidate mapping. Failure after page one must roll back without moving
+	 * the cursor. */
+	movq $8192, %rdi
+	movq $18, %rax
+	int $128
+	jnc fail7
+	cmpq $12, %rax
+	jne fail7
+	movq $8192, %rdi
+	movq $18, %rax
+	int $128
+	jnc fail7
+	cmpq $12, %rax
+	jne fail7
+	movq $4096, %rdi
+	movq $18, %rax
+	int $128
+	jc fail7
+	movabsq $0x0000700000001000, %rcx
+	cmpq %rcx, %rax
+	jne fail7
+	xorq %rdi, %rdi
+	movq $1, %rax
+	int $128
+	ud2
+
+shm_success_phase:
+	xorq %rdi, %rdi
+	movq $18, %rax
+	int $128
+	jnc fail8
+	cmpq $22, %rax
+	jne fail8
+	movabsq $0xffffffffffffffff, %rdi
+	movq $18, %rax
+	int $128
+	jnc fail8
+	cmpq $22, %rax
+	jne fail8
+	movabsq $0x0000100000000000, %rdi
+	movq $18, %rax
+	int $128
+	jnc fail8
+	cmpq $12, %rax
+	jne fail8
+	movq $4096, %rdi
+	movq $18, %rax
+	int $128
+	jc fail9
+	movq %rax, %r12
+	movabsq $0x0000700000003000, %rcx
+	cmpq %rcx, %r12
+	jne fail9
+	movabsq $0x53484d5f54455354, %rcx
+	movq %rcx, (%r12)
+	cmpq %rcx, (%r12)
+	jne fail10
+	xorq %rdi, %rdi
+	movq $19, %rax
+	int $128
+	jnc fail11
+	cmpq $22, %rax
+	jne fail11
+	leaq 1(%r12), %rdi
+	movq $19, %rax
+	int $128
+	jnc fail11
+	cmpq $22, %rax
+	jne fail11
+	leaq 4096(%r12), %rdi
+	movq $19, %rax
+	int $128
+	jnc fail11
+	cmpq $22, %rax
+	jne fail11
+	movq %r12, %rdi
+	movq $19, %rax
+	int $128
+	jc fail12
+	testq %rax, %rax
+	jne fail12
+	movq %r12, %rdi
+	movq $19, %rax
+	int $128
+	jnc fail12
+	cmpq $22, %rax
+	jne fail12
+	movq $4097, %rdi
+	movq $18, %rax
+	int $128
+	jc fail13
+	movq %rax, %r12
+	movabsq $0x0000700000005000, %rcx
+	cmpq %rcx, %r12
+	jne fail13
+	movabsq $0x123456789abcdef0, %rcx
+	movq %rcx, 4096(%r12)
+	cmpq %rcx, 4096(%r12)
+	jne fail14
+	movq %r12, %rdi
+	movq $19, %rax
+	int $128
+	jc fail15
+	testq %rax, %rax
+	jne fail15
+
 	xorq %rdi, %rdi
 	movq $1, %rax
 	int $128
@@ -67,6 +177,33 @@ fail5:
 	jmp exit
 fail6:
 	movq $6, %rdi
+	jmp exit
+fail7:
+	movq $7, %rdi
+	jmp exit
+fail8:
+	movq $8, %rdi
+	jmp exit
+fail9:
+	movq $9, %rdi
+	jmp exit
+fail10:
+	movq $10, %rdi
+	jmp exit
+fail11:
+	movq $11, %rdi
+	jmp exit
+fail12:
+	movq $12, %rdi
+	jmp exit
+fail13:
+	movq $13, %rdi
+	jmp exit
+fail14:
+	movq $14, %rdi
+	jmp exit
+fail15:
+	movq $15, %rdi
 exit:
 	movq $1, %rax
 	int $128

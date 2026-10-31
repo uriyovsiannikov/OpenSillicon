@@ -3,6 +3,7 @@
 #include "kernel/elf.h"
 #include "kernel/heap.h"
 #include "kernel/pmm.h"
+#include "kernel/shm.h"
 #include "kernel/vmm.h"
 
 #define ELF_HEADER_SIZE 64U
@@ -56,6 +57,8 @@ static void
 reset_loaded_image(struct elf_loaded_image *loaded)
 {
 	loaded->address_space.root_physical = 0;
+	loaded->address_space.shm_next_address = 0;
+	loaded->address_space.shared_mappings.head = NULL;
 	loaded->address_space.next = NULL;
 	loaded->entry = 0;
 	loaded->page_count = 0;
@@ -154,7 +157,8 @@ elf_image_validate(const void *image, size_t image_size,
 		page_end = (end + ELF_PAGE_SIZE - 1) &
 		    ~(uint64_t)(ELF_PAGE_SIZE - 1);
 		if (page_start < ELF_USER_BASE || page_end > ELF_USER_END ||
-		    page_end <= page_start)
+		    page_end <= page_start ||
+		    (page_start < SHM_ARENA_END && SHM_ARENA_START < page_end))
 			return false;
 		page_count = (page_end - page_start) / ELF_PAGE_SIZE;
 		for (j = 0; j < plan->segment_count; j++) {

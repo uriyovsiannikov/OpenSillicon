@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "kernel/elf.h"
+#include "kernel/shm.h"
 
 #define TEST_IMAGE_SIZE 256U
 #define PROGRAM_HEADER_OFFSET 64U
@@ -243,6 +244,10 @@ main(void)
 	expect_invalid(image);
 	make_test_image(image);
 	put64(image, 24, 0x400000);
+	expect_invalid(image);
+	make_test_image(image);
+	put64(image, PROGRAM_HEADER_OFFSET + 16, SHM_ARENA_START + 128);
+	put64(image, 24, SHM_ARENA_START + 128);
 	expect_invalid(image);
 	make_test_image(image);
 	put32(image, PROGRAM_HEADER_OFFSET, 3);

@@ -21,6 +21,10 @@ struct interrupt_frame *process_sigaction(struct interrupt_frame *frame,
 	uint64_t *error);
 uint64_t process_user_preemptions(void);
 uint64_t process_pipe_blocked_ticks(void);
+#ifdef KERNEL_TEST_SHM_LIFECYCLE
+uint64_t process_test_shm_reap_releases(void);
+uint64_t process_test_shm_exec_releases(void);
+#endif
 struct interrupt_frame *process_timer_preempt(
 	struct interrupt_frame *frame);
 struct interrupt_frame *process_fork(struct interrupt_frame *frame,

@@ -42,7 +42,9 @@ ACPICA_CFLAGS := $(KERNEL_CFLAGS) -Wno-unused-parameter -fno-builtin \
 	interrupt-test vmm-protection-test timer-test clean acpica-check acpi-test \
 	pci-test block-test phase10-test phase11-test terminal-test \
 	terminal-qemu-test user-path-test phase12-qemu-test phase12-test \
-	pipe-test phase13a-test signal-state-test phase13b-test refresh-test-root
+	pipe-test phase13a-test signal-state-test phase13b-test refresh-test-root \
+	shm-test shm-failure-qemu-test shm-lifecycle-qemu-test \
+	shm-fork-failure-qemu-test
 
 all: kernel
 
@@ -71,7 +73,13 @@ $(BUILD_DIR)/pmm.o: kernel/mm/pmm.c include/kernel/pmm.h \
 
 $(BUILD_DIR)/vmm.o: kernel/mm/vmm.c include/kernel/vmm.h \
 		include/kernel/pmm.h include/kernel/boot.h include/kernel/log.h \
+		include/kernel/shm.h \
 		limine/limine.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/shm.o: kernel/mm/shm.c include/kernel/shm.h \
+		include/kernel/vmm.h include/kernel/pmm.h include/kernel/heap.h \
+		include/kernel/log.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/heap.o: kernel/mm/heap.c include/kernel/heap.h \
@@ -140,7 +148,7 @@ $(BUILD_DIR)/syscall.o: kernel/syscall.c include/kernel/syscall.h \
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/elf.o: kernel/elf.c include/kernel/elf.h include/kernel/vmm.h \
-		include/kernel/heap.h include/kernel/pmm.h | $(BUILD_DIR)
+		include/kernel/heap.h include/kernel/pmm.h include/kernel/shm.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/process.o: kernel/proc/process.c include/kernel/process.h \
@@ -251,6 +259,28 @@ $(BUILD_DIR)/user_pipe_exec_child.o: user/pipe_exec_child.c user/include/os.h | 
 $(BUILD_DIR)/user_signal_test.o: user/signal_test.c user/include/os.h | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) -mno-sse -mno-sse2 -msoft-float \
 		-Iuser -c $< -o $@
+
+$(BUILD_DIR)/user_shm_lifecycle_test.o: user/shm_lifecycle_test.c \
+		user/include/os.h | $(BUILD_DIR)
+	$(CC) $(USER_CFLAGS) -Iuser -c $< -o $@
+
+$(BUILD_DIR)/user_shm_fork_failure_test.o: user/shm_fork_failure_test.c \
+		user/include/os.h | $(BUILD_DIR)
+	$(CC) $(USER_CFLAGS) -Iuser -c $< -o $@
+
+$(BUILD_DIR)/shm_lifecycle_test.elf: $(BUILD_DIR)/user_start.o \
+		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
+		$(BUILD_DIR)/user_shm_lifecycle_test.o user/c_linker.ld
+	$(LD) $(USER_C_LDFLAGS) $(BUILD_DIR)/user_start.o \
+		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
+		$(BUILD_DIR)/user_shm_lifecycle_test.o -o $@
+
+$(BUILD_DIR)/shm_fork_failure_test.elf: $(BUILD_DIR)/user_start.o \
+		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
+		$(BUILD_DIR)/user_shm_fork_failure_test.o user/c_linker.ld
+	$(LD) $(USER_C_LDFLAGS) $(BUILD_DIR)/user_start.o \
+		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
+		$(BUILD_DIR)/user_shm_fork_failure_test.o -o $@
 
 $(BUILD_DIR)/signal_test.elf: $(BUILD_DIR)/user_start.o \
 		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
@@ -407,16 +437,20 @@ $(BUILD_DIR)/initramfs.cpio: $(shell find initramfs -type f -o -type d) \
 		$(BUILD_DIR)/exec_path_child.elf $(BUILD_DIR)/pipe_test.elf \
 		$(BUILD_DIR)/pipe_exec_child.elf $(BUILD_DIR)/signal_test.elf \
 		$(BUILD_DIR)/signal_exec_child.elf \
+		$(BUILD_DIR)/shm_lifecycle_test.elf \
+		$(BUILD_DIR)/shm_fork_failure_test.elf \
 		tools/mkinitramfs.py
 	python3 tools/mkinitramfs.py initramfs $@ \
 		--file bin/exec_path_child=$(BUILD_DIR)/exec_path_child.elf \
 		--file bin/pipe_test=$(BUILD_DIR)/pipe_test.elf \
 		--file bin/pipe_exec_child=$(BUILD_DIR)/pipe_exec_child.elf \
 		--file bin/signal_test=$(BUILD_DIR)/signal_test.elf \
-		--file bin/signal_exec_child=$(BUILD_DIR)/signal_exec_child.elf
+		--file bin/signal_exec_child=$(BUILD_DIR)/signal_exec_child.elf \
+		--file bin/shm_lifecycle_test=$(BUILD_DIR)/shm_lifecycle_test.elf \
+		--file bin/shm_fork_failure_test=$(BUILD_DIR)/shm_fork_failure_test.elf
 
 KERNEL_OBJECTS := $(BUILD_DIR)/main.o $(BUILD_DIR)/boot.o $(BUILD_DIR)/pmm.o \
-	$(BUILD_DIR)/vmm.o $(BUILD_DIR)/heap.o $(BUILD_DIR)/log.o \
+	$(BUILD_DIR)/vmm.o $(BUILD_DIR)/shm.o $(BUILD_DIR)/heap.o $(BUILD_DIR)/log.o \
 	$(BUILD_DIR)/gdt.o $(BUILD_DIR)/lapic.o $(BUILD_DIR)/acpi.o \
 	$(BUILD_DIR)/ioapic.o $(BUILD_DIR)/ahci.o $(BUILD_DIR)/block.o \
 	$(BUILD_DIR)/block_silliconfs.o \
@@ -603,6 +637,63 @@ phase13a-test: pipe-test phase12-test process-test vfs-smoke-test \
 
 phase13b-test: signal-state-test phase13a-test
 
+$(BUILD_DIR)/shm_test: kernel/mm/shm.c tests/shm_test.c \
+		include/kernel/shm.h include/kernel/vmm.h include/kernel/pmm.h \
+		include/kernel/heap.h include/kernel/log.h | $(BUILD_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Ilimine \
+		kernel/mm/shm.c tests/shm_test.c -o $@
+
+shm-test: $(BUILD_DIR)/shm_test
+	$(BUILD_DIR)/shm_test
+
+shm-failure-qemu-test:
+	$(MAKE) BUILD_DIR=$(BUILD_DIR)/shm-failure \
+		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DKERNEL_TEST_SHM_ALLOC_FAILURE' iso
+	$(MAKE) BUILD_DIR=$(BUILD_DIR)/shm-failure \
+		$(BUILD_DIR)/shm-failure/test-root.img
+	@set +e; timeout 12s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \
+		-cdrom $(BUILD_DIR)/shm-failure/opensillicon.iso \
+		-drive file=$(BUILD_DIR)/shm-failure/test-root.img,if=none,id=rootdisk,format=raw \
+		-device ide-hd,drive=rootdisk,bus=ide.0 \
+		-serial file:$(BUILD_DIR)/shm-failure/serial.log -display none \
+		-no-reboot -no-shutdown; status=$$?; test $$status -eq 124
+	@grep -F 'OpenSillicon test: injected shared backing allocation failure' \
+		$(BUILD_DIR)/shm-failure/serial.log
+	@grep -F 'OpenSillicon: Ring 3 and shared-memory syscall tests passed' \
+		$(BUILD_DIR)/shm-failure/serial.log
+
+shm-lifecycle-qemu-test:
+	$(MAKE) BUILD_DIR=build/shm-lifecycle \
+		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DKERNEL_TEST_SHM_LIFECYCLE' \
+		iso build/shm-lifecycle/test-root.img
+	@set +e; timeout 20s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \
+		-cdrom build/shm-lifecycle/opensillicon.iso \
+		-drive file=build/shm-lifecycle/test-root.img,if=none,id=rootdisk,format=raw \
+		-device ide-hd,drive=rootdisk,bus=ide.0 \
+		-serial file:build/shm-lifecycle/serial.log -display none \
+		-no-reboot -no-shutdown; status=$$?; test $$status -eq 124
+	@grep -F 'OpenSillicon: shared-memory fork generations, detach, zombie reap, exec, and failed exec passed' \
+		build/shm-lifecycle/serial.log
+	@grep -F 'OpenSillicon: shared-memory process lifecycle passed' \
+		build/shm-lifecycle/serial.log
+
+shm-fork-failure-qemu-test:
+	$(MAKE) BUILD_DIR=build/shm-fork-failure \
+		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DKERNEL_TEST_SHM_LIFECYCLE -DKERNEL_TEST_SHM_FORK_FAILURE' \
+		iso build/shm-fork-failure/test-root.img
+	@set +e; timeout 20s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \
+		-cdrom build/shm-fork-failure/opensillicon.iso \
+		-drive file=build/shm-fork-failure/test-root.img,if=none,id=rootdisk,format=raw \
+		-device ide-hd,drive=rootdisk,bus=ide.0 \
+		-serial file:build/shm-fork-failure/serial.log -display none \
+		-no-reboot -no-shutdown; status=$$?; test $$status -eq 124
+	@grep -F 'OpenSillicon test: injected shared fork mapping failure' \
+		build/shm-fork-failure/serial.log
+	@grep -F 'OpenSillicon: partial shared fork mapping rollback passed' \
+		build/shm-fork-failure/serial.log
+	@grep -F 'OpenSillicon: shared fork mapping rollback and reference cleanup passed' \
+		build/shm-fork-failure/serial.log
+
 vfs-smoke-test: iso $(BUILD_DIR)/test-root.img
 	@set +e; timeout 10s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \
 		-cdrom $(BUILD_DIR)/opensillicon.iso \
@@ -635,6 +726,12 @@ process-test: iso $(BUILD_DIR)/test-root.img
 	@grep -F 'OpenSillicon: anonymous pipe fork, exec, and blocking tests passed' \
 		$(BUILD_DIR)/process-serial.log
 	@grep -F 'OpenSillicon: signal delivery, sigreturn, and blocked syscall ' \
+		$(BUILD_DIR)/process-serial.log
+	@grep -F 'OpenSillicon: shared VMM marking, clone, detach, and teardown passed' \
+		$(BUILD_DIR)/process-serial.log
+	@grep -F 'OpenSillicon: Ring 3 and shared-memory syscall tests passed' \
+		$(BUILD_DIR)/process-serial.log
+	@grep -F 'OpenSillicon: shared-memory process lifecycle passed' \
 		$(BUILD_DIR)/process-serial.log
 	@grep -E 'OpenSillicon: pipe blocked timer ticks [1-9][0-9]*' \
 		$(BUILD_DIR)/process-serial.log

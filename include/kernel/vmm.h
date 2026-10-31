@@ -6,9 +6,12 @@
 #include <stdint.h>
 
 #include "kernel/boot.h"
+#include "kernel/shm.h"
 
 struct address_space {
 	uint64_t root_physical;
+	uint64_t shm_next_address;
+	struct shm_mapping_set shared_mappings;
 	struct address_space *next;
 };
 
@@ -22,6 +25,15 @@ bool vmm_map_page(struct address_space *space, uint64_t virtual_address,
 	uint64_t physical_address, unsigned int flags);
 bool vmm_unmap_page(struct address_space *space, uint64_t virtual_address,
 	uint64_t *physical_address);
+bool vmm_map_shared_object(struct address_space *space, uint64_t base,
+	struct shm_object *object);
+bool vmm_unmap_shared_object(struct address_space *space, uint64_t base);
+int vmm_shm_create(struct address_space *space, uint64_t size,
+	uint64_t *base_out);
+int vmm_shm_detach(struct address_space *space, uint64_t base);
+#ifdef KERNEL_TEST_SHM_FORK_FAILURE
+void vmm_test_arm_shm_fork_failure(void);
+#endif
 bool address_space_create(struct address_space *space);
 bool address_space_activate(const struct address_space *space);
 bool address_space_destroy(struct address_space *space);

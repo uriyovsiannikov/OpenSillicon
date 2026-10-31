@@ -21,6 +21,8 @@
 #define SYSCALL_KILL 15U
 #define SYSCALL_SIGACTION 16U
 #define SYSCALL_SIGRETURN 17U
+#define SYSCALL_SHM_CREATE 18U
+#define SYSCALL_SHM_DETACH 19U
 #define SYSCALL_ABI_VERSION 1U
 
 void syscall_init(struct fd_table *table);

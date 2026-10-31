@@ -46,16 +46,18 @@ run_user_test(void)
 	uint64_t code_page;
 	uint64_t stack_page;
 	uint64_t data_page;
+	uint64_t collision_page;
 	uint64_t image_size = (uintptr_t)_binary_user_test_bin_end -
 	    (uintptr_t)_binary_user_test_bin_start;
 	uint64_t status;
 	uint64_t unmapped;
+	uint64_t free_pages = pmm_free_pages();
 	uint8_t *code;
 	uint64_t i;
 
 	if (image_size == 0 || image_size > PAGE_SIZE ||
 	    !pmm_alloc_page(&code_page) || !pmm_alloc_page(&stack_page) ||
-	    !pmm_alloc_page(&data_page) ||
+	    !pmm_alloc_page(&data_page) || !pmm_alloc_page(&collision_page) ||
 	    !address_space_create(&space)) {
 		klog("OpenSillicon: user test allocation failed\n");
 		kernel_halt();
@@ -63,11 +65,14 @@ run_user_test(void)
 	code = (uint8_t *)(uintptr_t)(vmm_hhdm_offset() + code_page);
 	for (i = 0; i < image_size; i++)
 		code[i] = _binary_user_test_bin_start[i];
+	*(volatile uint64_t *)(uintptr_t)(vmm_hhdm_offset() + data_page) = 0;
 	if (!vmm_map_page(&space, USER_TEST_CODE, code_page,
 	    VMM_USER | VMM_EXEC) || !vmm_map_page(&space, USER_TEST_STACK,
 	    stack_page, VMM_USER | VMM_WRITE) ||
 	    !vmm_map_page(&space, USER_TEST_CODE + PAGE_SIZE, data_page,
 	    VMM_USER | VMM_WRITE) ||
+	    !vmm_map_page(&space, SHM_ARENA_START + 2 * SHM_PAGE_SIZE,
+	    collision_page, VMM_USER | VMM_WRITE) ||
 	    !vmm_validate_user_exec(&space, USER_TEST_CODE, 1) ||
 	    vmm_validate_user_exec(&space, USER_TEST_STACK, 1) ||
 	    vmm_validate_user_exec(&space, USER_TEST_CODE + PAGE_SIZE - 1, 2) ||
@@ -80,8 +85,27 @@ run_user_test(void)
 	fd_table_init_standard(&user_descriptors);
 	syscall_init(&user_descriptors);
 	status = user_enter(USER_TEST_CODE, USER_TEST_STACK + PAGE_SIZE);
+	if (status != 0 || !vmm_unmap_page(&space,
+	    SHM_ARENA_START + 2 * SHM_PAGE_SIZE, &unmapped) ||
+	    unmapped != collision_page || !vmm_unmap_shared_object(&space,
+	    SHM_ARENA_START + SHM_PAGE_SIZE) || !pmm_free_page(collision_page)) {
+		klog("OpenSillicon: shared syscall failure rollback test failed, status ");
+		klog_u64(status);
+		klog("\n");
+		kernel_halt();
+	}
+	{
+		uint64_t phase = 1;
+
+		if (!vmm_copy_to_user(&space, USER_TEST_CODE + PAGE_SIZE,
+		    &phase, sizeof(phase))) {
+			klog("OpenSillicon: shared syscall test phase setup failed\n");
+			kernel_halt();
+		}
+	}
+	status = user_enter(USER_TEST_CODE, USER_TEST_STACK + PAGE_SIZE);
 	if (status != 0) {
-		klog("OpenSillicon: user syscall test failed, status ");
+		klog("OpenSillicon: shared syscall success test failed, status ");
 		klog_u64(status);
 		klog("\n");
 		kernel_halt();
@@ -95,13 +119,90 @@ run_user_test(void)
 	    unmapped != data_page || !vmm_unmap_page(&space, USER_TEST_STACK,
 	    &unmapped) || unmapped != stack_page || !address_space_destroy(&space) ||
 	    !pmm_free_page(code_page) || !pmm_free_page(data_page) ||
-	    !pmm_free_page(stack_page)) {
+	    !pmm_free_page(stack_page) || pmm_free_pages() != free_pages) {
 		klog("OpenSillicon: user test failed, status ");
 		klog_u64(status);
 		klog("\n");
 		kernel_halt();
 	}
-	klog("OpenSillicon: Ring 3 isolation and syscall tests passed\n");
+	klog("OpenSillicon: Ring 3 and shared-memory syscall tests passed\n");
+}
+
+static void
+run_vmm_shared_test(void)
+{
+	const uint64_t private_address = 0x500000ULL;
+	const uint64_t shared_address = 0x600000ULL;
+	const uint64_t initial_private = 0x5052495641544531ULL;
+	const uint64_t changed_private = 0x5052495641544532ULL;
+	const uint64_t shared_value = 0x5348415245443031ULL;
+	const uint64_t changed_shared = 0x5348415245443032ULL;
+	struct address_space parent;
+	struct address_space child;
+	struct shm_object *object;
+	uint64_t private_page;
+	uint64_t value;
+	unsigned int step = 1;
+
+	if (!pmm_alloc_page(&private_page) || !address_space_create(&parent) ||
+	    !vmm_map_page(&parent, private_address, private_page,
+	    VMM_USER | VMM_WRITE))
+		goto fail;
+	step++;
+	if (!shm_object_create(1, &object) ||
+	    !vmm_map_shared_object(&parent, shared_address, object))
+		goto fail;
+	step++;
+	if (!vmm_copy_to_user(&parent, private_address, &initial_private,
+	    sizeof(initial_private)) ||
+	    !vmm_copy_to_user(&parent, shared_address, &shared_value,
+	    sizeof(shared_value)) || address_space_destroy(&parent))
+		goto fail;
+	if (!vmm_validate_user_write(&parent, shared_address, sizeof(value)) ||
+	    vmm_validate_user_exec(&parent, shared_address, 1))
+		goto fail;
+	step++;
+	if (!address_space_clone(&parent, &child))
+		goto fail;
+	step++;
+	if (!vmm_copy_to_user(&parent, private_address, &changed_private,
+	    sizeof(changed_private)) ||
+	    !vmm_copy_from_user(&child, &value, private_address, sizeof(value)) ||
+	    value != initial_private)
+		goto fail;
+	step++;
+	if (vmm_unmap_page(&child, shared_address, &private_page) ||
+	    !vmm_validate_user_write(&child, shared_address, sizeof(value)) ||
+	    vmm_validate_user_exec(&child, shared_address, 1) ||
+	    !vmm_copy_to_user(&child, shared_address, &changed_shared,
+	    sizeof(changed_shared)) ||
+	    !vmm_copy_from_user(&parent, &value, shared_address, sizeof(value)) ||
+	    value != changed_shared)
+		goto fail;
+	step++;
+	if (!address_space_destroy_with_pages(&child))
+		goto fail;
+	step++;
+	if (!vmm_copy_from_user(&parent, &value, shared_address, sizeof(value)) ||
+	    value != changed_shared)
+		goto fail;
+	step++;
+	if (!vmm_unmap_shared_object(&parent, shared_address))
+		goto fail;
+	step++;
+	if (vmm_copy_from_user(&parent, &value, shared_address, sizeof(value)))
+		goto fail;
+	step++;
+	if (!address_space_destroy_with_pages(&parent))
+		goto fail;
+	klog("OpenSillicon: shared VMM marking, clone, detach, and teardown passed\n");
+	return;
+
+fail:
+	klog("OpenSillicon: shared VMM mapping test failed\n");
+	klog_u64(step);
+	klog("\n");
+	kernel_halt();
 }
 
 static void
@@ -178,6 +279,47 @@ run_signal_test(void)
 	klog("OpenSillicon: signal delivery, sigreturn, and blocked syscall "
 	    "interruption passed\n");
 }
+
+static void
+run_shm_lifecycle_test(void)
+{
+	uint64_t status = process_run_path("/init/bin/shm_lifecycle_test", false);
+
+	if (status != 0) {
+		klog("OpenSillicon: shared-memory lifecycle test failed, status ");
+		klog_u64(status);
+		klog("\n");
+		kernel_halt();
+	}
+#ifdef KERNEL_TEST_SHM_LIFECYCLE
+	if (shm_test_live_pages() != 0 ||
+	    process_test_shm_reap_releases() == 0 ||
+	    process_test_shm_exec_releases() == 0) {
+		klog("OpenSillicon: shared-memory lifecycle accounting failed\n");
+		kernel_halt();
+	}
+#endif
+	klog("OpenSillicon: shared-memory process lifecycle passed\n");
+}
+
+#ifdef KERNEL_TEST_SHM_FORK_FAILURE
+static void
+run_shm_fork_failure_test(void)
+{
+	uint64_t live_before = shm_test_live_pages();
+	uint64_t status;
+
+	vmm_test_arm_shm_fork_failure();
+	status = process_run_path("/init/bin/shm_fork_failure_test", false);
+	if (status != 0 || shm_test_live_pages() != live_before) {
+		klog("OpenSillicon: shared fork rollback test failed, status ");
+		klog_u64(status);
+		klog("\n");
+		kernel_halt();
+	}
+	klog("OpenSillicon: shared fork mapping rollback and reference cleanup passed\n");
+}
+#endif
 
 static void
 initialize_filesystems(const struct boot_info *info)
@@ -523,11 +665,16 @@ _start(void)
 		kernel_halt();
 	}
 	klog("OpenSillicon: address space destroyed\n");
+	run_vmm_shared_test();
 	run_user_test();
 	run_elf_test();
 	run_vfs_test();
 	run_pipe_test();
 	run_signal_test();
+	run_shm_lifecycle_test();
+#ifdef KERNEL_TEST_SHM_FORK_FAILURE
+	run_shm_fork_failure_test();
+#endif
 	if (block_flush(&ahci_block_device) != 0) {
 		klog("OpenSillicon: root block flush failed\n");
 		kernel_halt();

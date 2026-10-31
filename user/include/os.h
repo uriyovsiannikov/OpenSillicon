@@ -47,6 +47,8 @@ long u_getpid(void);
 long u_kill(uint64_t pid, uint64_t signo);
 long u_sigaction(uint64_t signo, const struct u_sigaction *new_action,
 	struct u_sigaction *old_action);
+long u_shm_create(uint64_t size);
+long u_shm_detach(uint64_t base);
 _Noreturn void u_sigreturn(void);
 _Noreturn void u_exit(uint64_t status);
 size_t u_strlen(const char *string);

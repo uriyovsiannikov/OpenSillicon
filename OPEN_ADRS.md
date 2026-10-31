@@ -53,6 +53,11 @@ Stage 13B appends syscall 15 (`kill(pid, signo)`), 16
 exact signal contract, including restorer bytes, delivery atomicity, and
 transactional action updates, is defined by ADR-020. ABI version remains 1.
 
+Stage 13C appends syscall 18 (`shm_create(size)`) and 19
+(`shm_detach(base)`) for anonymous shared mappings inherited through
+`fork()`. Their exact mapping, lifetime, and rollback rules are defined by
+ADR-021. ABI version remains 1.
+
 Rationale: the interrupt gate offers a simple, debuggable entry path while
 Ring 3 support is new. The explicit CF error convention distinguishes errors
 from successful values without reserving a range of successful returns.
@@ -95,6 +100,16 @@ before using them. The kernel image and boot HHDM remain mapped in every
 address space; user mappings are isolated to the lower half. Stack and
 memory-mapped-file regions are allocated within the userspace range and use
 unmapped guard pages.
+
+Stage 13C reserves the lower-half range
+`[0x0000700000000000, 0x00007fffffffc000)` for anonymous shared mappings.
+The first and final arena pages are unmapped guards. Each mapping has an
+unmapped guard page after it, which also separates it from the next mapping.
+The per-address-space cursor advances monotonically; detach unmaps and releases
+the mapping but does not recycle its virtual range until that address space is
+destroyed. ELF load segments must reject any page-rounded range intersecting
+the shared-memory arena. The process stack remains at its existing address
+above the arena and is separated by the existing unmapped page.
 
 Alternatives considered:
 
@@ -397,11 +412,23 @@ releases the process memory and remaining process resources. Fork inherits the
 descriptor table. The initially supported standard
 descriptors retain their existing serial behavior.
 
+Stage 13C adds anonymous shared mappings through syscalls 18 and 19. A process
+creates a zero-filled RW/NX mapping; `fork()` maps the same backing pages at
+the same virtual addresses in the child, while private pages retain eager
+copy semantics. Descendants can inherit the mapping through later forks.
+Successful exec destroys the old address space and its mappings; failed exec
+leaves them intact. Detach removes only the caller's mapping. Shared backing
+pages are released after the last address-space mapping reference is dropped.
+Exited processes retain their references while zombies; reaping destroys the
+address space and releases them. Unrelated processes cannot attach. Named
+shared memory, global object IDs, synchronization primitives, read-only
+mappings, and POSIX shared-memory compatibility remain deferred.
+
 The scheduler remains single-CPU. LAPIC timer interrupts preempt userspace by
 saving and restoring the complete user interrupt frame on each process's
 kernel stack. Kernel threads continue to use cooperative Round Robin. Stage
-13B adds only the signals defined by ADR-020. Shared memory and
-multithreaded processes remain deferred.
+13B adds only the signals defined by ADR-020. Stage 13C adds the anonymous
+shared mappings defined by ADR-021. Multithreaded processes remain deferred.
 
 Phase 13A adds anonymous pipes only. Each pipe has a bounded 4096-byte kernel
 ring buffer and distinct read and write open-file objects. Descriptor
@@ -426,9 +453,10 @@ The process syscall numbers append to ABI v1: 4 (`fork`), 5 (`exec`), and 6
 (`waitpid`). `wait()` uses `waitpid(-1, status)`. PID allocation is monotonic
 for the lifetime of the kernel and does not reuse identifiers. Syscall 14 is
 reserved for `pipe` as described in ADR-001. Stage 13B adds only the signals
-defined by ADR-020; shared memory remains deferred. There is no `dup2`,
-shared-memory mapping, process groups, or broad libc/POSIX expansion in
-Phase 13.
+defined by ADR-020. Stage 13C adds only anonymous shared mappings through
+fork inheritance as defined by ADR-021. There is no `dup2`, named shared
+memory, unrelated-process attach, process groups, or broad libc/POSIX
+expansion in Phase 13.
 
 Rationale: eager copying keeps address-space ownership explicit before
 copy-on-write exists. Direct-child waits and a memory-buffer `exec` avoid
@@ -456,8 +484,8 @@ Questions:
 Use practical Unix/POSIX behavior as a reference without promising full POSIX compliance.
 
 These decisions resolve process creation, replacement, exit, wait, descriptor
-inheritance, Phase 13A anonymous pipe behavior, and Stage 13B signal semantics.
-Shared-memory lifecycle remains open for a later milestone.
+inheritance, Phase 13A anonymous pipe behavior, Stage 13B signal semantics,
+and Stage 13C anonymous shared-memory lifecycle.
 
 ---
 
@@ -475,8 +503,17 @@ sleeping from interrupt context, or SMP-safety guarantee is introduced. This
 decision covers anonymous pipes and serialized signal state/wakeup on the
 single active CPU. Signal checks, state updates, and interrupt-frame return
 selection occur with interrupts disabled; a signal wake is distinct from a
-resource-ready retry. A future SMP or general kernel-thread synchronization
-design requires a separate decision.
+resource-ready retry. Stage 13C shared-mapping creation, fork installation,
+detach, and teardown are serialized on the existing single active CPU. Each
+address-space mapping holds exactly one reference to its shared object. Fork
+acquires a child reference before installing child PTEs and publishes the
+child mapping record only after the entire region is mapped. Partial mapping
+rollback removes its PTEs before dropping that acquired reference. Completed
+child mappings are released by child-address-space teardown if a later clone
+step fails. Generic private-page cleanup skips shared PTEs; page-table changes
+are complete before the final object reference frees backing pages. This adds
+no SMP-safety or userspace synchronization guarantee. A future SMP or general
+kernel-thread synchronization design requires a separate decision.
 
 Define synchronization primitives.
 
@@ -1010,7 +1047,79 @@ Successful exec resets caught actions to default, preserves ignored actions,
 clears active-handler state, and preserves pending signals. Failed exec leaves
 all signal state unchanged. Shared memory, signal masks, nested handlers,
 SIGPIPE, terminal-generated signals, process groups, job control, and broad
-POSIX compatibility remain deferred.
+POSIX compatibility remain deferred except for the anonymous shared mappings
+specified by ADR-021.
+
+---
+
+ADR-021 — Stage 13C Anonymous Shared Memory
+
+Status: Accepted for Stage 13C implementation
+
+Stage 13C provides anonymous memory mappings shared only through `fork()`
+inheritance. Syscall 18, `shm_create(size)`, takes a nonzero byte size in
+`RDI`, rounds it up to 4096-byte pages with checked arithmetic, allocates and
+zeroes the backing pages, and returns the user virtual base in `RAX`. Syscall
+19, `shm_detach(base)`, takes the exact mapping base in `RDI`, unmaps it from
+the calling address space, and returns zero. Errors use the ABI v1
+positive-errno-in-`RAX`, carry-flag convention. Zero or overflowing sizes and
+invalid, stale, unaligned, or non-live detach bases return `EINVAL`;
+physical-memory or arena exhaustion returns `ENOMEM`. No existing syscall
+number or behavior changes.
+
+The arena is `[0x0000700000000000, 0x00007fffffffc000)`, with the end
+exclusive. The first and final arena pages remain unmapped as boundary guards.
+Each shared region is page-aligned and followed by one unmapped guard page;
+that page separates it from the next region. A per-address-space monotonic
+cursor begins one page after the arena start and advances past each mapping
+and its guard. Detach releases physical mapping ownership but does not rewind
+the cursor or reuse virtual addresses before address-space destruction. This
+avoids stale bases detaching a later mapping; repeated create/detach can
+eventually exhaust the virtual arena. ELF loading rejects any page-rounded
+segment range intersecting the arena. The existing process stack remains
+above the arena, with its current unmapped guard page below it.
+
+Mappings are user-readable, user-writable, and non-executable (RW/NX). There
+are no permission options. Backing pages are owned by a kernel shared object
+with one mapping reference per address space, not by a global PMM frame
+reference count. `fork()` preserves each shared mapping at the same virtual
+address and increments its object reference once; all ordinary private pages
+continue to be eagerly copied. A process can share with its child and later
+fork descendants. An unrelated process cannot attach to an existing mapping.
+
+Fork cloning copies private leaves first and skips leaves marked shared in the
+page tables. It then installs each shared region in the child. For each region
+the kernel allocates an unlinked child record, checks reference overflow,
+acquires the object reference before installing any shared PTE, and maps all
+backing pages at the parent's virtual addresses. The child mapping record is
+linked only after the full region is installed. If installation fails, the
+kernel unmaps the partial child PTEs, drops the reference acquired for that
+region exactly once, frees its unlinked record, and destroys the child address
+space. Destruction frees copied private pages and releases each earlier,
+committed shared region exactly once. The parent's mappings and references
+remain unchanged. A rollback failure to remove a newly installed PTE is a
+kernel invariant failure and must not proceed to backing-page release.
+
+Shared PTEs carry a software `PTE_SHARED` marker. Private-page clone and free
+walkers skip those physical leaves. Shared-aware address-space teardown first
+removes the address space's page tables, then drops its shared mapping
+references; the last reference frees the backing pages and object metadata.
+Direct page-table destruction must not discard a nonempty shared-mapping
+list. Detach removes the caller's PTEs before dropping its reference and
+leaves the virtual slot reserved until the address space is destroyed.
+
+Successful exec destroys the old address space and releases its mappings;
+failed exec leaves the old address space and mappings intact. Process exit
+marks the process zombie and retains its address space under existing process
+lifetime rules. Its shared references are released when `waitpid()` reaps the
+zombie and address-space destruction occurs. Each detach or address-space
+destruction releases one mapping reference exactly once.
+
+Named shared memory, independent attach, global object identifiers,
+synchronization primitives, read-only or executable mappings, and POSIX
+`shm_open()`/`shm_unlink()` compatibility are deferred. Shared memory is not
+an isolation boundary: participating fork descendants can observe and modify
+the same bytes, and no kernel identity or permission policy restricts them.
 
 ADR Process
 

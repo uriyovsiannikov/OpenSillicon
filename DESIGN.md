@@ -203,6 +203,10 @@ canonical userspace with the null 64 KiB and top page reserved; vmalloc at
 `0xffffc00000000000`–`0xffffe00000000000`; and kernel heap at
 `0xffffe00000000000`–`0xfffff00000000000`. The VMM validates arena overlaps
 against the boot HHDM span and linked kernel image before using them.
+Stage 13C reserves `[0x0000700000000000, 0x00007fffffffc000)` for anonymous
+shared mappings. It retains unmapped boundary and inter-mapping guard pages,
+uses a monotonic per-address-space cursor, and excludes the range from ELF
+segments; see ADR-021.
 
 Physical memory management
 
@@ -319,9 +323,16 @@ commits the new action, so output failure cannot partially change a
 disposition. Fork during an active handler fails with `EBUSY`; other fork and
 successful/failed exec signal-state rules are in ADR-020. Wait, sleep, and
 pipe blocking can be interrupted as specified there. TTY reads are not
-interruptible and no TTY blocking redesign is included. Shared memory,
-`SIGPIPE`, job control, terminal-generated signals, and broad libc/POSIX
-interfaces remain deferred.
+interruptible and no TTY blocking redesign is included. Stage 13C adds only
+anonymous shared mappings through fork inheritance, using syscalls 18 and 19.
+The mappings are zero-filled, RW/NX, and released by detach or address-space
+destruction. Fork shares those backing pages while eagerly copying private
+pages. Successful exec removes mappings; failed exec preserves them. Zombie
+process mappings remain until reap. See ADR-021 for arena, guard, allocator,
+and reference-count rules. Named shared memory, unrelated-process attach,
+global object IDs, synchronization primitives, read-only mappings, `SIGPIPE`,
+job control, terminal-generated signals, and broad libc/POSIX interfaces
+remain deferred.
 
 Userspace
 

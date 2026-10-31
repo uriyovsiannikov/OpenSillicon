@@ -201,6 +201,29 @@ syscall_interrupt(struct interrupt_frame *frame)
 	case SYSCALL_SIGRETURN:
 		frame = process_sigreturn(frame, &error);
 		break;
+	case SYSCALL_SHM_CREATE:
+		{
+			uint64_t base;
+			int result = vmm_shm_create(vmm_active_address_space(),
+			    frame->rdi, &base);
+
+			if (result != 0)
+				syscall_error(frame, errno_from_kernel(result));
+			else
+				frame->rax = base;
+		}
+		break;
+	case SYSCALL_SHM_DETACH:
+		{
+			int result = vmm_shm_detach(vmm_active_address_space(),
+			    frame->rdi);
+
+			if (result != 0)
+				syscall_error(frame, errno_from_kernel(result));
+			else
+				frame->rax = 0;
+		}
+		break;
 	case SYSCALL_OPEN:
 		{
 			char path[VFS_PATH_MAX];

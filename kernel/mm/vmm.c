@@ -2,6 +2,7 @@
 #include <stdint.h>
 
 #include "kernel/log.h"
+#include "kernel/errno.h"
 #include "kernel/pmm.h"
 #include "kernel/vmm.h"
 
@@ -12,6 +13,7 @@
 #define PTE_PWT 0x008ULL
 #define PTE_PCD 0x010ULL
 #define PTE_LARGE 0x080ULL
+#define PTE_SHARED 0x200ULL
 #define PTE_NX (1ULL << 63)
 #define PTE_ADDRESS 0x000ffffffffff000ULL
 #define USER_BASE 0x0000000000010000ULL
@@ -30,6 +32,10 @@ static struct address_space kernel_space;
 static struct address_space *active_space;
 static struct address_space *address_spaces;
 static bool initialized;
+#ifdef KERNEL_TEST_SHM_FORK_FAILURE
+static bool test_shm_fork_failure_armed;
+static size_t test_shm_fork_mapped_pages;
+#endif
 
 static bool
 address_space_valid(const struct address_space *space)
@@ -293,6 +299,188 @@ vmm_map_page(struct address_space *space, uint64_t virtual_address,
 	return true;
 }
 
+static bool
+user_leaf_entry(const struct address_space *space, uint64_t virtual_address,
+	uint64_t **leaf_table, unsigned int *leaf_index)
+{
+	static const unsigned int shifts[] = {39, 30, 21};
+	uint64_t *table;
+	unsigned int i;
+
+	if (space == NULL || (virtual_address & (PAGE_SIZE - 1)) != 0 ||
+	    virtual_address < USER_BASE || virtual_address >= USER_END)
+		return false;
+	table = table_virtual(space->root_physical);
+	if (table == NULL)
+		return false;
+	for (i = 0; i < sizeof(shifts) / sizeof(shifts[0]); i++) {
+		unsigned int index = (unsigned int)((virtual_address >> shifts[i]) & 0x1ff);
+		uint64_t entry = table[index];
+
+		if ((entry & (PTE_PRESENT | PTE_USER)) !=
+		    (PTE_PRESENT | PTE_USER) || (entry & PTE_LARGE) != 0)
+			return false;
+		table = table_virtual(entry & PTE_ADDRESS);
+		if (table == NULL)
+			return false;
+	}
+	*leaf_table = table;
+	*leaf_index = (unsigned int)((virtual_address >> 12) & 0x1ff);
+	return true;
+}
+
+static bool
+map_shared_page(struct address_space *space, uint64_t virtual_address,
+	uint64_t physical_address)
+{
+	uint64_t *leaf_table;
+	unsigned int leaf_index;
+	uint64_t mapped_physical;
+
+	if (!vmm_map_page(space, virtual_address, physical_address,
+	    VMM_USER | VMM_WRITE))
+		return false;
+	if (!user_leaf_entry(space, virtual_address, &leaf_table, &leaf_index)) {
+		if (!vmm_unmap_page(space, virtual_address, &mapped_physical) ||
+		    mapped_physical != physical_address) {
+			klog("OpenSillicon panic: shared page marking rollback failed\n");
+			kernel_halt();
+		}
+		return false;
+	}
+	leaf_table[leaf_index] |= PTE_SHARED;
+	/* vmm_map_page has already invalidated this translation; invalidate again
+	 * after publishing the software ownership marker. */
+	__asm__ volatile ("invlpg (%0)" : : "r" ((void *)(uintptr_t)virtual_address)
+	    : "memory");
+	return true;
+}
+
+static bool
+unmap_shared_page(void *context, uint64_t virtual_address,
+	uint64_t *physical_address)
+{
+	struct address_space *space = context;
+	uint64_t *leaf_table;
+	unsigned int leaf_index;
+	uint64_t entry;
+
+	if (physical_address == NULL ||
+	    !user_leaf_entry(space, virtual_address, &leaf_table, &leaf_index))
+		return false;
+	entry = leaf_table[leaf_index];
+	if ((entry & (PTE_PRESENT | PTE_USER | PTE_WRITE | PTE_SHARED | PTE_NX)) !=
+	    (PTE_PRESENT | PTE_USER | PTE_WRITE | PTE_SHARED | PTE_NX))
+		return false;
+	*physical_address = entry & PTE_ADDRESS;
+	leaf_table[leaf_index] = 0;
+	__asm__ volatile ("invlpg (%0)" : : "r" ((void *)(uintptr_t)virtual_address)
+	    : "memory");
+	return true;
+}
+
+bool
+vmm_map_shared_object(struct address_space *space, uint64_t base,
+	struct shm_object *object)
+{
+	uint64_t bytes;
+	size_t installed = 0;
+	size_t i;
+
+	if (!initialized || !address_space_valid(space) || space == &kernel_space ||
+	    object == NULL || object->references == 0 || object->page_count == 0 ||
+	    object->page_count > UINT64_MAX / PAGE_SIZE ||
+	    (base & (PAGE_SIZE - 1)) != 0)
+		return false;
+	bytes = (uint64_t)object->page_count * PAGE_SIZE;
+	if (base < USER_BASE || base >= USER_END || bytes > USER_END - base)
+		return false;
+	for (i = 0; i < object->page_count; i++) {
+		if (!map_shared_page(space, base + (uint64_t)i * PAGE_SIZE,
+		    object->pages[i]))
+			break;
+		installed++;
+	}
+	if (installed == object->page_count &&
+	    shm_mapping_attach_owned(&space->shared_mappings, base, object))
+		return true;
+	while (installed != 0) {
+		uint64_t physical;
+
+		installed--;
+		if (!unmap_shared_page(space, base +
+		    (uint64_t)installed * PAGE_SIZE, &physical) ||
+		    physical != object->pages[installed]) {
+			klog("OpenSillicon panic: shared mapping install rollback failed\n");
+			kernel_halt();
+		}
+	}
+	return false;
+}
+
+bool
+vmm_unmap_shared_object(struct address_space *space, uint64_t base)
+{
+	if (!initialized || !address_space_valid(space) || space == &kernel_space)
+		return false;
+	return shm_mapping_detach(&space->shared_mappings, base,
+	    unmap_shared_page, space);
+}
+
+int
+vmm_shm_create(struct address_space *space, uint64_t size,
+	uint64_t *base_out)
+{
+	const uint64_t arena_limit = SHM_ARENA_END - PAGE_SIZE;
+	struct shm_object *object;
+	uint64_t bytes;
+	uint64_t base;
+	uint64_t available;
+	uint64_t next;
+	size_t page_count;
+
+	if (base_out == NULL || !initialized || !address_space_valid(space) ||
+	    space == &kernel_space || size == 0 ||
+	    size > UINT64_MAX - (PAGE_SIZE - 1))
+		return -EINVAL;
+	*base_out = 0;
+	bytes = (size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+	base = space->shm_next_address;
+	if (base < SHM_ARENA_START + PAGE_SIZE || base >= arena_limit ||
+	    (base & (PAGE_SIZE - 1)) != 0)
+		return -ENOMEM;
+	available = arena_limit - base;
+	if (bytes > available || PAGE_SIZE > available - bytes)
+		return -ENOMEM;
+	page_count = (size_t)(bytes / PAGE_SIZE);
+	if ((uint64_t)page_count != bytes / PAGE_SIZE ||
+	    !shm_object_create(page_count, &object))
+		return -ENOMEM;
+	if (!vmm_map_shared_object(space, base, object)) {
+		if (!shm_object_release(object)) {
+			klog("OpenSillicon panic: failed to release uncommitted shared object\n");
+			kernel_halt();
+		}
+		return -ENOMEM;
+	}
+	next = base + bytes + PAGE_SIZE;
+	space->shm_next_address = next;
+	*base_out = base;
+	return 0;
+}
+
+int
+vmm_shm_detach(struct address_space *space, uint64_t base)
+{
+	if (!initialized || !address_space_valid(space) || space == &kernel_space ||
+	    base < SHM_ARENA_START + PAGE_SIZE ||
+	    base >= SHM_ARENA_END - PAGE_SIZE ||
+	    (base & (PAGE_SIZE - 1)) != 0 ||
+	    !vmm_unmap_shared_object(space, base))
+		return -EINVAL;
+	return 0;
+}
+
 bool
 vmm_unmap_page(struct address_space *space, uint64_t virtual_address,
 	uint64_t *physical_address)
@@ -319,7 +507,8 @@ vmm_unmap_page(struct address_space *space, uint64_t virtual_address,
 		unsigned int index = (unsigned int)((virtual_address >> shifts[i]) & 0x1ff);
 		uint64_t entry = table[index];
 
-		if ((entry & PTE_PRESENT) == 0 || (entry & PTE_LARGE) != 0)
+		if ((entry & PTE_PRESENT) == 0 || (entry & PTE_LARGE) != 0 ||
+		    (entry & PTE_SHARED) != 0)
 			return false;
 		table = table_virtual(entry & PTE_ADDRESS);
 		if (table == NULL)
@@ -329,7 +518,7 @@ vmm_unmap_page(struct address_space *space, uint64_t virtual_address,
 		unsigned int index = (unsigned int)((virtual_address >> 12) & 0x1ff);
 		uint64_t entry = table[index];
 
-		if ((entry & PTE_PRESENT) == 0)
+		if ((entry & PTE_PRESENT) == 0 || (entry & PTE_SHARED) != 0)
 			return false;
 		*physical_address = entry & PTE_ADDRESS;
 		table[index] = 0;
@@ -358,6 +547,8 @@ address_space_create(struct address_space *space)
 	for (i = 256; i < 512; i++)
 		root[i] = kernel_root[i];
 	space->root_physical = physical;
+	space->shm_next_address = SHM_ARENA_START + PAGE_SIZE;
+	shm_mapping_set_init(&space->shared_mappings);
 	space->next = address_spaces;
 	address_spaces = space;
 	return true;
@@ -390,9 +581,138 @@ validate_user_tables(uint64_t table_physical, unsigned int level)
 			continue;
 		if (level > 1) {
 			if ((entry & PTE_LARGE) != 0 ||
+			    (entry & PTE_SHARED) != 0 ||
 			    !validate_user_tables(entry & PTE_ADDRESS, level - 1))
 				return false;
 		}
+	}
+	return true;
+}
+
+static bool
+shared_mapping_page(const struct address_space *space, uint64_t address,
+	uint64_t *physical_address)
+{
+	const struct shm_mapping *mapping;
+
+	for (mapping = space->shared_mappings.head; mapping != NULL;
+	    mapping = mapping->next) {
+		uint64_t bytes;
+
+		if (mapping->object == NULL || mapping->object->references == 0 ||
+		    mapping->object->page_count == 0 ||
+		    mapping->object->page_count > UINT64_MAX / PAGE_SIZE ||
+		    (mapping->base & (PAGE_SIZE - 1)) != 0)
+			return false;
+		bytes = (uint64_t)mapping->object->page_count * PAGE_SIZE;
+		if (mapping->base < USER_BASE || mapping->base >= USER_END ||
+		    bytes > USER_END - mapping->base)
+			return false;
+		if (address >= mapping->base && address - mapping->base < bytes) {
+			uint64_t offset = address - mapping->base;
+
+			if ((offset & (PAGE_SIZE - 1)) != 0)
+				return false;
+			*physical_address = mapping->object->pages[offset / PAGE_SIZE];
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool
+validate_shared_leaf_tree(const struct address_space *space,
+	uint64_t table_physical, unsigned int level, uint64_t virtual_prefix)
+{
+	uint64_t *table = table_virtual(table_physical);
+	unsigned int i;
+
+	if (table == NULL)
+		return false;
+	for (i = 0; i < 512; i++) {
+		uint64_t entry = table[i];
+
+		if ((entry & PTE_PRESENT) == 0)
+			continue;
+		if (level > 1) {
+			uint64_t child_prefix = virtual_prefix |
+			    ((uint64_t)i << (level == 4 ? 39 : level == 3 ? 30 : 21));
+
+			if ((entry & (PTE_LARGE | PTE_SHARED)) != 0 ||
+			    !validate_shared_leaf_tree(space, entry & PTE_ADDRESS,
+			    level - 1, child_prefix))
+				return false;
+		} else if ((entry & PTE_SHARED) != 0) {
+			uint64_t expected_physical;
+			uint64_t virtual_address = virtual_prefix |
+			    ((uint64_t)i << 12);
+
+			if ((entry & (PTE_USER | PTE_WRITE | PTE_NX)) !=
+			    (PTE_USER | PTE_WRITE | PTE_NX) ||
+			    !shared_mapping_page(space, virtual_address,
+			    &expected_physical) ||
+			    expected_physical != (entry & PTE_ADDRESS))
+				return false;
+		}
+	}
+	return true;
+}
+
+static bool
+validate_shared_mappings(const struct address_space *space)
+{
+	const struct shm_mapping *mapping;
+	uint64_t *root = table_virtual(space->root_physical);
+	unsigned int i;
+
+	if (root == NULL ||
+	    space->shm_next_address < SHM_ARENA_START + PAGE_SIZE ||
+	    space->shm_next_address > SHM_ARENA_END - PAGE_SIZE ||
+	    (space->shm_next_address & (PAGE_SIZE - 1)) != 0)
+		return false;
+	for (mapping = space->shared_mappings.head; mapping != NULL;
+	    mapping = mapping->next) {
+		size_t page_index;
+
+		if (mapping->object == NULL || mapping->object->references == 0 ||
+		    mapping->object->page_count == 0 ||
+		    mapping->object->page_count > UINT64_MAX / PAGE_SIZE ||
+		    mapping->base < USER_BASE || mapping->base >= USER_END ||
+		    (mapping->base & (PAGE_SIZE - 1)) != 0 ||
+		    mapping->object->page_count * PAGE_SIZE > USER_END - mapping->base)
+			return false;
+		if (mapping->base >= space->shm_next_address ||
+		    mapping->object->page_count * PAGE_SIZE >
+		    space->shm_next_address - mapping->base ||
+		    PAGE_SIZE > space->shm_next_address - mapping->base -
+		    mapping->object->page_count * PAGE_SIZE)
+			return false;
+		for (page_index = 0; page_index < mapping->object->page_count;
+		    page_index++) {
+			uint64_t address = mapping->base +
+			    (uint64_t)page_index * PAGE_SIZE;
+			uint64_t *leaf_table;
+			unsigned int leaf_index;
+			uint64_t entry;
+
+			if (!user_leaf_entry(space, address,
+			    &leaf_table, &leaf_index))
+				return false;
+			entry = leaf_table[leaf_index];
+			if ((entry & (PTE_PRESENT | PTE_USER | PTE_WRITE |
+			    PTE_SHARED | PTE_NX)) !=
+			    (PTE_PRESENT | PTE_USER | PTE_WRITE | PTE_SHARED | PTE_NX) ||
+			    (entry & PTE_ADDRESS) != mapping->object->pages[page_index])
+				return false;
+		}
+	}
+	for (i = 0; i < 256; i++) {
+		uint64_t entry = root[i];
+
+		if ((entry & PTE_PRESENT) != 0 &&
+		    !validate_shared_leaf_tree(space, entry & PTE_ADDRESS, 3,
+		    (uint64_t)i << 39))
+			return false;
 	}
 	return true;
 }
@@ -411,18 +731,14 @@ free_user_tables(uint64_t table_physical, unsigned int level)
 				free_user_tables(entry & PTE_ADDRESS, level - 1);
 		}
 	}
-	if (level > 1) {
-		for (i = 0; i < 512; i++) {
-			uint64_t entry = table[i];
-
-			if ((entry & PTE_PRESENT) != 0)
-				(void)pmm_free_page(entry & PTE_ADDRESS);
-		}
+	if (!pmm_free_page(table_physical)) {
+		klog("OpenSillicon panic: failed to free user page table\n");
+		kernel_halt();
 	}
 }
 
-bool
-address_space_destroy(struct address_space *space)
+static bool
+destroy_address_space_tables(struct address_space *space)
 {
 	uint64_t *root;
 	unsigned int i;
@@ -449,18 +765,47 @@ address_space_destroy(struct address_space *space)
 		if ((entry & PTE_PRESENT) != 0)
 			free_user_tables(entry & PTE_ADDRESS, 3);
 	}
-	(void)pmm_free_page(space->root_physical);
+	if (!pmm_free_page(space->root_physical))
+		return false;
 	{
 		struct address_space **link = &address_spaces;
 
 		while (*link != NULL && *link != space)
 			link = &(*link)->next;
-		if (*link == space)
-			*link = space->next;
+		if (*link != space)
+			return false;
+		*link = space->next;
 	}
 	space->root_physical = 0;
+	space->shm_next_address = 0;
 	space->next = NULL;
 	return true;
+}
+
+bool
+address_space_destroy(struct address_space *space)
+{
+	uint64_t *root;
+	unsigned int i;
+
+	if (!initialized || space == NULL || !address_space_valid(space) ||
+	    space->root_physical == 0 ||
+	    space->shared_mappings.head != NULL)
+		return false;
+	root = table_virtual(space->root_physical);
+	if (root == NULL)
+		return false;
+	for (i = 0; i < 256; i++) {
+		uint64_t entry = root[i];
+
+		if ((entry & PTE_PRESENT) != 0 &&
+		    ((entry & PTE_LARGE) != 0 ||
+		    !validate_user_tables(entry & PTE_ADDRESS, 3)))
+			return false;
+	}
+	if (!validate_shared_mappings(space))
+		return false;
+	return destroy_address_space_tables(space);
 }
 
 static bool
@@ -704,7 +1049,8 @@ clone_user_tables(uint64_t table_physical, unsigned int level,
 
 		if ((entry & PTE_PRESENT) == 0)
 			continue;
-		if ((entry & PTE_USER) == 0 || (entry & PTE_LARGE) != 0)
+		if ((entry & PTE_USER) == 0 || (entry & PTE_LARGE) != 0 ||
+		    (level > 1 && (entry & PTE_SHARED) != 0))
 			return false;
 		if (level > 1) {
 			if (!clone_user_tables(entry & PTE_ADDRESS, level - 1,
@@ -716,6 +1062,13 @@ clone_user_tables(uint64_t table_physical, unsigned int level,
 			    ((uint64_t)i << 12);
 			uint64_t copy_physical;
 			unsigned int flags = VMM_USER;
+
+			if ((entry & PTE_SHARED) != 0) {
+				if ((entry & (PTE_WRITE | PTE_NX)) !=
+				    (PTE_WRITE | PTE_NX))
+					return false;
+				continue;
+			}
 
 			if ((entry & PTE_WRITE) != 0)
 				flags |= VMM_WRITE;
@@ -757,13 +1110,42 @@ free_user_leaves(uint64_t table_physical, unsigned int level)
 			    !free_user_leaves(entry & PTE_ADDRESS, level - 1))
 				return false;
 		} else {
-			if (!pmm_free_page(entry & PTE_ADDRESS))
-				return false;
 			table[i] = 0;
+			/* Teardown only accepts inactive address spaces. With PCID and SMP
+			 * disabled, switching CR3 has already invalidated their translations. */
+			__asm__ volatile ("" : : : "memory");
+			if ((entry & PTE_SHARED) == 0 &&
+			    !pmm_free_page(entry & PTE_ADDRESS))
+				return false;
 		}
 	}
 	return true;
 }
+
+static bool
+clone_shared_map_page(void *context, uint64_t virtual_address,
+	uint64_t physical_address)
+{
+#ifdef KERNEL_TEST_SHM_FORK_FAILURE
+	if (test_shm_fork_failure_armed) {
+		if (test_shm_fork_mapped_pages++ == 1) {
+			test_shm_fork_failure_armed = false;
+			klog("OpenSillicon test: injected shared fork mapping failure\n");
+			return false;
+		}
+	}
+#endif
+	return map_shared_page(context, virtual_address, physical_address);
+}
+
+#ifdef KERNEL_TEST_SHM_FORK_FAILURE
+void
+vmm_test_arm_shm_fork_failure(void)
+{
+	test_shm_fork_mapped_pages = 0;
+	test_shm_fork_failure_armed = true;
+}
+#endif
 
 bool
 address_space_destroy_with_pages(struct address_space *space)
@@ -785,6 +1167,8 @@ address_space_destroy_with_pages(struct address_space *space)
 		    !validate_user_tables(entry & PTE_ADDRESS, 3)))
 			return false;
 	}
+	if (!validate_shared_mappings(space))
+		return false;
 	for (i = 0; i < 256; i++) {
 		uint64_t entry = root[i];
 
@@ -792,7 +1176,11 @@ address_space_destroy_with_pages(struct address_space *space)
 		    !free_user_leaves(entry & PTE_ADDRESS, 3))
 			return false;
 	}
-	return address_space_destroy(space);
+	if (!destroy_address_space_tables(space))
+		return false;
+	__asm__ volatile ("" : : : "memory");
+	shm_mapping_set_destroy(&space->shared_mappings);
+	return true;
 }
 
 bool
@@ -803,12 +1191,23 @@ address_space_clone(const struct address_space *source,
 	unsigned int i;
 
 	if (!initialized || source == NULL || source == &kernel_space ||
-	    !address_space_valid(source) || destination == NULL ||
-	    !address_space_create(destination))
+	    !address_space_valid(source) || destination == NULL)
 		return false;
 	root = table_virtual(source->root_physical);
 	if (root == NULL)
-		goto fail;
+		return false;
+	for (i = 0; i < 256; i++) {
+		uint64_t entry = root[i];
+
+		if ((entry & PTE_PRESENT) != 0 &&
+		    ((entry & PTE_LARGE) != 0 ||
+		    !validate_user_tables(entry & PTE_ADDRESS, 3)))
+			return false;
+	}
+	if (!validate_shared_mappings(source) ||
+	    !address_space_create(destination))
+		return false;
+	destination->shm_next_address = source->shm_next_address;
 	for (i = 0; i < 256; i++) {
 		uint64_t entry = root[i];
 
@@ -819,6 +1218,10 @@ address_space_clone(const struct address_space *source,
 		    (uint64_t)i << 39, destination))
 			goto fail;
 	}
+	if (!shm_mapping_set_clone(&source->shared_mappings,
+	    &destination->shared_mappings, clone_shared_map_page,
+	    unmap_shared_page, destination))
+		goto fail;
 	return true;
 
 fail:
