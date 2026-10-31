@@ -393,9 +393,11 @@ Tasks
 - Implement four virtual terminals with independent screen buffers, cursors,
   parser states, current input lines, and completed-input queues; switch with
   Alt+F1 through Alt+F4.
-- Render Limine's RGB framebuffer with a built-in 8-by-16 bitmap font.
+- Render Limine's RGB framebuffer with the built-in 8-by-16 Modern DOS bitmap
+  font (CC0 1.0).
 - Implement newline, carriage return, backspace, tab, scrolling, CSI `2J`,
-  `H`, `K`, and SGR reset/basic 8-color foreground/background sequences.
+  `H`, `K`, and SGR reset, standard 8-color, and bright 8-color
+  foreground/background sequences.
 - Route standard output once through a console fan-out to framebuffer and
   serial; keep kernel diagnostics on the serial logger.
 - Log unavailable i8042 hardware and keep terminal output usable when no
@@ -438,7 +440,7 @@ Tasks
   `cat`, and `exit`.
 - Keep `cd` state in the shell and resolve VFS operations to absolute paths.
 - Execute external programs by absolute path or bare name under `/bin` using
-  existing `fork`, `exec_path`, and `waitpid` calls.
+  `fork`, append-only `exec_path_argv`, and `waitpid` calls.
 - Populate `/etc/passwd` and `/etc/group` with root and regular-user metadata;
   do not add authentication, kernel identities, or permission enforcement.
 - Populate required `/bin`, `/sbin`, `/etc`, and `/tmp` directories on the
@@ -446,12 +448,37 @@ Tasks
 - Defer rc.d, persistent logging, `PATH`, environment support, and Phase 13
   IPC/POSIX work.
 
+Current command model: `help`, `cd`, and `exit` remain shell built-ins.
+`ls`, `cat`, `echo`, `pwd`, `true`, `false`, `clear`, `uname`, and `fetch`
+are standalone `/bin` ELF programs. `fetch` displays the supplied logo and
+available system details. Shell tokenization splits on spaces, tabs, CR, and
+LF, with no quote or escape syntax; the 256-byte line permits at most 16
+arguments. Syscall 27 accepts 1–16 arguments and at most 2048 total string
+bytes including NULs. argv[0] is the command token as typed; envp is empty.
+The user startup stack is 16-byte aligned and carries argc/argv plus the
+existing auxv. The old path-only exec syscall remains supported. `ls` lists
+`/` (excluding `.` and `..`) or requested paths, `cat` reads requested files
+or stdin when no file is named, `echo` prints all operands, and `uname` accepts
+`-s`, `-m`, and `-a`. Relative `ls`/`cat` paths are rooted at `/`, as the
+process model has no cwd syscall. `pwd` reports `/`. File mutation
+utilities are omitted because userspace has no create/unlink/rename syscall.
+`head`, `tail`, and `wc` remain deferred as utilities not yet implemented;
+`yes` is omitted because its unbounded output is not useful without shell
+redirection or pipes. `date` has no clock
+query syscall, and `whoami` has no kernel credential interface.
+The framebuffer console supports bounded ANSI CSI plus SGR reset, 8 standard
+and 8 bright foreground/background colors; it is not a full VT emulator.
+Boot initialization lines use colored `* component ... [ OK ]` / `[ ER ]`
+status text where the code has a checkable initialization result. The process
+initializer is a nonallocating state reset with no failure path, and is logged
+after it returns. No roadmap phase is marked complete by this work.
+
 Done criteria
 
 - System boots into userspace.
 - Init starts and restarts the shell after a timer-based delay.
 - Shell accepts commands.
-- External static ELF execution works through fork/exec_path/waitpid.
+- External static ELF execution passes argv through fork/exec_path_argv/waitpid.
 - Account files contain the documented metadata records.
 - Basic commands operate on persistent SilliconFS.
 - Syscall sleep blocks without consuming CPU and wakes after timer ticks.
@@ -583,13 +610,44 @@ Phase 14 — musl and Static Userspace
 
 Goal
 
-Support a practical C userspace environment.
+Support a bounded static C userspace environment through a native OpenSillicon
+musl port, without claiming Linux syscall ABI compatibility.
 
 Tasks
 
-- Port musl.
-- Implement missing syscall compatibility.
-- Implement required libc interfaces.
+- Stage 14A: accept the native musl port contract in ADR-022; preserve the
+  existing syscall ABI and identify the later runtime decisions that remain
+  open.
+- Stage 14B design: define the bounded static ELF startup stack and
+  single-thread PT_TLS/FS-base lifecycle in ADR-023.
+- Stage 14C: pin musl 1.2.6 and verify its x86_64 CRT, TCB/TLS, auxv, and a
+  representative static ELF in ADR-024. The pin is a source-verification
+  baseline, not a release approval; Stage 14D records a reproducible security
+  patch series and its validation limits in ADR-025. Stage 14C/14D do not
+  vendor musl, and the patched baseline is not approved for distribution.
+- Stage 14E: propose the source provenance layout, native target/toolchain,
+  syscall adapter, private-memory, CRT/TLS ownership, VFS/process, sysroot,
+  and first integration milestone in ADR-026. This design assigns no syscall
+  numbers and does not establish that the target toolchain already works.
+- Stage 14F: pin the musl 1.2.6 archive and reviewed patch bytes in
+  `third_party/musl`; verify provenance and reproduce a pristine extraction
+  plus the confirmed upstream patch series without building musl. Keep the
+  unaccepted `regexec` candidate separate from the default patched tree.
+- Stage 14J: build the pinned confirmed-patch source with Clang/LLD for
+  `x86_64-unknown-none-elf`, install a generated static sysroot, adapt the
+  bounded set of musl startup syscalls to the existing OpenSillicon ABI, and
+  run one real musl CRT/TLS/errno/write/exit executable on the persistent root
+  in QEMU. This is a first executable proof, not completion of practical libc
+  support.
+- ADR-031 resolves the native FS-base setter and its process/interrupt
+  lifecycle. Before port implementation, resolve memory allocation, VFS/FD
+  and process/signal adaptation, and the reproducible userspace toolchain.
+  Measure representative programs' actual syscall needs
+  before freezing the supported surface.
+- Adapt musl to the OpenSillicon ABI; do not add Linux syscall-number or errno
+  compatibility by assumption.
+- Implement only the missing runtime and libc interfaces approved for the
+  initial profile.
 - Configure static linking.
 - Build basic userspace programs.
 
@@ -600,34 +658,121 @@ Done criteria
 - Basic libc functionality works.
 - Unsupported interfaces fail predictably.
 
+The Stage 14J first executable passed in QEMU using the pinned musl 1.2.6
+development baseline. The implemented adapter supports only the operations
+listed in ADR-032. Public anonymous mapping for mallocng, stdio/writev,
+broader VFS/process/time operations, and thread support remain prerequisites;
+the phase is not complete. The initial profile is static x86_64 userspace. Dynamic linking, shared
+libraries, PIE/ASLR, threads, futexes, and broad Linux compatibility remain
+deferred. ADR-023 and ADR-024 define the startup/TLS design and verify it
+against the pinned source; ADR-025 records the development-only security
+baseline. ADR-031 now defines the native FS-base syscall and kernel TLS
+lifecycle. Remaining port prerequisites include the native memory allocator
+interface, VFS/FD and process/signal adaptation, and reproducible target
+toolchain under ADR-022 and ADR-026.
+
 ---
 
 Phase 15 — Networking
 
 Goal
 
-Introduce basic networking.
+Introduce a bounded native IPv4 stack and socket interface without Linux
+syscall compatibility.
 
 Tasks
 
-- Define network stack architecture through ADR.
-- Implement network device interface.
-- Add Ethernet.
-- Add IPv4.
-- Add ARP.
-- Add ICMP.
-- Add UDP.
-- Add TCP.
-- Introduce socket API.
-- Add basic routing.
+- Stage 15A: implement the bounded packet-buffer ownership model, deferred
+  network service hook, PCI BAR/DMA prerequisites, and polling e1000 driver.
+  Acceptance: QEMU e1000 link initialization and repeatable frame transmit /
+  receive verified with an isolated host peer; no protocol processing in IRQ
+  context.
+- Stage 15B: implement Ethernet II, ARP, IPv4 validation/checksums, ICMP echo,
+  static interface configuration, and direct/default route selection.
+  Acceptance: host parser/checksum and malformed-frame tests plus QEMU ARP,
+  IPv4, and ICMP exchange.
+- Stage 15C: add UDP and the first native socket descriptors/syscall contract.
+  Acceptance: bind/send/receive across QEMU and host, bounded queue and
+  descriptor lifecycle tests, with existing FD/process regressions passing.
+- Stage 15D: resolve a kernel entropy source, then implement bounded TCP
+  connection setup, retransmission, stream queues, listen/accept, and teardown.
+  Acceptance: active and passive QEMU TCP exchanges, timeout/retry and
+  malformed-segment tests. Do not use predictable production initial sequence
+  numbers as a substitute for entropy.
+- Stage 15E: integrated packet, socket, process, and regression suite; record
+  supported behavior and exclusions before marking Phase 15 complete.
+
+Architecture is recorded in ADR-036. These are proposed implementation
+stages; none of the networking components is implemented yet.
 
 Done criteria
 
-- Network device can transmit and receive packets.
-- Basic IPv4 connectivity works.
-- UDP sockets work.
-- TCP connections work.
-- Network tests pass.
+- QEMU NIC packet transmit and receive are verified against an isolated peer.
+- Static IPv4 connectivity, ARP, and ICMP behavior pass packet-level tests.
+- UDP socket operations work across the QEMU boundary.
+- TCP active/passive connections, bounded retransmission, and teardown pass
+  deterministic tests.
+- Resource bounds, malformed packet handling, and existing subsystem
+  regressions pass.
+
+### Milestone 15.1 — PCI resources, packet pool, and e1000 foundation
+
+Status: partial; generic MMIO and DMA foundations exist, but PCI aperture
+discovery remains blocked on a safe device lifecycle.
+
+Implemented: a non-probing PCI BAR decoder distinguishes I/O, 32-bit memory,
+and 64-bit memory BARs and marks the upper slot of a 64-bit BAR as consumed;
+a fixed 64-entry packet pool provides 1600-byte storage with 32-byte
+headroom, generation-tagged handles, explicit core/device ownership transfer,
+and bounded exhaustion; a generic device lifecycle/TX/RX interface validates
+its state and ownership contract. Host tests cover BAR decoding, pool
+exhaustion/stale handles, lifecycle, and packet ownership.
+
+Stage 15.1B implements contiguous bounded PMM runs, generation-tagged DMA
+allocation handles, CPU/device ownership transfer with x86 ordering fences,
+and releasable uncached MMIO leases inside a dedicated vmalloc window. MMIO
+accepts validated apertures and ranges residing in Limine base revision 4
+RESERVED memory, rejecting HHDM RAM/cache aliases. The kernel requests Limine
+base revision 5; base revision 4 remains the minimum for its ACPI/HHDM boot
+contracts.
+
+Stage 15.1C establishes a fail-closed DMA address policy: DMA is available
+only when the revision-5 request was honored, the loaded base revision is at
+least 5, and no Keep-IOMMU request is present. A lower loaded revision leaves
+DMA unavailable and DMA-dependent drivers disabled with an explicit
+diagnostic. The current persistent-root startup requires AHCI, so it halts
+with a specific message if that prerequisite is absent. Limine's revision-5
+IOMMU guarantee is not IOMMU translation support and does not establish
+non-coherent cache synchronization; those environments remain unsupported.
+
+Per-descriptor DMA ring ownership now has tested CPU/device transitions,
+publication/completion barriers, and allocation pinning: ring backing cannot
+be freed or handed off as a whole buffer until the caller confirms the device
+was stopped and the ring is quiesced. This is software contract testing, not
+device DMA validation. Generic PCI BAR aperture sizes remain unknown and are
+not probed. A strict QEMU-only 82540EM profile accepts `8086:100e` with
+BAR0 128 KiB non-prefetchable 32-bit MMIO and BAR1 64-byte I/O; it rejects
+other IDs or layouts and does not claim generic PCI sizing. QEMU 10.2.2 QMP
+confirmed the configured model's region sizes, but no guest e1000 mapping,
+initialization, DMA, TX, or RX has been exercised. Stage 15.1 remains
+incomplete; see ADR-037 for exact contract and test evidence.
+
+### Milestone 15.2A — QEMU e1000 discovery and reset
+
+Status: implemented for the bounded QEMU `8086:100e` 82540EM profile.
+The guest PCI enumeration callback retains only this exact device; profile
+validation rejects unexpected BAR layouts. The driver enables memory decode,
+explicitly clears and verifies PCI bus mastering, maps BAR0 through an uncached
+MMIO lease, issues CTRL.RST, and polls with a bounded count. It validates
+post-reset CTRL and STATUS reads and logs the BAR base, aperture, command value,
+and register values. Initialization is idempotent. Failure paths leave the
+device failed and disable PCI memory/bus-master decode where config access
+allows; an uncertain MMIO lease is retained rather than released unsafely.
+
+This milestone does not configure DMA rings, enable interrupts, or transmit or
+receive packets. QEMU guest logs prove discovery, BAR mapping, reset completion,
+and register reads only. Generic PCI BAR sizing remains unresolved; the 128
+KiB BAR0 aperture is accepted only as the explicit QEMU profile. See ADR-038.
 
 ---
 
@@ -694,3 +839,42 @@ A milestone is complete only when:
 If a test fails, the milestone remains unfinished.
 
 The next milestone must not begin until the current one is complete.
+
+### Stage 14K-A — Native private anonymous mapping ABI
+
+Expose syscalls 21–23 for bounded private anonymous mappings, complete-map
+unmap, and protection changes, then use the ABI from pinned musl 1.2.6
+mallocng. Acceptance requires the real static musl allocator fixture to pass
+under QEMU and the existing regression suites to remain green. File-backed,
+shared, executable, and partial-unmap behavior, plus `brk`, `mremap`, threads,
+and Linux syscall compatibility, remain deferred. See ADR-033.
+
+Stage 14K-A validation passed: the pinned musl build and ELF inspection, the
+real mallocng allocator QEMU fixture, and the existing kernel/process/private
+mapping/protection/shared-memory/FS-base regression targets completed
+successfully. The musl detached-signature check remains skipped when no
+signature/key pair is supplied; archive and patch hashes are verified.
+
+### Stage 14K-F — Per-process x87/SSE context
+
+Enable the x86-64 legacy FXSAVE state for Ring 3, enforce an integer-only
+kernel build, and eagerly save/restore independent process state at every
+process scheduler selection. Verify fork, exec, syscall, and timer-preemption
+behavior with Ring 3 tests. AVX, XSAVE, threads, and kernel FPU use remain
+deferred. Validation passed: `make -B kernel fpu-context-qemu-test`,
+`make native-musl-stdio-qemu-test`, and the kernel, ELF, process, Phase 13B,
+private mapping/protection, shared-memory, allocator, and FS-base regression
+targets recorded in ADR-034. This resolves the stdio SSE #UD but does not
+complete Stage 14K-B. See ADR-034.
+
+### Stage 14K-B — Native musl stdio and terminal I/O
+
+The bounded native `writev`/`readv`/`TIOCGWINSZ` ABI is implemented as
+syscalls 24–26. The pinned musl stdio fixture covers output, terminal
+detection/query, VFS input, allocation, TLS, and exit. Its final test record
+is recorded in ADR-035. The native musl verification/build/ELF inspection,
+stdio and allocator QEMU fixtures, FPU and FS-base tests, process/Phase 13B,
+private mapping/protection, and shared-memory regression targets passed.
+The detached source signature check was skipped because no signature/key
+pair was supplied. Full termios, PTYs, terminal job control, and arbitrary
+ioctl requests remain deferred.

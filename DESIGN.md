@@ -353,11 +353,52 @@ smoke-test execution keeps its current entry convention. Init supervises the
 shell, waits for exit, sleeps ten timer ticks with syscall 13, then restarts
 it. Failure to load init is reported over serial and halts the kernel.
 
-The shell provides `help`, `echo`, `pwd`, `cd`, `ls`, `cat`, and `exit`.
-Its `cd` state is local to the shell and paths are resolved to absolute VFS
-paths. External commands may be absolute paths or bare names under `/bin`;
-execution uses existing fork, `exec_path`, and `waitpid` calls. There is no
-`PATH`, environment, script language, pipelines, or job control.
+The shell keeps `help`, `cd`, and `exit` as shell-specific commands. `ls`,
+`cat`, `echo`, `pwd`, `true`, `false`, `clear`, `uname`, and `fetch` are
+separate ELF executables in `/bin`. Bare command names resolve under `/bin`; absolute
+executable paths are also accepted. Execution uses `fork`, `exec_path_argv`,
+and `waitpid`, and reports launch and nonzero-child failures. Shell input is
+split on spaces, tabs, CR, and LF; repeated whitespace is ignored. The line
+buffer is 256 bytes, with at most 16 tokens. Quotes and backslashes are
+ordinary token characters, not quoting syntax; there is no `PATH`, variable
+expansion, script language, pipes, redirection, or job control. For an
+external command, `argv[0]` is the command token exactly as typed, while the
+resolved executable path is looked up separately (`/bin/<name>` for a bare
+name). Syscall 27 accepts 1–16 arguments and at most 2048 aggregate bytes
+including NUL terminators. It installs `argc`, `argv`, a null `argv[argc]`, a
+null `envp`, and the existing auxv on a 16-byte-aligned initial stack. The
+custom startup stub passes argc, argv, and the initial-stack pointer to
+`user_main`; no environment vector is supported. The older path-only
+`exec_path` continues to launch with argc zero. `pwd` reports `/`, since
+there is no cwd process state or environment interface. Path operands accepted
+by `ls` and `cat` treat relative paths as rooted at `/`; shell `cd` does not
+change a child process working directory because no cwd syscall exists.
+
+The framebuffer console recognizes a bounded ANSI CSI subset. SGR supports
+reset (`0`), standard foreground (`30`–`37`) and background (`40`–`47`), and
+bright foreground/background (`90`–`97`, `100`–`107`) using the 16-color
+palette. The parser retains state across writes, has two bounded parameters,
+and drops malformed or unsupported control sequences. It is not a full
+VT/xterm emulator. Coreutils do not emit decorative colors because there is
+no terminal-detection syscall. Kernel boot status lines color only `*` blue,
+keep `Initializing <component>` white, and color `[ OK ]` green or `[ ER ]`
+red. Component names use a fixed-width field so status tokens align. ANSI
+resets follow each colored segment. Status lines are buffered until the
+framebuffer console is ready. Kernel smoke-test stdout remains serial-only;
+framebuffer stdout is enabled when `/sbin/init` starts. Status lines
+correspond to reached success paths or failure branches.
+`process_system_init` has no failure path or return value;
+it resets process state without allocating resources, then the boot log reports
+that initialization step as complete.
+
+The bounded coreutils set is `ls`, `cat`, `echo`, `pwd`, `true`, `false`,
+`clear`, `uname`, and `fetch`. `fetch` displays the supplied OpenSillicon art,
+OS/build architecture, shell name, PID, and VFS name. File mutation commands
+(`mkdir`, `rm`, `rmdir`, `touch`,
+`cp`, `mv`) await corresponding VFS syscalls. `head`, `tail`, and `wc` are
+deferred until external argv is available; `yes` is omitted because no pipe or
+redirection interface can contain its output. `date` has no clock query, and
+`whoami` has no kernel credential interface.
 `/etc/passwd` and `/etc/group` provide descriptive root and regular-user
 records only. No login, authentication, kernel UID/GID, privilege separation,
 or permission enforcement is added. rc.d and persistent logging are deferred.
@@ -366,7 +407,26 @@ C library
 
 musl is the intended userspace C library.
 
-Porting musl is planned after the basic process and syscall infrastructure is stable.
+Stage 14 selects a native OpenSillicon musl port, adapted to the existing
+OpenSillicon syscall ABI. This does not provide Linux syscall compatibility.
+The initial profile is static x86_64 programs; the exact libc/syscall surface
+and runtime prerequisites remain subject to ADR-022 and later Stage 14
+decisions. Dynamic linking, shared libraries, PIE/ASLR, threads, futexes, and
+broad Linux compatibility remain deferred. ADR-023 defines the static ELF
+startup stack and single-thread PT_TLS/FS-base lifecycle. ADR-024 pins musl
+1.2.6 as the source-verification baseline and records the x86_64 TCB/TLS,
+startup, auxv, and representative static ELF findings. This pin is not
+approval to ship the release unchanged. ADR-025 records a reviewed security
+patch series and validation limits; the patched source is a development and
+porting baseline only, not distribution-qualified. Musl initializes its
+user-space TCB/TLS and invokes an upstream Linux-specific FS setter. ADR-031
+defines OpenSillicon's native syscall 20 `set_fs_base` and implements
+PT_TLS validation plus process FS-base handling across interrupt return,
+fork, and exec. This is a kernel TLS foundation, not a musl port: native
+syscall adaptation, larger TLS allocation, and the musl startup path remain
+unfinished. ADR-026 proposes the source, target, syscall-adapter,
+private-memory, VFS, and sysroot integration architecture. No Linux syscall
+compatibility is introduced.
 
 Threads
 
@@ -574,9 +634,9 @@ Phase 11 provides four virtual terminals. Each owns its screen cell buffer,
 cursor and parser state, canonical input line, and completed-input queue.
 Alt+F1 through Alt+F4 switches the active terminal without discarding screen
 or input state. The initial renderer uses Limine's RGB framebuffer and a
-built-in 8-by-16 bitmap font. It supports newline, carriage return,
-backspace, tab, scrolling, CSI `2J`, `H`, `K`, and SGR reset/basic 8-color
-foreground/background sequences.
+built-in 8-by-16 bitmap font (Modern DOS, CC0 1.0). It supports newline, carriage return,
+backspace, tab, scrolling, CSI `2J`, `H`, `K`, and SGR reset, standard 8-color,
+and bright 8-color foreground/background sequences.
 
 Standard input is a canonical TTY: Enter queues the line with a newline;
 backspace edits the current line; Ctrl-D on an empty line delivers EOF, while
@@ -622,18 +682,46 @@ The initial userspace must remain minimal.
 
 13. Networking
 
-Networking is deliberately postponed until the core operating system is stable.
+Networking remains unimplemented. ADR-036 defines a bounded native stack
+architecture: an e1000 QEMU first driver, Ethernet/ARP/IPv4/ICMP/UDP/TCP,
+static IPv4 configuration and routing, and sockets as refcounted descriptors
+through the existing FD layer. The initial device path is polled from deferred
+kernel context; interrupt handlers must not parse packets or wake sockets.
+The initial profile excludes IPv6, DHCP, forwarding, fragmentation, and Linux
+socket ABI compatibility. See ADR-036 for packet ownership, protocol limits,
+socket semantics, prerequisites, and the staged test plan. The first
+foundations include a fixed packet pool, a generic device ownership contract,
+read-only decoding of assigned PCI BAR type/address, a bounded PCI MMIO
+mapping lease for resources with a separately validated aperture, and
+contiguous DMA allocations with explicit CPU/device ownership. Generic BAR
+apertures remain unknown: live probing is not performed because there is no
+PCI device-claim/quiesce lifecycle. MMIO leases accept only ranges fully
+described as unmapped RESERVED memory by Limine base revision 4; they use
+uncached mappings in the reserved vmalloc window and can be released.
 
-Future goals:
+DMA identity addressing is enabled only when Limine honored the requested
+base revision 5 and reports loaded revision 5 or newer; the kernel does not
+request `LIMINE_X86_64_KEEP_IOMMU`. Otherwise DMA allocation and DMA-dependent
+drivers are disabled. This does not provide IOMMU translation or cache
+maintenance for non-coherent platforms; those profiles are unsupported. DMA
+allocations are contiguous, zero-filled, alignment/address-width bounded, and
+cannot be freed while device-owned or pinned by an active descriptor ring.
+Descriptor ownership is tracked per slot; publish/completion barriers order
+coherent x86 DMA memory and MMIO notifications. A caller must confirm a
+device-specific stop/reset before ring memory is unpinned. No guest e1000 DMA,
+transmit, or receive is implemented or verified.
 
-- BSD-inspired network stack.
-- Socket API.
-- Basic Ethernet support.
-- IPv4.
-- TCP and UDP.
-- Routing.
+The bounded QEMU preparation profile is q35 with `-nic none`, explicit
+`-device e1000`, and a private user network backend. QEMU 10.2.2 reported
+`8086:100e`, BAR0 128 KiB non-prefetchable 32-bit MMIO, BAR1 64-byte I/O, and
+an unassigned expansion ROM. This is a QEMU profile, not generic PCI sizing;
+the guest validator rejects other IDs/layouts and does not probe BARs.
 
-The exact protocol scope and socket ABI require an ADR.
+Milestone 15.2A connects that profile to guest PCI enumeration. It validates
+the BAR layout, enables memory decode while clearing bus mastering, maps BAR0
+through an uncached lease, performs a bounded CTRL.RST poll, and validates
+CTRL/STATUS. Guest QEMU logs verify these steps. Interrupts and DMA remain
+disabled; no packet TX/RX is implemented.
 
 ---
 
@@ -745,3 +833,30 @@ The coding agent must not silently change approved architecture.
 If an implementation requires a decision that is not covered by this document or an existing ADR, the agent must stop and request clarification or propose an ADR.
 
 This document is the approved architectural baseline for OpenSillicon.
+
+---
+
+20. Native musl Integration Status
+
+Stage 14J builds the security-reviewed musl 1.2.6 development source for the
+native x86_64 OpenSillicon ABI and runs one static ET_EXEC program using musl's
+CRT, a small TLS image, `open` errno handling, libc `write()`, and normal
+process exit. The target sysroot and build output are generated under
+`build/musl-port/`; provenance, the bounded syscall adapter, flags, and test
+results are recorded in ADR-032.
+
+This does not provide Linux syscall compatibility or general musl/POSIX
+support. Stage 14K-A adds a bounded private anonymous mapping ABI for the
+musl 1.2.6 mallocng paths (`mmap`, complete-mapping `munmap`, and `mprotect`)
+as documented in ADR-033. File-backed/shared/executable mappings, partial
+unmap, `mremap`, `brk`, threads, futexes, full termios, and broad time, file,
+and process interfaces remain deferred. Native stdio uses bounded `writev`,
+`readv`, and `TIOCGWINSZ` support documented in ADR-035.
+
+### x87/SSE process state
+
+The kernel verifies FXSAVE, SSE, and SSE2 at boot, enables the legacy x87/SSE
+control-register settings, and uses eager per-process FXSAVE/FXRSTOR at the
+process scheduler boundary. Kernel C remains built with MMX/SSE disabled and
+soft-float; only the architecture FPU initializer explicitly clears XMM state.
+AVX and XSAVE remain disabled. See ADR-034 for ownership and lifecycle rules.
