@@ -322,8 +322,9 @@ Rationale: the host compiler targets x86_64 ELF and can produce a freestanding
 kernel without Linux runtime components. This was explicitly approved for
 Phase 0. An `x86_64-elf` cross toolchain is not required.
 
-Initial kernel flags use `-O2 -g`, disable stack protection and PIC/PIE, and use
-the x86_64 kernel code model. Future release and userspace flags remain to be
+Initial kernel flags use `-O2 -g`, disable stack protection and PIC/PIE, disable
+MMX/SSE and use soft-float until the kernel configures CPU state, and use the
+x86_64 kernel code model. Future release and userspace flags remain to be
 specified when those targets are introduced.
 
 Requirements:
