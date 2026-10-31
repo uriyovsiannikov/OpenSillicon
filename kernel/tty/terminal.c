@@ -226,6 +226,10 @@ apply_csi(struct terminal_state *terminal, uint8_t final)
 				terminal->foreground = value - 30;
 			} else if (value >= 40 && value <= 47) {
 				terminal->background = value - 40;
+			} else if (value >= 90 && value <= 97) {
+				terminal->foreground = value - 90 + 8;
+			} else if (value >= 100 && value <= 107) {
+				terminal->background = value - 100 + 8;
 			}
 		}
 		break;

@@ -9,6 +9,8 @@
 #define TTY_ENODEV 19
 
 static bool renderer_available;
+static unsigned int tty_columns;
+static unsigned int tty_rows;
 
 bool
 tty_init(const struct limine_framebuffer *framebuffer)
@@ -22,6 +24,8 @@ tty_init(const struct limine_framebuffer *framebuffer)
 		draw = framebuffer_text_draw;
 	if (!terminal_init(columns, rows, draw, NULL))
 		return false;
+	tty_columns = columns;
+	tty_rows = rows;
 	(void)ps2_keyboard_init();
 	return true;
 }
@@ -36,6 +40,17 @@ bool
 tty_keyboard_available(void)
 {
 	return ps2_keyboard_available();
+}
+
+bool
+tty_dimensions(unsigned short *rows, unsigned short *columns)
+{
+	if (rows == NULL || columns == NULL || tty_columns == 0 || tty_rows == 0 ||
+	    tty_columns > UINT16_MAX || tty_rows > UINT16_MAX)
+		return false;
+	*rows = (unsigned short)tty_rows;
+	*columns = (unsigned short)tty_columns;
+	return true;
 }
 
 int

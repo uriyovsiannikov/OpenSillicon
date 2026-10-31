@@ -147,6 +147,31 @@ test_terminal_controls_and_absent_keyboard(void)
 }
 
 static void
+test_sgr_split_reset_and_malformed(void)
+{
+	struct terminal_cell cell;
+
+	assert(terminal_init(16, 1, NULL, NULL));
+	terminal_write("\033[3", 3);
+	terminal_write("2mG", 3);
+	cell = terminal_cell_at(0, 0, 0);
+	assert(cell.character == 'G' && cell.foreground == 2);
+	terminal_write("\033[0mR", 5);
+	cell = terminal_cell_at(0, 1, 0);
+	assert(cell.character == 'R' && cell.foreground == 7 &&
+	    cell.background == 0);
+	{
+		static const char malformed[] = "\033[999999999999999999999999mM";
+		terminal_write(malformed, sizeof(malformed) - 1);
+	}
+	cell = terminal_cell_at(0, 2, 0);
+	assert(cell.character == 'M' && cell.foreground == 7);
+	terminal_write("\033[31?X", 6);
+	cell = terminal_cell_at(0, 3, 0);
+	assert(cell.character == 'X' && cell.foreground == 7);
+}
+
+static void
 test_framebuffer_renderer(void)
 {
 	uint8_t pixels[16 * 16 * 4];
@@ -171,9 +196,11 @@ test_framebuffer_renderer(void)
 	assert(framebuffer_text_init(&framebuffer, &columns, &rows));
 	assert(columns == 2 && rows == 1);
 	assert(terminal_init(columns, rows, framebuffer_text_draw, NULL));
-	terminal_write("A", 1);
-	assert(pixels[0] == 0 && pixels[1] == 0 && pixels[2] == 0);
-	assert(pixels[4 * 2 + 2] == 0xaa);
+	terminal_write("\033[91;104mA", 10);
+	assert(pixels[0] == 0xff && pixels[1] == 0x55 && pixels[2] == 0x55);
+	assert(pixels[2 * 16 * 4 + 2 * 4] == 0x55);
+	assert(pixels[2 * 16 * 4 + 2 * 4 + 1] == 0x55);
+	assert(pixels[2 * 16 * 4 + 2 * 4 + 2] == 0xff);
 	assert(!framebuffer_text_init(NULL, &columns, &rows));
 }
 
@@ -183,6 +210,7 @@ main(void)
 	test_virtual_terminals();
 	test_tty_limits_and_eof();
 	test_terminal_controls_and_absent_keyboard();
+	test_sgr_split_reset_and_malformed();
 	test_scancode_decoder();
 	test_framebuffer_renderer();
 	puts("terminal rendering, VT isolation, keyboard, and TTY tests passed");
