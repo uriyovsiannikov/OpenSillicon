@@ -10,6 +10,10 @@
 #define FD_ERROR_EINVAL 22
 #define FD_ERROR_EOVERFLOW 75
 #define FD_ERROR_EIO 5
+#define FD_ERROR_EMFILE 24
+
+static struct fd_object *get_object(struct fd_table *table,
+	uint64_t descriptor);
 
 static int
 console_write(void *context, uint64_t offset, const void *buffer,
@@ -165,7 +169,44 @@ fd_install(struct fd_table *table, struct fd_object *object)
 			return (int)i;
 		}
 	}
-	return -24;
+	return -FD_ERROR_EMFILE;
+}
+
+int
+fd_install_pair(struct fd_table *table, struct fd_object *first,
+	struct fd_object *second, int *first_descriptor,
+	int *second_descriptor)
+{
+	unsigned int i;
+	int first_slot = -1;
+	int second_slot = -1;
+
+	if (table == NULL || first == NULL || second == NULL || first == second ||
+	    first_descriptor == NULL || second_descriptor == NULL)
+		return -FD_ERROR_EINVAL;
+	for (i = 3; i < FD_TABLE_CAPACITY; i++) {
+		if (table->entries[i] != NULL)
+			continue;
+		if (first_slot < 0)
+			first_slot = (int)i;
+		else {
+			second_slot = (int)i;
+			break;
+		}
+	}
+	if (second_slot < 0)
+		return -FD_ERROR_EMFILE;
+	table->entries[first_slot] = first;
+	table->entries[second_slot] = second;
+	*first_descriptor = first_slot;
+	*second_descriptor = second_slot;
+	return 0;
+}
+
+struct fd_object *
+fd_object_for_descriptor(struct fd_table *table, uint64_t descriptor)
+{
+	return get_object(table, descriptor);
 }
 
 int

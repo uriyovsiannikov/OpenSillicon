@@ -38,6 +38,16 @@ would cross the tick counter's `uint64_t` maximum are rejected. This is the
 only time-related syscall added in Phase 12; there is no clock query or
 nanosecond sleep API.
 
+Phase 13A appends syscall 14, `pipe(fds)`. `RDI` points to two consecutive
+32-bit descriptor numbers; success installs a read descriptor first and a
+write descriptor second and copies both numbers to userspace. The call fails
+with `EFAULT` for an invalid or unwritable output range and `EMFILE` when two
+descriptor slots are unavailable. It validates the entire output range and
+reserves both slots before publishing descriptors; failure leaves the table
+unchanged and releases all allocated endpoint references. Pipe reads and
+writes use existing syscalls 9 and 2, respectively. No existing syscall
+number or behavior changes, and the ABI version remains 1.
+
 Rationale: the interrupt gate offers a simple, debuggable entry path while
 Ring 3 support is new. The explicit CF error convention distinguishes errors
 from successful values without reserving a range of successful returns.
@@ -377,18 +387,42 @@ linking and shared libraries are deferred.
 `waitpid()` blocks for a direct child PID; `wait()` waits for any direct child.
 Exit status is the low 8 bits of the supplied status; a non-null wait status
 pointer receives that single byte. Exited children remain as zombies until
-reaped; reaping releases process memory and its descriptor table. Fork inherits
-the descriptor table. The initially supported standard
+reaped; exit closes all descriptor references immediately, while reaping
+releases the process memory and remaining process resources. Fork inherits the
+descriptor table. The initially supported standard
 descriptors retain their existing serial behavior.
 
 The scheduler remains single-CPU. LAPIC timer interrupts preempt userspace by
 saving and restoring the complete user interrupt frame on each process's
 kernel stack. Kernel threads continue to use cooperative Round Robin. Signals,
-pipes, shared memory, and multithreaded processes remain deferred.
+shared memory, and multithreaded processes remain deferred.
+
+Phase 13A adds anonymous pipes only. Each pipe has a bounded 4096-byte kernel
+ring buffer and distinct read and write open-file objects. Descriptor
+references, including references cloned by fork and retained by exec, govern
+endpoint lifetime. Closing the last descriptor reference to a write endpoint
+wakes readers; an empty pipe then returns EOF. Closing the last read endpoint
+wakes writers; writes then fail with `EPIPE` and do not send `SIGPIPE`.
+Nonempty reads return up to the bytes currently available, even if fewer than
+requested. Writes accept up to the free ring-buffer capacity and may return a
+short count; a write to a full pipe blocks while a reader exists. An empty
+read blocks while a writer exists. Zero-length operations return zero without
+blocking. Waiters block through process scheduler state and are explicitly
+woken by data, capacity, or endpoint-count changes; no polling or busy-waiting
+is permitted. Pipe data is copied to the userspace destination before it is
+consumed, so an invalid output buffer returns `EFAULT` without losing bytes.
+Writes copy the complete requested input to kernel memory before changing the
+pipe, so invalid input returns `EFAULT` without partially writing. Once valid,
+a write may commit and report a short count; it is not required to fill the
+request. A blocked operation retries after wakeup. Pipes are not seekable.
 
 The process syscall numbers append to ABI v1: 4 (`fork`), 5 (`exec`), and 6
 (`waitpid`). `wait()` uses `waitpid(-1, status)`. PID allocation is monotonic
-for the lifetime of the kernel and does not reuse identifiers.
+for the lifetime of the kernel and does not reuse identifiers. Syscall 14 is
+reserved for `pipe` as described in ADR-001. Signals and shared memory remain
+deferred to separately reviewed stages; no signal interruption, `dup2`,
+shared-memory mapping, process groups, or libc/POSIX expansion is part of
+Phase 13A.
 
 Rationale: eager copying keeps address-space ownership explicit before
 copy-on-write exists. Direct-child waits and a memory-buffer `exec` avoid
@@ -415,15 +449,25 @@ Questions:
 
 Use practical Unix/POSIX behavior as a reference without promising full POSIX compliance.
 
-These decisions resolve process creation, replacement, exit, wait, and
-descriptor inheritance for Phase 7. The remaining IPC and signal questions
-stay open for later milestones.
+These decisions resolve process creation, replacement, exit, wait, descriptor
+inheritance, and Phase 13A anonymous pipe behavior. Signal semantics and
+shared-memory lifecycle remain open for later milestones.
 
 ---
 
 ADR-007 — Synchronization and Interrupt Context
 
-Status: Open
+Status: Accepted for Phase 13A pipe waits
+
+Pipe operations execute on the single active CPU and are serialized while
+kernel syscall handling has interrupts disabled. A blocked pipe operation
+records a wait channel in its process and uses the existing process scheduler
+to leave the runnable set. Data arrival, buffer space, and final endpoint
+closure wake the corresponding waiters. Wakeups only change process state;
+pipe operations retry in syscall context after they run again. No spinning,
+sleeping from interrupt context, or SMP-safety guarantee is introduced. This
+decision is limited to anonymous pipes. A future SMP or general kernel-thread
+synchronization design requires a separate decision.
 
 Define synchronization primitives.
 
@@ -504,6 +548,13 @@ busy-waiting. It adds no clock API, `nanosleep`, libc, or broader POSIX
 process or terminal semantics. Phase 12 init and shell are freestanding,
 statically linked ELF64 programs using the syscall ABI directly. Broader
 POSIX compatibility remains open and out of scope.
+
+Phase 13A's supported userspace IPC subset is syscall 14 `pipe(fds)` plus
+existing `read`, `write`, `close`, `fork`, `exec_path`, and `waitpid` behavior.
+It supports anonymous pipes and inherited descriptors only. This is not a
+general POSIX compatibility claim. Signals, shared memory, `dup2`, process
+groups, shell pipelines/redirection, libc, and unrelated interfaces are
+deferred.
 
 Define the practical POSIX subset.
 
@@ -816,6 +867,66 @@ resource validation.
 Rationale: mechanism #1 provides a small fallback for the initial x86_64
 platform, while MCFG enables full PCIe configuration space where firmware
 provides it. Read-only enumeration prevents unrelated device state changes.
+
+---
+
+ADR-019 — Phase 13A Anonymous Pipe Contract
+
+Status: Accepted for Phase 13A
+
+Decision: syscall 14 `pipe(fds)` creates one anonymous pipe with a 4096-byte
+ring buffer and installs two descriptors in the caller's descriptor table.
+`RDI` points to an 8-byte userspace array of two `uint32_t` values. The first
+value is the read descriptor and the second the write descriptor. Allocation
+uses the lowest free descriptors starting at 3. If fewer than two slots are
+available, return `EMFILE` and leave the descriptor table unchanged. A null,
+overflowing, unmapped, or non-writable output range returns `EFAULT`; validate
+all eight bytes before allocating or publishing descriptors. Any later setup
+failure rolls back both slots and all allocated endpoint references. The
+kernel copies out both descriptor numbers only after setup succeeds.
+
+The read and write ends are separate open-file objects referencing one pipe.
+The existing reference-counted descriptor objects define endpoint lifetime.
+`fork` clones those references and `exec` retains them under existing rules.
+Closing a descriptor or destroying a process descriptor table drops a
+reference. Closing the final reference to an endpoint changes its endpoint
+count and wakes waiters on the opposite operation. The pipe allocation is
+released only after both endpoint counts reach zero and no operation can still
+reference it.
+
+Existing syscall 9 `read` and syscall 2 `write` operate on pipe descriptors;
+there are no new read/write calls. A zero-length request returns zero without
+waiting or changing pipe state. For a nonzero read, if data exists, copy and
+consume up to `min(requested, available)` bytes and return that count. If no
+data exists and writers remain, block the caller in the process scheduler,
+then retry the syscall after wakeup. If no data exists and no writers remain,
+return zero (EOF). For a nonzero write, if no readers remain, return `EPIPE`
+and do not generate a signal. If the buffer has capacity, append up to
+`min(requested, available_capacity)` bytes and return that count, including a
+short count when capacity is less than requested. If full while readers
+remain, block and retry after wakeup. Existing syscall maximum I/O size of
+4096 bytes applies. These are byte-stream semantics; writes are not atomic
+with respect to another writer.
+
+Syscall write copies its complete input to kernel memory before pipe state is
+changed, so an invalid source returns `EFAULT` without writing any bytes. Pipe
+read stages bytes in kernel memory, copies them to userspace, and only then
+advances the ring-buffer head. A failed copy-out returns `EFAULT` without
+consuming staged bytes. Since only one CPU is active and the syscall does not
+schedule between staging and commit, another pipe operation cannot invalidate
+the staged range. Data arrival, consumed capacity, and endpoint closure wake
+the corresponding waiters; they retry in syscall context. No callback may
+spin or sleep in interrupt context.
+
+No `dup2`, nonblocking mode, `poll`, `select`, `SIGPIPE`, signal interruption,
+named pipes, packet boundaries, or pipe persistence is included. Shell
+pipelines and redirection are deferred. This decision does not establish SMP
+locking semantics.
+
+Tests must cover ring-buffer empty/full states, wraparound, short transfers,
+EOF, `EPIPE`, endpoint references through fork and exec, descriptor exhaustion,
+invalid and cross-page output pointers, failed user copies without data loss,
+blocked-reader/writer wakeups, process cleanup, and absence of busy-spinning.
 
 ---
 

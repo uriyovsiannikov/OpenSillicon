@@ -42,7 +42,7 @@ ACPICA_CFLAGS := $(KERNEL_CFLAGS) -Wno-unused-parameter -fno-builtin \
 	interrupt-test vmm-protection-test timer-test clean acpica-check acpi-test \
 	pci-test block-test phase10-test phase11-test terminal-test \
 	terminal-qemu-test user-path-test phase12-qemu-test phase12-test \
-	refresh-test-root
+	pipe-test phase13a-test refresh-test-root
 
 all: kernel
 
@@ -83,6 +83,13 @@ $(BUILD_DIR)/log.o: kernel/log.c include/kernel/log.h | $(BUILD_DIR)
 
 $(BUILD_DIR)/fd.o: kernel/fd.c include/kernel/fd.h include/kernel/log.h \
 		include/kernel/heap.h include/kernel/vfs.h include/kernel/tty.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/pipe.o: kernel/ipc/pipe.c include/kernel/pipe.h \
+		include/kernel/process.h include/kernel/fd.h include/kernel/heap.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c kernel/ipc/pipe.c -o $@
+
+$(BUILD_DIR)/pipe_buffer.o: kernel/ipc/pipe_buffer.c include/kernel/pipe.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/terminal.o: kernel/tty/terminal.c include/kernel/terminal.h | $(BUILD_DIR)
@@ -231,6 +238,25 @@ $(BUILD_DIR)/user_shell.o: user/shell.c user/include/os.h | $(BUILD_DIR)
 $(BUILD_DIR)/user_probe.o: user/probe.c user/include/os.h | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
+$(BUILD_DIR)/user_pipe_test.o: user/pipe_test.c user/include/os.h | $(BUILD_DIR)
+	$(CC) $(USER_CFLAGS) -Iuser -c $< -o $@
+
+$(BUILD_DIR)/user_pipe_exec_child.o: user/pipe_exec_child.c user/include/os.h | $(BUILD_DIR)
+	$(CC) $(USER_CFLAGS) -Iuser -c $< -o $@
+
+$(BUILD_DIR)/pipe_test.elf: $(BUILD_DIR)/user_start.o $(BUILD_DIR)/user_os.o \
+		$(BUILD_DIR)/user_path.o $(BUILD_DIR)/user_pipe_test.o user/c_linker.ld
+	$(LD) $(USER_C_LDFLAGS) $(BUILD_DIR)/user_start.o \
+		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
+		$(BUILD_DIR)/user_pipe_test.o -o $@
+
+$(BUILD_DIR)/pipe_exec_child.elf: $(BUILD_DIR)/user_start.o \
+		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
+		$(BUILD_DIR)/user_pipe_exec_child.o user/c_linker.ld
+	$(LD) $(USER_C_LDFLAGS) $(BUILD_DIR)/user_start.o \
+		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
+		$(BUILD_DIR)/user_pipe_exec_child.o -o $@
+
 $(BUILD_DIR)/user_crash.o: user/crash.c user/include/os.h | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -351,9 +377,12 @@ $(BUILD_DIR)/exec_path_child.elf: $(BUILD_DIR)/exec_path_child.o user/exec_child
 	$(LD) -nostdlib -static -no-pie -T user/exec_child.ld $< -o $@
 
 $(BUILD_DIR)/initramfs.cpio: $(shell find initramfs -type f -o -type d) \
-		$(BUILD_DIR)/exec_path_child.elf tools/mkinitramfs.py
+		$(BUILD_DIR)/exec_path_child.elf $(BUILD_DIR)/pipe_test.elf \
+		$(BUILD_DIR)/pipe_exec_child.elf tools/mkinitramfs.py
 	python3 tools/mkinitramfs.py initramfs $@ \
-		--file bin/exec_path_child=$(BUILD_DIR)/exec_path_child.elf
+		--file bin/exec_path_child=$(BUILD_DIR)/exec_path_child.elf \
+		--file bin/pipe_test=$(BUILD_DIR)/pipe_test.elf \
+		--file bin/pipe_exec_child=$(BUILD_DIR)/pipe_exec_child.elf
 
 KERNEL_OBJECTS := $(BUILD_DIR)/main.o $(BUILD_DIR)/boot.o $(BUILD_DIR)/pmm.o \
 	$(BUILD_DIR)/vmm.o $(BUILD_DIR)/heap.o $(BUILD_DIR)/log.o \
@@ -367,7 +396,8 @@ KERNEL_OBJECTS := $(BUILD_DIR)/main.o $(BUILD_DIR)/boot.o $(BUILD_DIR)/pmm.o \
 	$(BUILD_DIR)/terminal.o $(BUILD_DIR)/keyboard.o \
 	$(BUILD_DIR)/framebuffer.o $(BUILD_DIR)/tty.o \
 	$(BUILD_DIR)/ps2_keyboard.o \
-	$(BUILD_DIR)/syscall.o $(BUILD_DIR)/user_entry.o \
+	$(BUILD_DIR)/syscall.o $(BUILD_DIR)/pipe.o $(BUILD_DIR)/pipe_buffer.o \
+	$(BUILD_DIR)/user_entry.o \
 	$(BUILD_DIR)/user_entry_c.o $(BUILD_DIR)/user_test_blob.o \
 	$(BUILD_DIR)/elf.o $(BUILD_DIR)/elf_test_blob.o $(BUILD_DIR)/process.o \
 	$(BUILD_DIR)/string.o $(BUILD_DIR)/vfs.o $(BUILD_DIR)/ramfs.o \
@@ -519,6 +549,18 @@ phase12-qemu-test: iso $(BUILD_DIR)/phase12-root.img $(BUILD_DIR)/blank-root.img
 
 phase12-test: user-path-test phase11-test phase12-qemu-test
 
+$(BUILD_DIR)/pipe_test: kernel/ipc/pipe.c kernel/ipc/pipe_buffer.c kernel/fd.c \
+		tests/pipe_test.c include/kernel/pipe.h include/kernel/fd.h | $(BUILD_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Ilimine \
+		kernel/ipc/pipe.c kernel/ipc/pipe_buffer.c kernel/fd.c \
+		tests/pipe_test.c -o $@
+
+pipe-test: $(BUILD_DIR)/pipe_test
+	$(BUILD_DIR)/pipe_test
+
+phase13a-test: pipe-test phase12-test process-test vfs-smoke-test \
+		timer-test fault-test interrupt-test vmm-protection-test acpica-check
+
 vfs-smoke-test: iso $(BUILD_DIR)/test-root.img
 	@set +e; timeout 10s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \
 		-cdrom $(BUILD_DIR)/opensillicon.iso \
@@ -547,6 +589,10 @@ process-test: iso $(BUILD_DIR)/test-root.img
 	@grep -E 'OpenSillicon: user timer preemptions [1-9][0-9]*' \
 		$(BUILD_DIR)/process-serial.log
 	@grep -F 'OpenSillicon: ELF64 process, fork, wait, and cleanup passed' \
+		$(BUILD_DIR)/process-serial.log
+	@grep -F 'OpenSillicon: anonymous pipe fork, exec, and blocking tests passed' \
+		$(BUILD_DIR)/process-serial.log
+	@grep -E 'OpenSillicon: pipe blocked timer ticks [1-9][0-9]*' \
 		$(BUILD_DIR)/process-serial.log
 
 fault-test:

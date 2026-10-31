@@ -458,28 +458,42 @@ Done criteria
 
 ---
 
-Phase 13 — IPC and POSIX Subset
+Phase 13A — Anonymous Pipes
 
 Goal
 
-Introduce basic inter-process communication.
+Provide bounded, scheduler-blocking anonymous byte-stream pipes using the
+existing process, descriptor, fork, exec, and syscall architecture.
 
 Tasks
 
-- Implement pipes.
-- Implement signals.
-- Implement shared memory.
-- Define synchronization rules.
-- Improve process waiting and lifecycle semantics.
-- Document supported POSIX behavior.
+- Append syscall 14 `pipe(fds)` while preserving ABI v1 calls 0–13.
+- Add a 4096-byte ring buffer with separate reference-counted read and write
+  endpoints.
+- Use existing `read`, `write`, and `close` syscalls; support short transfers,
+  EOF, and `EPIPE` without `SIGPIPE`.
+- Preserve endpoint lifetime through fork descriptor cloning and exec.
+- Add scheduler wait channels and wake blocked readers/writers on data,
+  capacity, and endpoint closure. No busy-waiting.
+- Guarantee failed user copies do not consume input data or publish partially
+  installed descriptors.
+- Add host ring-buffer/failure tests and QEMU process integration tests.
+- Run the full Phase 12 and earlier regression suites.
 
 Done criteria
 
-- Processes communicate through pipes.
-- Signals can be delivered and handled.
-- Shared memory works with proper isolation.
-- Process synchronization is reliable.
-- Tests cover IPC failure cases.
+- Parent and child processes communicate through inherited pipe descriptors.
+- Exec preserves descriptors as documented.
+- Empty reads block then return data or EOF; full writes block then gain space
+  or fail with `EPIPE` after the final reader closes.
+- Invalid output pointers, descriptor exhaustion, and copy failures clean up
+  without leaking resources or losing pipe bytes.
+- Host, QEMU, and previous regression tests pass.
+
+ADR-019 defines the Phase 13A contract. Signals and shared memory remain
+deferred to separately reviewed stages. Also deferred: `dup2`, nonblocking
+mode, `poll`/`select`, named pipes, shell pipelines/redirection, signal
+interruption, libc work, and broader POSIX compatibility.
 
 ---
 

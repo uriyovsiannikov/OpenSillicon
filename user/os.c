@@ -31,6 +31,8 @@ long u_exec_path(const char *path) { return syscall3(12, (uintptr_t)path, 0, 0);
 long u_waitpid(uint64_t pid, uint8_t *status)
 { return syscall3(6, pid, (uintptr_t)status, 0); }
 long u_sleep_ticks(uint64_t ticks) { return syscall3(13, ticks, 0, 0); }
+long u_pipe(uint32_t descriptors[2])
+{ return syscall3(14, (uintptr_t)descriptors, 0, 0); }
 _Noreturn void u_exit(uint64_t status)
 {
 	(void)syscall3(1, status, 0, 0);

@@ -4,6 +4,7 @@
 #include "arch/x86_64/user.h"
 #include "kernel/fd.h"
 #include "kernel/log.h"
+#include "kernel/pipe.h"
 #include "kernel/process.h"
 #include "kernel/syscall.h"
 #include "kernel/vmm.h"
@@ -18,6 +19,8 @@
 #define ERRNO_EAGAIN 11U
 #define ERRNO_ENOMEM 12U
 #define ERRNO_ENAMETOOLONG 36U
+#define ERRNO_EPIPE 32U
+#define ERRNO_EMFILE 24U
 
 static struct fd_table *descriptor_table;
 
@@ -92,6 +95,26 @@ syscall_interrupt(struct interrupt_frame *frame)
 				break;
 			}
 			table = current_fd_table();
+			{
+				struct fd_object *object = fd_object_for_descriptor(table,
+				    frame->rdi);
+
+				if (pipe_is_write_endpoint(object)) {
+					result = pipe_write_try(object, buffer,
+					    (size_t)frame->rdx, &amount);
+					if (result == -(int)ERRNO_EAGAIN)
+						return process_block_on_channel(frame,
+						    pipe_wait_channel(object,
+						    PIPE_WRITE_WAIT));
+					if (result != 0) {
+						syscall_error(frame,
+						    errno_from_kernel(result));
+						break;
+					}
+					frame->rax = amount;
+					break;
+				}
+			}
 			result = fd_write(table, frame->rdi, buffer,
 			    (size_t)frame->rdx, &amount);
 			if (result != 0) {
@@ -127,6 +150,37 @@ syscall_interrupt(struct interrupt_frame *frame)
 		break;
 	case SYSCALL_SLEEP_TICKS:
 		frame = process_sleep_ticks(frame, frame->rdi, &error);
+		break;
+	case SYSCALL_PIPE:
+		{
+			uint32_t descriptors[2];
+			int read_descriptor;
+			int write_descriptor;
+			int result;
+
+			if (!vmm_validate_user_write(vmm_active_address_space(),
+			    frame->rdi, sizeof(descriptors))) {
+				syscall_error(frame, ERRNO_EFAULT);
+				break;
+			}
+			table = current_fd_table();
+			result = pipe_create(table, &read_descriptor,
+			    &write_descriptor);
+			if (result != 0) {
+				syscall_error(frame, errno_from_kernel(result));
+				break;
+			}
+			descriptors[0] = (uint32_t)read_descriptor;
+			descriptors[1] = (uint32_t)write_descriptor;
+			if (!vmm_copy_to_user(vmm_active_address_space(), frame->rdi,
+			    descriptors, sizeof(descriptors))) {
+				(void)fd_close(table, (uint64_t)read_descriptor);
+				(void)fd_close(table, (uint64_t)write_descriptor);
+				syscall_error(frame, ERRNO_EFAULT);
+				break;
+			}
+			frame->rax = 0;
+		}
 		break;
 	case SYSCALL_OPEN:
 		{
@@ -176,7 +230,34 @@ syscall_interrupt(struct interrupt_frame *frame)
 		{
 			char buffer[SYSCALL_MAX_IO];
 			uint64_t old_offset = fd_get_offset(current_fd_table(), frame->rdi);
-			int result = fd_read(current_fd_table(), frame->rdi, buffer,
+			struct fd_object *object = fd_object_for_descriptor(
+			    current_fd_table(), frame->rdi);
+			int result;
+
+			if (pipe_is_read_endpoint(object)) {
+				result = pipe_read_stage(object, buffer,
+				    (size_t)frame->rdx, &amount);
+				if (result == -(int)ERRNO_EAGAIN)
+					return process_block_on_channel(frame,
+					    pipe_wait_channel(object, PIPE_READ_WAIT));
+				if (result != 0) {
+					syscall_error(frame, errno_from_kernel(result));
+					break;
+				}
+				if (amount != 0 && !vmm_copy_to_user(
+				    vmm_active_address_space(), frame->rsi, buffer,
+				    amount)) {
+					syscall_error(frame, ERRNO_EFAULT);
+					break;
+				}
+				if (pipe_read_commit(object, amount) != 0) {
+					syscall_error(frame, ERRNO_EINVAL);
+					break;
+				}
+				frame->rax = amount;
+				break;
+			}
+			result = fd_read(current_fd_table(), frame->rdi, buffer,
 			    (size_t)frame->rdx, &amount);
 
 			if (result != 0) {

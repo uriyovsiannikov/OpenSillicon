@@ -39,6 +39,7 @@ struct process {
 	uint64_t waiting_for;
 	uint64_t wait_status_address;
 	uint64_t wake_tick;
+	void *blocked_channel;
 	struct process *parent;
 	struct process *previous;
 	struct process *next;
@@ -54,6 +55,7 @@ static struct process *process_head;
 static struct process *current_process;
 static uint64_t next_process_id = 1;
 static uint64_t user_preemptions;
+static uint64_t pipe_blocked_ticks;
 static bool initialized;
 
 static uint64_t
@@ -148,23 +150,6 @@ schedule_from(struct process *after)
 		next = find_next_ready(after);
 		if (next != NULL)
 			break;
-		if (process_head != NULL) {
-			struct process *process = process_head;
-			bool sleeper_exists = false;
-
-			do {
-				if (process->state == PROCESS_BLOCKED &&
-				    process->wake_tick != 0) {
-					sleeper_exists = true;
-					break;
-				}
-				process = process->next;
-			} while (process != process_head);
-			if (sleeper_exists) {
-				__asm__ volatile ("sti; hlt; cli" : : : "memory");
-				continue;
-			}
-		}
 		if (current_process != NULL && current_process->parent == NULL &&
 		    current_process->state == PROCESS_ZOMBIE) {
 			uint64_t status = current_process->exit_status;
@@ -175,6 +160,22 @@ schedule_from(struct process *after)
 				kernel_halt();
 			}
 			user_return_to_kernel(status);
+		}
+		if (process_head != NULL) {
+			struct process *process = process_head;
+			bool blocked_exists = false;
+
+			do {
+				if (process->state == PROCESS_BLOCKED) {
+					blocked_exists = true;
+					break;
+				}
+				process = process->next;
+			} while (process != process_head);
+			if (blocked_exists) {
+				__asm__ volatile ("sti; hlt; cli" : : : "memory");
+				continue;
+			}
 		}
 		klog("OpenSillicon panic: no runnable process\n");
 		kernel_halt();
@@ -238,6 +239,7 @@ process_system_init(void)
 	current_process = NULL;
 	next_process_id = 1;
 	user_preemptions = 0;
+	pipe_blocked_ticks = 0;
 	initialized = true;
 }
 
@@ -257,6 +259,12 @@ uint64_t
 process_user_preemptions(void)
 {
 	return user_preemptions;
+}
+
+uint64_t
+process_pipe_blocked_ticks(void)
+{
+	return pipe_blocked_ticks;
 }
 
 static uint64_t
@@ -288,6 +296,7 @@ process_run_elf_internal(const void *image, size_t image_size,
 	root->waiting_for = 0;
 	root->wait_status_address = 0;
 	root->wake_tick = 0;
+	root->blocked_channel = NULL;
 	root->parent = NULL;
 	root->address_space = &root->loaded_image->address_space;
 	root->saved_frame = NULL;
@@ -420,6 +429,7 @@ process_fork(struct interrupt_frame *frame, uint64_t *error)
 	child->waiting_for = 0;
 	child->wait_status_address = 0;
 	child->wake_tick = 0;
+	child->blocked_channel = NULL;
 	child->parent = current_process;
 	child->loaded_image = NULL;
 	child->initial_user_stack = current_process->initial_user_stack;
@@ -705,6 +715,40 @@ process_sleep_ticks(struct interrupt_frame *frame, uint64_t ticks,
 	return schedule_from(current_process);
 }
 
+struct interrupt_frame *
+process_block_on_channel(struct interrupt_frame *frame, void *channel)
+{
+	if (current_process == NULL || channel == NULL) {
+		frame->rax = PROCESS_ERROR_EINVAL;
+		frame->rflags |= 1U;
+		return frame;
+	}
+	current_process->blocked_channel = channel;
+	current_process->state = PROCESS_BLOCKED;
+	current_process->saved_frame = frame;
+	return schedule_from(current_process);
+}
+
+void
+process_wake_channel(void *channel)
+{
+	struct process *process;
+
+	if (channel == NULL || process_head == NULL)
+		return;
+	process = process_head;
+	do {
+		if (process->state == PROCESS_BLOCKED &&
+		    process->blocked_channel == channel) {
+			process->blocked_channel = NULL;
+			if (process->saved_frame->rip >= 2)
+				process->saved_frame->rip -= 2;
+			process->state = PROCESS_READY;
+		}
+		process = process->next;
+	} while (process != process_head);
+}
+
 void
 process_timer_wakeup(uint64_t ticks)
 {
@@ -714,9 +758,13 @@ process_timer_wakeup(uint64_t ticks)
 		return;
 	process = process_head;
 	do {
+		if (process->state == PROCESS_BLOCKED &&
+		    process->blocked_channel != NULL && pipe_blocked_ticks != UINT64_MAX)
+			pipe_blocked_ticks++;
 		if (process->state == PROCESS_BLOCKED && process->wake_tick != 0 &&
 		    ticks >= process->wake_tick) {
 			process->wake_tick = 0;
+			process->blocked_channel = NULL;
 			process->state = PROCESS_READY;
 		}
 		process = process->next;
@@ -735,6 +783,7 @@ process_exit(struct interrupt_frame *frame, uint64_t status)
 		user_return_to_kernel(status);
 	process->exit_status = status & 0xffU;
 	process->state = PROCESS_ZOMBIE;
+	fd_table_destroy(&process->descriptors);
 	parent = process->parent;
 	if (process_head != NULL) {
 		child = process_head;

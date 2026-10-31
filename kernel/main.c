@@ -130,6 +130,27 @@ run_vfs_test(void)
 }
 
 static void
+run_pipe_test(void)
+{
+	uint64_t status = process_run_path("/init/bin/pipe_test", false);
+
+	if (status != 0) {
+		klog("OpenSillicon: anonymous pipe userspace test failed, status ");
+		klog_u64(status);
+		klog("\n");
+		kernel_halt();
+	}
+	if (process_pipe_blocked_ticks() == 0) {
+		klog("OpenSillicon: pipe wait did not block through timer ticks\n");
+		kernel_halt();
+	}
+	klog("OpenSillicon: pipe blocked timer ticks ");
+	klog_u64(process_pipe_blocked_ticks());
+	klog("\n");
+	klog("OpenSillicon: anonymous pipe fork, exec, and blocking tests passed\n");
+}
+
+static void
 initialize_filesystems(const struct boot_info *info)
 {
 	struct vnode *ramfs_root;
@@ -476,6 +497,7 @@ _start(void)
 	run_user_test();
 	run_elf_test();
 	run_vfs_test();
+	run_pipe_test();
 	if (block_flush(&ahci_block_device) != 0) {
 		klog("OpenSillicon: root block flush failed\n");
 		kernel_halt();

@@ -32,6 +32,7 @@ long u_fork(void);
 long u_exec_path(const char *path);
 long u_waitpid(uint64_t pid, uint8_t *status);
 long u_sleep_ticks(uint64_t ticks);
+long u_pipe(uint32_t descriptors[2]);
 _Noreturn void u_exit(uint64_t status);
 size_t u_strlen(const char *string);
 int u_streq(const char *left, const char *right);

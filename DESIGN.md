@@ -302,6 +302,16 @@ timer interrupt wakes it without polling. Requests larger than
 `UINT64_MAX - current_tick` fail with `EINVAL`, preventing deadline overflow.
 No clock query or nanosecond sleep interface is provided.
 
+Phase 13A appends syscall 14, `pipe(fds)`, without changing any existing
+syscall number or behavior. It returns a read descriptor and write descriptor
+through an 8-byte `uint32_t[2]` at `RDI`. Pipe descriptors use existing
+`read`, `write`, and `close`; the 4096-byte ring buffer, short I/O, EOF,
+`EPIPE`, failure rollback, descriptor inheritance, and scheduler wait/wakeup
+rules are specified in ADR-019. Pipe waits block processes and never busy-wait.
+Phase 13A is limited to anonymous pipes. Signals and shared memory are
+deferred to separately reviewed stages; this phase adds no `dup2`, signal
+interruption, shell redirection, or general libc/POSIX interfaces.
+
 Userspace
 
 The system will provide:
