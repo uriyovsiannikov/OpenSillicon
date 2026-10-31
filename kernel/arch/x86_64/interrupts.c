@@ -64,6 +64,8 @@ interrupt_dispatch(struct interrupt_frame *frame)
 		klog("OpenSillicon panic: missing interrupt frame\n");
 		kernel_halt();
 	}
+	if (frame->vector == 255)
+		return;
 	if (frame->vector < 32) {
 		klog("OpenSillicon exception: vector ");
 		klog_u64(frame->vector);

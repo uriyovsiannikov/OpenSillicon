@@ -9,6 +9,7 @@ PHDRS
 SECTIONS
 {
 	. = 0xffffffff80000000;
+	__kernel_start = .;
 	.text : ALIGN(4K) { *(.text .text.*) } :text
 	/* Keep writable protocol requests separate from executable text. */
 	.limine_requests_start : ALIGN(4K) { KEEP(*(.limine_requests_start)) } :requests
@@ -17,5 +18,6 @@ SECTIONS
 	.rodata : ALIGN(4K) { *(.rodata .rodata.*) } :rodata
 	.data : ALIGN(4K) { *(.data .data.*) } :data
 	.bss : ALIGN(4K) { *(COMMON) *(.bss .bss.*) } :data
+	__kernel_end = .;
 	/DISCARD/ : { *(.eh_frame .note .note.* .comment) }
 }

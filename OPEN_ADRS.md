@@ -34,24 +34,31 @@ Binary compatibility with FreeBSD is not required.
 
 ADR-002 — Virtual Memory Layout
 
-Status: Open
+Status: Accepted
 
-Define exact virtual address ranges.
+Decision (Phase 4): use x86_64 four-level canonical address space. Keep the
+existing kernel image base at `0xffffffff80000000`. Retain the HHDM offset
+reported by Limine as the direct-map base; do not assume it is a fixed address.
+The lower canonical half is reserved for userspace, with `[0, 0x10000)` kept
+unmapped and the top canonical page reserved as a guard. Kernel vmalloc uses
+`0xffffc00000000000` through `0xffffe00000000000`; the kernel heap uses
+`0xffffe00000000000` through `0xfffff00000000000`. The implementation must
+validate these regions against the actual HHDM span and loaded kernel image
+before using them. The kernel image and boot HHDM remain mapped in every
+address space; user mappings are isolated to the lower half. Stack and
+memory-mapped-file regions are allocated within the userspace range and use
+unmapped guard pages.
 
-Questions:
+Alternatives considered:
 
-- Kernel higher-half base.
-- Kernel image range.
-- Direct physical map range.
-- Kernel heap range.
-- vmalloc range.
-- User address-space range.
-- Stack layout.
-- Memory-mapped file region.
-- Guard pages.
-- Reserved address ranges.
+- Fixed HHDM base: simpler address arithmetic, but conflicts with Limine's
+  runtime-provided offset and the approved boot interface.
+- One dynamic high-half allocator for all kernel virtual mappings: more
+  flexible, but needlessly combines heap and general mapping lifetimes.
 
-Must be compatible with x86_64 four-level paging.
+The accepted layout preserves the existing linked kernel address and HHDM
+contract while giving vmalloc and heap distinct, checkable ranges. Four-level
+paging is the compatibility constraint; five-level paging is deferred.
 
 ---
 

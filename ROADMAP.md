@@ -146,6 +146,8 @@ Tasks
 
 - Implement four-level x86_64 paging.
 - Implement page mapping and unmapping.
+- Create, activate, and destroy isolated address spaces.
+- Enforce read/write, user/supervisor, and no-execute mapping permissions.
 - Map the LAPIC MMIO page and initialize the local APIC.
 - Implement kernel higher-half mappings.
 - Establish userspace address-space layout.

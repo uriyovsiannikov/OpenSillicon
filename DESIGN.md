@@ -192,7 +192,12 @@ Virtual memory
 - User address spaces must be isolated.
 - Kernel mappings must be managed consistently.
 
-Exact virtual address ranges require an ADR.
+ADR-002 defines the address ranges: the existing `0xffffffff80000000` kernel
+image base; Limine's runtime HHDM offset for the physical direct map; lower
+canonical userspace with the null 64 KiB and top page reserved; vmalloc at
+`0xffffc00000000000`–`0xffffe00000000000`; and kernel heap at
+`0xffffe00000000000`–`0xfffff00000000000`. The VMM validates arena overlaps
+against the boot HHDM span and linked kernel image before using them.
 
 Physical memory management
 
