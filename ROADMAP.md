@@ -45,7 +45,8 @@ Tasks
 
 Done criteria
 
-- Cross compiler works.
+- System GCC and GNU binutils build a freestanding x86_64 kernel without
+  host runtime or userspace library dependencies.
 - Kernel builds without warnings.
 - Limine starts the kernel.
 - Kernel reaches its entry point.
@@ -318,7 +319,10 @@ Journaling is not required in this milestone.
 
 ---
 
-Phase 10 — PCI, ACPI, AHCI and Root Switch
+Phase 10 — PCI, ACPI, AHCI and Root Switch (completed)
+
+Status: Implemented, built, host-tested, and QEMU UEFI-tested. The kernel uses
+the system GCC/binutils freestanding configuration established in Phase 0.
 
 Goal
 
@@ -326,25 +330,49 @@ Introduce real hardware discovery and persistent root storage.
 
 Tasks
 
-- Implement PCI/PCIe enumeration.
-- Integrate ACPICA with OpenSillicon glue.
-- Discover ACPI MADT through ACPICA and initialize the IOAPIC.
-- Implement AHCI driver.
-- Implement block device interface.
-- Support 512-byte and 4096-byte logical sectors.
+- Implement read-only PCI enumeration, using configuration mechanism 1 as
+  fallback and ACPI MCFG ECAM when present; enumerate bridges and
+  multifunction devices and identify AHCI controllers.
+- Integrate pinned ACPICA 20260930 (BSD-3-Clause component) with OpenSillicon
+  OSL; use Limine RSDP and load tables, namespace, and AML interpreter.
+- Discover MADT through ACPICA and initialize the IOAPIC while preserving
+  existing LAPIC, PIC-mask, IDT, and timer behavior. Keep redirection entries
+  masked until a later device-interrupt milestone.
+- Implement synchronous polling AHCI initialization, IDENTIFY, read, write,
+  and flush with validated DMA alignment/address constraints.
+- Implement the minimal synchronous block-device interface with negative
+  errno returns and 512-byte and 4096-byte logical sectors.
 - Detect storage devices.
-- Mount SilliconFS.
-- Implement switch-root from initramfs.
+- Mount and validate SilliconFS from the selected SATA device.
+- Replace RAMFS at `/` with SilliconFS before userspace starts, retaining
+  initramfs at `/init` and keeping Limine-owned archive memory valid.
+- Add host tests for PCI topology and malformed MCFG/MADT tables, sector
+  translation and I/O failures, and 512-byte/4096-byte disk images.
+- Add QEMU UEFI SATA-disk tests for discovery, filesystem reads/writes and
+  flush, root replacement, initramfs access, and serial diagnostics; run all
+  prior regression tests. The 4096-byte logical-sector adapter is covered by
+  host filesystem-image tests; QEMU's IDE device only supports 512-byte
+  logical sectors in this configuration.
 
 Done criteria
 
 - PCI devices are enumerated.
-- ACPI tables are parsed.
-- IOAPIC initializes using ACPI MADT data.
+- ACPI tables load through ACPICA and MADT entries are validated.
+- IOAPIC initializes from MADT while existing LAPIC/timer regressions pass.
 - AHCI controller is detected.
-- SATA storage is accessible.
+- SATA storage reads, writes, and flushes work through the block layer.
+- 512-byte and 4096-byte logical-sector images pass block/filesystem tests.
 - SilliconFS mounts from a disk image or virtual disk.
-- System can switch to persistent root filesystem.
+- System switches to persistent root, and `/init` remains accessible without
+  invalidating initramfs backing memory.
+
+Out of scope: NVMe, USB, journaling, NCQ, asynchronous block queues, block
+caching, ACPI power management/events, and unrelated PCI device setup.
+
+Completed host tests: `make test elf-test vfs-test silliconfs-test phase10-test
+acpica-check`. Completed QEMU tests: `make process-test vfs-smoke-test
+timer-test fault-test interrupt-test vmm-protection-test`. QEMU targets verify
+serial output and expected timeout-based kernel halt behavior.
 
 ---
 

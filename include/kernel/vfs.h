@@ -69,6 +69,7 @@ bool vnode_get(struct vnode *node);
 void vnode_put(struct vnode *node);
 uint64_t vfs_allocate_inode(void);
 int vfs_mount(const char *path, struct vnode *root);
+int vfs_replace_root(struct vnode *root);
 int vfs_lookup(const char *path, struct vnode **result);
 int vfs_create_path(const char *path, enum vnode_type type, uint32_t mode,
 	struct vnode **result);

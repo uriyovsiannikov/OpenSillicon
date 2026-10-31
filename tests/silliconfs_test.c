@@ -11,6 +11,7 @@
 #include "kernel/heap.h"
 #include "kernel/log.h"
 #include "kernel/silliconfs.h"
+#include "kernel/block_silliconfs.h"
 #include "kernel/vfs.h"
 
 struct memory_device {
@@ -79,6 +80,74 @@ memory_write(void *context, uint32_t number, const void *block)
 	memcpy(device->bytes + (size_t)number * SILLICONFS_BLOCK_SIZE, block,
 	    SILLICONFS_BLOCK_SIZE);
 	return 0;
+}
+
+static int
+sector_read(struct block_device *device, uint64_t first, uint32_t count,
+	void *buffer)
+{
+	struct memory_device *memory = device->context;
+	uint64_t byte_offset = first * device->logical_sector_size;
+	size_t length = (size_t)count * device->logical_sector_size;
+
+	if (byte_offset > (uint64_t)memory->blocks * SILLICONFS_BLOCK_SIZE ||
+	    length > (uint64_t)memory->blocks * SILLICONFS_BLOCK_SIZE - byte_offset)
+		return -5;
+	memcpy(buffer, memory->bytes + byte_offset, length);
+	return 0;
+}
+
+static int
+sector_write(struct block_device *device, uint64_t first, uint32_t count,
+	const void *buffer)
+{
+	struct memory_device *memory = device->context;
+	uint64_t byte_offset = first * device->logical_sector_size;
+	size_t length = (size_t)count * device->logical_sector_size;
+
+	if (memory->fail_write != UINT32_MAX || byte_offset >
+	    (uint64_t)memory->blocks * SILLICONFS_BLOCK_SIZE || length >
+	    (uint64_t)memory->blocks * SILLICONFS_BLOCK_SIZE - byte_offset)
+		return -5;
+	memcpy(memory->bytes + byte_offset, buffer, length);
+	return 0;
+}
+
+static const struct block_device_operations sector_operations = {
+	.read = sector_read,
+	.write = sector_write
+};
+
+static void
+test_sector_size_adapter(uint8_t *image, size_t size, uint32_t blocks)
+{
+	struct memory_device memory = {
+		.bytes = image,
+		.blocks = blocks,
+		.fail_read = UINT32_MAX,
+		.fail_write = UINT32_MAX
+	};
+	struct block_device device = {
+		.name = "silliconfs-sector-test",
+		.logical_sector_size = 512,
+		.sector_count = size / 512,
+		.operations = &sector_operations,
+		.context = &memory
+	};
+	struct block_silliconfs_adapter adapter;
+
+	assert(block_device_register(&device) == 0);
+	for (uint32_t sector_size = 512; sector_size <= 4096;
+	    sector_size *= 8) {
+		struct vnode *root;
+		device.logical_sector_size = sector_size;
+		device.sector_count = size / sector_size;
+		assert(block_silliconfs_init(&adapter, &device));
+		assert(adapter.filesystem.block_count == blocks);
+		assert(silliconfs_mount(&adapter.filesystem, &root) == 0);
+		assert(root->type == VNODE_DIRECTORY);
+		vnode_put(root);
+	}
 }
 
 static struct silliconfs_device
@@ -347,6 +416,7 @@ main(int argc, char **argv)
 	image = load_image(argv[1], &size);
 	blocks = (uint32_t)(size / SILLICONFS_BLOCK_SIZE);
 	test_malformed_images(image, size, blocks);
+	test_sector_size_adapter(image, size, blocks);
 	test_vfs_disk_image(argv[1], image, size, blocks);
 	free(image);
 	puts("SilliconFS formatting, validation, VFS I/O, remount, and corruption tests passed");

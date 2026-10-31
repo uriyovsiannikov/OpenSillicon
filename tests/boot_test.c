@@ -6,7 +6,7 @@
 #include "kernel/pmm.h"
 
 #define BOOT_PARSE(firmware, hhdm, memmap, framebuffers, info) \
-	boot_info_parse(firmware, hhdm, memmap, framebuffers, &modules, info)
+	boot_info_parse(firmware, hhdm, memmap, framebuffers, &modules, &rsdp, info)
 
 #define PHYS_BASE 0x100000ULL
 #define TEST_MEMORY_SIZE 8192U
@@ -26,6 +26,7 @@ static struct limine_framebuffer_response framebuffers;
 static struct limine_file initramfs;
 static struct limine_file *module_entries[65];
 static struct limine_module_response modules;
+static struct limine_rsdp_response rsdp;
 static const char initramfs_name[] = "initramfs";
 static struct limine_file duplicate_module;
 
@@ -77,6 +78,9 @@ setup(void)
 		.module_count = 1,
 		.modules = module_entries
 	};
+	rsdp = (struct limine_rsdp_response){
+		.address = (void *)(uintptr_t)PHYS_BASE
+	};
 }
 
 static struct boot_info
@@ -87,6 +91,7 @@ parse_valid(void)
 	assert(BOOT_PARSE(&firmware, &hhdm, &memmap, &framebuffers, &info) ==
 	    BOOT_INFO_OK);
 	assert(info.initramfs == &initramfs);
+	assert(info.rsdp_physical == PHYS_BASE);
 	return info;
 }
 
@@ -101,7 +106,7 @@ test_missing_responses(void)
 	assert(BOOT_PARSE(&firmware, &hhdm, &memmap, &framebuffers, NULL) ==
 	    BOOT_INFO_MISSING_RESPONSE);
 	assert(boot_info_parse(&firmware, &hhdm, &memmap, &framebuffers, NULL,
-	    &info) == BOOT_INFO_INVALID_MODULE);
+	    &rsdp, &info) == BOOT_INFO_INVALID_MODULE);
 }
 
 static void

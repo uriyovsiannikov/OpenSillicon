@@ -2,6 +2,12 @@
 
 #include <string.h>
 
+int isalnum(int character);
+int isalpha(int character);
+int isdigit(int character);
+int islower(int character);
+int isupper(int character);
+
 void *
 memcpy(void *destination, const void *source, size_t length)
 {
@@ -58,6 +64,141 @@ strcmp(const char *left, const char *right)
 	}
 	return (unsigned char)*left < (unsigned char)*right ? -1 :
 	    (unsigned char)*left > (unsigned char)*right;
+}
+
+int
+strncmp(const char *left, const char *right, size_t length)
+{
+	for (size_t i = 0; i < length; i++) {
+		unsigned char a = (unsigned char)left[i];
+		unsigned char b = (unsigned char)right[i];
+
+		if (a != b)
+			return a < b ? -1 : 1;
+		if (a == '\0')
+			return 0;
+	}
+	return 0;
+}
+
+char *
+strcpy(char *destination, const char *source)
+{
+	char *result = destination;
+
+	while ((*destination++ = *source++) != '\0')
+		;
+	return result;
+}
+
+char *
+strcat(char *destination, const char *source)
+{
+	strcpy(destination + strlen(destination), source);
+	return destination;
+}
+
+char *
+strchr(const char *string, int character)
+{
+	char target = (char)character;
+
+	for (;;) {
+		if (*string == target)
+			return (char *)string;
+		if (*string == '\0')
+			return NULL;
+		string++;
+	}
+}
+
+int
+tolower(int character)
+{
+	if (character >= 'A' && character <= 'Z')
+		return character + ('a' - 'A');
+	return character;
+}
+
+int
+isalnum(int character)
+{
+	return isalpha(character) || isdigit(character);
+}
+
+int
+isalpha(int character)
+{
+	return islower(character) || isupper(character);
+}
+
+int
+isblank(int character)
+{
+	return character == ' ' || character == '\t';
+}
+
+int
+iscntrl(int character)
+{
+	return character >= 0 && (character < 0x20 || character == 0x7f);
+}
+
+int
+isdigit(int character)
+{
+	return character >= '0' && character <= '9';
+}
+
+int
+isgraph(int character)
+{
+	return character > ' ' && character <= '~';
+}
+
+int
+islower(int character)
+{
+	return character >= 'a' && character <= 'z';
+}
+
+int
+isprint(int character)
+{
+	return character >= ' ' && character <= '~';
+}
+
+int
+ispunct(int character)
+{
+	return isgraph(character) && !isalnum(character);
+}
+
+int
+isspace(int character)
+{
+	return character == ' ' || (character >= '\t' && character <= '\r');
+}
+
+int
+isupper(int character)
+{
+	return character >= 'A' && character <= 'Z';
+}
+
+int
+isxdigit(int character)
+{
+	return isdigit(character) || (character >= 'A' && character <= 'F') ||
+	    (character >= 'a' && character <= 'f');
+}
+
+int
+toupper(int character)
+{
+	if (character >= 'a' && character <= 'z')
+		return character - ('a' - 'A');
+	return character;
 }
 
 char *

@@ -132,6 +132,7 @@ boot_info_parse(const struct limine_firmware_type_response *firmware,
 	const struct limine_memmap_response *memmap,
 	const struct limine_framebuffer_response *framebuffers,
 	const struct limine_module_response *modules,
+	const struct limine_rsdp_response *rsdp,
 	struct boot_info *info)
 {
 	const struct limine_framebuffer *framebuffer = NULL;
@@ -151,6 +152,9 @@ boot_info_parse(const struct limine_firmware_type_response *firmware,
 	initramfs = find_initramfs(modules);
 	if (initramfs == NULL)
 		return BOOT_INFO_INVALID_MODULE;
+	if (rsdp == NULL || rsdp->address == NULL ||
+	    (uintptr_t)rsdp->address > UINT64_MAX - 36)
+		return BOOT_INFO_INVALID_RSDP;
 
 	if (framebuffers != NULL && framebuffers->framebuffer_count != 0) {
 		if (framebuffers->framebuffers == NULL ||
@@ -168,6 +172,7 @@ boot_info_parse(const struct limine_firmware_type_response *firmware,
 	info->memmap = memmap;
 	info->framebuffer = framebuffer;
 	info->initramfs = initramfs;
+	info->rsdp_physical = (uintptr_t)rsdp->address;
 	return BOOT_INFO_OK;
 }
 

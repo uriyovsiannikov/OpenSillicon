@@ -12,8 +12,15 @@
 #include "kernel/elf.h"
 #include "kernel/process.h"
 #include "kernel/vfs.h"
+#include "kernel/block.h"
+#include "kernel/block_silliconfs.h"
+#include "kernel/silliconfs.h"
+#include "arch/x86_64/ahci.h"
 #include "arch/x86_64/user.h"
 #include "arch/x86_64/lapic.h"
+#include "arch/x86_64/acpi.h"
+#include "arch/x86_64/ioapic.h"
+#include "arch/x86_64/pci.h"
 #include "arch/x86_64/interrupts.h"
 
 #define SCHEDULER_TEST_STEPS 4U
@@ -21,8 +28,13 @@
 #define USER_TEST_FAULT (USER_TEST_CODE + 0x400ULL)
 #define USER_TEST_STACK (0x00007ffffffff000ULL - 0x2000ULL)
 #define PAGE_SIZE 4096U
+#define MAIN_EEXIST 17
+#define MAIN_ENOTDIR 20
 
 static struct fd_table user_descriptors;
+static struct pci_device_info ahci_device;
+static struct block_device ahci_block_device;
+static struct block_silliconfs_adapter root_adapter;
 
 static void
 run_user_test(void)
@@ -136,10 +148,6 @@ initialize_filesystems(const struct boot_info *info)
 	error = vfs_create_path("/init", VNODE_DIRECTORY, 0755, &created);
 	if (error == 0)
 		vnode_put(created);
-	if (error == 0)
-		error = vfs_create_path("/tmp", VNODE_DIRECTORY, 01777, &created);
-	if (error == 0)
-		vnode_put(created);
 	if (error != 0 || initramfs_mount(info->initramfs->address,
 	    (size_t)info->initramfs->size, &initramfs_root) != 0 ||
 	    vfs_mount("/init", initramfs_root) != 0) {
@@ -150,9 +158,73 @@ initialize_filesystems(const struct boot_info *info)
 	klog("OpenSillicon: initramfs and RAMFS mounted\n");
 }
 
+static void
+switch_root_to_silliconfs(void)
+{
+	struct vnode *disk_root;
+	struct vnode *temporary_directory;
+	int error;
+
+	if (!ahci_initialize(&ahci_device, &ahci_block_device) ||
+	    !block_silliconfs_init(&root_adapter, &ahci_block_device)) {
+		klog("OpenSillicon: AHCI disk initialization failed\n");
+		kernel_halt();
+	}
+	klog("OpenSillicon: AHCI logical sector size ");
+	klog_u64(ahci_block_device.logical_sector_size);
+	klog(" sectors ");
+	klog_u64(ahci_block_device.sector_count);
+	klog("\n");
+	error = silliconfs_mount(&root_adapter.filesystem, &disk_root);
+	if (error != 0) {
+		klog("OpenSillicon: SilliconFS mount failed ");
+		klog_u64((uint64_t)(-error));
+		klog("\n");
+		kernel_halt();
+	}
+	error = vfs_replace_root(disk_root);
+	vnode_put(disk_root);
+	if (error != 0) {
+		klog("OpenSillicon: SilliconFS root switch failed\n");
+		kernel_halt();
+	}
+	error = vfs_create_path("/tmp", VNODE_DIRECTORY, 01777,
+	    &temporary_directory);
+	if (error == -MAIN_EEXIST) {
+		error = vfs_lookup("/tmp", &temporary_directory);
+		if (error == 0 && temporary_directory->type != VNODE_DIRECTORY) {
+			vnode_put(temporary_directory);
+			error = -MAIN_ENOTDIR;
+		}
+	}
+	if (error != 0) {
+		klog("OpenSillicon: SilliconFS /tmp creation failed ");
+		klog_u64((uint64_t)(-error));
+		klog("\n");
+		kernel_halt();
+	}
+	vnode_put(temporary_directory);
+	klog("OpenSillicon: SilliconFS mounted as /; initramfs retained at /init\n");
+}
+
 static volatile uint64_t scheduler_test_order[SCHEDULER_TEST_STEPS * 2];
 static volatile uint64_t scheduler_test_count;
 static volatile uint64_t scheduler_test_finished;
+static uint64_t pci_device_count;
+static bool ahci_controller_found;
+
+static bool
+record_pci_device(const struct pci_device_info *device, void *context)
+{
+	(void)context;
+	pci_device_count++;
+	if (device->class_code == 0x01 && device->subclass == 0x06 &&
+	    device->programming_interface == 0x01 && !ahci_controller_found) {
+		ahci_device = *device;
+		ahci_controller_found = true;
+	}
+	return true;
+}
 
 static void
 scheduler_test_worker(void *argument)
@@ -203,6 +275,12 @@ static volatile struct limine_module_request module_request = {
 	.revision = 0
 };
 
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_rsdp_request rsdp_request = {
+	.id = LIMINE_RSDP_REQUEST_ID,
+	.revision = 0
+};
+
 __attribute__((used, section(".limine_requests_end")))
 static volatile uint64_t limine_requests_end[] = LIMINE_REQUESTS_END_MARKER;
 
@@ -211,6 +289,7 @@ _start(void)
 {
 	struct boot_info info;
 	struct bootstrap_allocator allocator;
+	struct acpi_madt_info madt;
 	uint64_t test_page;
 	uint64_t user_page;
 	struct address_space user_space;
@@ -222,7 +301,7 @@ _start(void)
 	serial_init();
 	error = boot_info_parse(firmware_request.response, hhdm_request.response,
 	    memmap_request.response, framebuffer_request.response,
-	    module_request.response, &info);
+	    module_request.response, rsdp_request.response, &info);
 	if (error != BOOT_INFO_OK) {
 		klog("OpenSillicon: invalid boot information, error ");
 		klog_u64((uint64_t)error);
@@ -289,8 +368,31 @@ _start(void)
 		klog("OpenSillicon: kernel heap initialization failed\n");
 		kernel_halt();
 	}
+	klog("OpenSillicon: Limine RSDP address ");
+	klog_u64(info.rsdp_physical);
+	klog("\n");
+	if (!acpi_init(info.rsdp_physical, &madt)) {
+		klog("OpenSillicon: ACPI initialization or MADT validation failed\n");
+		kernel_halt();
+	}
+	if (!ioapic_init(&madt)) {
+		klog("OpenSillicon: IOAPIC initialization failed\n");
+		kernel_halt();
+	}
+	klog("OpenSillicon: ACPICA and masked IOAPIC initialized\n");
+	if (!pci_enumerate(record_pci_device, NULL)) {
+		klog("OpenSillicon: PCI enumeration failed\n");
+		kernel_halt();
+	}
+	klog("OpenSillicon: PCI functions enumerated ");
+	klog_u64(pci_device_count);
+	klog(" AHCI ");
+	klog(ahci_controller_found ? "found\n" : "not found\n");
+	if (!ahci_controller_found)
+		kernel_halt();
 	process_system_init();
 	initialize_filesystems(&info);
+	switch_root_to_silliconfs();
 	klog("OpenSillicon: heap initialized\n");
 	if (!pmm_alloc_page(&user_page) || !address_space_create(&user_space) ||
 	    vmm_map_page(&user_space, 0x400000, user_page,
@@ -338,6 +440,10 @@ _start(void)
 	run_user_test();
 	run_elf_test();
 	run_vfs_test();
+	if (block_flush(&ahci_block_device) != 0) {
+		klog("OpenSillicon: root block flush failed\n");
+		kernel_halt();
+	}
 	if (!scheduler_init() ||
 	    !thread_create(scheduler_test_worker, (void *)(uintptr_t)0) ||
 	    !thread_create(scheduler_test_worker, (void *)(uintptr_t)1)) {

@@ -14,7 +14,8 @@ enum boot_info_error {
 	BOOT_INFO_INVALID_HHDM,
 	BOOT_INFO_INVALID_MEMMAP,
 	BOOT_INFO_INVALID_FRAMEBUFFER,
-	BOOT_INFO_INVALID_MODULE
+	BOOT_INFO_INVALID_MODULE,
+	BOOT_INFO_INVALID_RSDP
 };
 
 struct boot_info {
@@ -23,6 +24,7 @@ struct boot_info {
 	const struct limine_memmap_response *memmap;
 	const struct limine_framebuffer *framebuffer;
 	const struct limine_file *initramfs;
+	uint64_t rsdp_physical;
 };
 
 enum boot_info_error boot_info_parse(
@@ -31,6 +33,7 @@ enum boot_info_error boot_info_parse(
 	const struct limine_memmap_response *memmap,
 	const struct limine_framebuffer_response *framebuffers,
 	const struct limine_module_response *modules,
+	const struct limine_rsdp_response *rsdp,
 	struct boot_info *info);
 
 struct bootstrap_allocator {

@@ -194,6 +194,25 @@ vfs_mount(const char *path, struct vnode *root)
 }
 
 int
+vfs_replace_root(struct vnode *root)
+{
+	struct vfs_mount *mount;
+	struct vnode *old;
+
+	if (!initialized || root == NULL || root->type != VNODE_DIRECTORY)
+		return -VFS_EINVAL;
+	for (mount = mounts; mount != NULL; mount = mount->next)
+		if (mount->path_length == 1 && mount->path[0] == '/')
+			break;
+	if (mount == NULL || !vnode_get(root))
+		return -VFS_EINVAL;
+	old = mount->root;
+	mount->root = root;
+	vnode_put(old);
+	return 0;
+}
+
+int
 vfs_lookup(const char *path, struct vnode **result)
 {
 	char canonical[VFS_PATH_MAX];

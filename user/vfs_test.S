@@ -88,7 +88,7 @@ _start:
 	int $128
 	jc fail
 
-	/* Create, write, close, reopen, and read a RAMFS file. */
+	/* Create, write, close, reopen, and read a root filesystem file. */
 	leaq ramfs_path(%rip), %rdi
 	movq $0x242, %rsi
 	movq $0644, %rdx

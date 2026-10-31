@@ -149,7 +149,8 @@ The kernel must implement:
 Interrupt controllers
 
 - LAPIC initializes after the VMM can map its MMIO page.
-- IOAPIC initialization waits for ACPI table support and ACPICA in Phase 10.
+- Phase 10 validates MADT data through ACPICA and initializes the IOAPIC with
+  every redirection entry masked; device IRQ routing is deferred.
 - PIC compatibility only where necessary during early boot.
 
 Timers
@@ -157,7 +158,8 @@ Timers
 - LAPIC Timer is the primary scheduling interrupt source.
 - The Phase 5 LAPIC timer runs at 100 Hz and is calibrated against PIT channel 2.
 - The timer interrupt advances a monotonic tick count and acknowledges the
-  LAPIC. HPET and TSC timekeeping are deferred until ACPI support in Phase 10.
+  LAPIC. HPET and TSC timekeeping remain deferred despite Phase 10 ACPI table
+  support.
 
 Scheduling
 
@@ -386,8 +388,8 @@ The VFS must provide a consistent interface for:
 
 The Phase 8 baseline uses reference-counted vnodes and open-file descriptions,
 mount-aware absolute path lookup, a writable RAMFS root, and a read-only
-`newc` initramfs mounted at `/init`. The persistent root transition remains
-for Phase 10.
+`newc` initramfs mounted at `/init`. Phase 10 replaces the RAMFS root with
+SilliconFS before userspace starts while retaining the initramfs backing data.
 
 SilliconFS
 
@@ -410,23 +412,19 @@ SilliconFS v1's exact little-endian 4 KiB on-disk layout, 128-byte inode,
 bitmap geometry, direct/single-indirect mapping, variable-length directory
 records, validation rules, and limits are specified by accepted ADR-003 in
 `OPEN_ADRS.md`. Phase 9 uses one-block read/write callbacks so host disk-image
-tests and VFS mounting do not depend on hardware discovery. The general block
-device layer and AHCI driver remain Phase 10.
+tests and VFS mounting do not depend on hardware discovery. Phase 10 adds the
+general block-device layer and AHCI driver.
 
 Block device considerations
 
 Filesystem block size and physical disk sector size are different concepts.
 
-The block layer must account for devices exposing:
-
-- 512-byte logical sectors.
-- 4096-byte logical sectors.
-- 512e physical sectors.
-- 4Kn sectors.
+Phase 10 supports devices with 512-byte or 4096-byte logical sectors.
+Physical-sector reporting for 512e and 4Kn devices is deferred.
 
 A 4 KiB filesystem block must not imply that every disk uses 4 KiB sectors.
-The Phase 9 callback addresses filesystem blocks; the Phase 10 block layer
-will translate those operations to device sectors.
+The Phase 9 callback addresses filesystem blocks; the Phase 10 block adapter
+translates those operations to device sectors using aligned bounce storage.
 
 Initial filesystems
 
@@ -434,7 +432,22 @@ Initial filesystems
 - RAMFS.
 - SilliconFS.
 
-The system boots using initramfs, initializes the native filesystem, mounts it as root, and performs a switch-root operation.
+Phase 10 uses Limine's RSDP to initialize pinned ACPICA with an OpenSillicon
+OSL. PCI enumeration is read-only, using configuration mechanism 1 as a
+fallback and ACPI MCFG ECAM when available. ACPICA provides MADT through its
+table manager; the x86_64 ACPI adapter validates and consumes the MADT entries
+needed to initialize the IOAPIC. Existing LAPIC, PIC masking, IDT, and timer
+initialization remain in place; IOAPIC redirection entries start masked.
+ACPICA power management and events are deferred.
+
+The minimal block layer uses synchronous logical-sector reads, writes, and
+flushes with negative errno errors. It supports 512-byte and 4096-byte logical
+sectors and keeps sector size independent from the 4 KiB SilliconFS block
+size. AHCI runs serialized polling commands with validated DMA constraints;
+NCQ, async queues, and caching are deferred. Phase 10 mounts and validates
+SilliconFS before userspace, replaces RAMFS at `/`, and keeps initramfs mounted
+at `/init` with Limine-owned backing memory valid for all outstanding VFS
+references.
 
 ---
 
