@@ -55,6 +55,39 @@ build_tcp_bytes(const uint8_t source[4], const uint8_t destination[4],
 }
 
 static bool
+build_tcp_bytes_window(const uint8_t source[4], const uint8_t destination[4],
+	uint16_t source_port, uint16_t destination_port, uint32_t sequence,
+	uint32_t acknowledgment, uint8_t segment_flags, uint16_t window,
+	const uint8_t *payload, size_t payload_length, uint8_t *bytes,
+	size_t capacity, size_t *length)
+{
+	struct tcp_wire_spec spec = {
+		.source_port = source_port,
+		.destination_port = destination_port,
+		.sequence = sequence,
+		.acknowledgment = acknowledgment,
+		.flags = segment_flags,
+		.window = window,
+		.payload = payload,
+		.payload_length = payload_length
+	};
+	return tcp_wire_build(source, destination, &spec, bytes, capacity, length) ==
+	    TCP_WIRE_OK;
+}
+
+static bool
+parse_tcp_bytes(const uint8_t source[4], const uint8_t destination[4],
+	const uint8_t *bytes, size_t length, struct tcp_wire_segment *parsed)
+{
+	struct tcp_wire_pseudo_header pseudo = {0};
+	memcpy(pseudo.source, source, 4);
+	memcpy(pseudo.destination, destination, 4);
+	pseudo.protocol = 6;
+	pseudo.segment_length = (uint16_t)length;
+	return tcp_wire_parse(&pseudo, bytes, length, parsed) == TCP_WIRE_OK;
+}
+
+static bool
 make_segment(const uint8_t source[4], const uint8_t destination[4],
 	uint16_t source_port, uint16_t destination_port,
 	const uint8_t *payload, size_t payload_length,
@@ -267,7 +300,10 @@ test_runtime_passive_flow(void)
 	struct tcp_wire_segment segment;
 	struct tcp_runtime_test_core_result snapshot;
 	struct tcp_runtime_test_active_result active_input;
+	struct tcp_runtime_test_tx_result tx;
+	struct tcp_wire_segment serialized;
 	uint8_t active_bytes[TCP_WIRE_SEGMENT_MAX];
+	uint8_t output[TCP_WIRE_SEGMENT_MAX];
 	size_t active_length;
 	uint16_t references;
 	const uint32_t peer_isn = 0xfffffff0U;
@@ -294,6 +330,18 @@ test_runtime_passive_flow(void)
 	assert(snapshot.state == TCP_STATE_SYN_RECEIVED &&
 	    snapshot.snd_una == local_isn && snapshot.snd_nxt == local_isn + 1U &&
 	    snapshot.rcv_nxt == peer_isn + 1U && snapshot.timer_armed);
+	assert(tcp_runtime_test_next_segment(children[0], output, sizeof(output),
+	    &tx) == TCP_RUNTIME_TEST_TX_OK);
+	assert((tx.actions & (TCP_ACTION_SEND_SYN | TCP_ACTION_SEND_ACK)) ==
+	    (TCP_ACTION_SEND_SYN | TCP_ACTION_SEND_ACK));
+	assert(parse_tcp_bytes(local_ip, peer_ip, output, tx.length, &serialized));
+	assert(serialized.source_port == 8082 &&
+	    serialized.destination_port == peer_ports[0] &&
+	    serialized.sequence == local_isn &&
+	    serialized.acknowledgment == peer_isn + 1U &&
+	    serialized.flags == (TCP_FLAG_SYN | TCP_FLAG_ACK) &&
+	    serialized.parsed_options.mss_present &&
+	    serialized.parsed_options.mss == TCP_CORE_LOCAL_MSS);
 	assert(build_tcp_bytes(peer_ip, local_ip, peer_ports[0], 8082, peer_isn, 0,
 	    TCP_FLAG_SYN, active_bytes, sizeof(active_bytes), &active_length));
 	assert(tcp_runtime_test_active_input(children[0], peer_ip, local_ip,
@@ -376,7 +424,9 @@ test_runtime_passive_flow(void)
 	    peer_isn + 1U, local_isn + 1U, TCP_FLAG_ACK | TCP_FLAG_PSH,
 	    NULL, 0, &segment));
 	assert(tcp_runtime_test_process_segment(peer_ip, local_ip, &segment,
-	    0, 24, &input) == TCP_RUNTIME_TEST_INPUT_UNSUPPORTED);
+	    0, 24, &input) == TCP_RUNTIME_TEST_INPUT_CORE_REJECTED);
+	assert(input.outcome.state == TCP_STATE_SYN_RECEIVED &&
+	    input.outcome.actions == 0 && !input.has_reference);
 	assert(make_tcp_segment(peer_ip, local_ip, peer_ports[0], 8082,
 	    peer_isn + 1U, local_isn + 1U, TCP_FLAG_ACK, NULL, 0, &segment));
 	assert(tcp_runtime_test_process_segment(peer_ip, local_ip, &segment,
@@ -486,13 +536,14 @@ test_runtime_passive_fin_lifecycle(void)
 	    TCP_RUNTIME_TEST_CLOSE_UNSUPPORTED);
 	assert(close_result.state == TCP_STATE_LAST_ACK && close_result.actions == 0);
 	assert(make_tcp_segment(peer_ip, local_ip, 49000, 8085, peer_isn + 2,
-	    close_result.snd_nxt - 1, TCP_FLAG_ACK, NULL, 0, &segment));
+	    close_result.snd_nxt + 1, TCP_FLAG_ACK, NULL, 0, &segment));
 	assert(tcp_runtime_test_process_segment(peer_ip, local_ip, &segment,
 	    0, 43, &input) == TCP_RUNTIME_TEST_INPUT_CORE_REJECTED);
 	assert(tcp_runtime_test_snapshot(child, &snapshot) &&
 	    snapshot.state == TCP_STATE_LAST_ACK && snapshot.snd_nxt ==
 	    close_result.snd_nxt);
-	assert(make_tcp_segment(peer_ip, local_ip, 49000, 8085, peer_isn + 3,
+	assert(make_tcp_segment(peer_ip, local_ip, 49000, 8085,
+	    peer_isn + 2 + TCP_CORE_RX_CAPACITY,
 	    close_result.snd_nxt, TCP_FLAG_ACK, NULL, 0, &segment));
 	assert(tcp_runtime_test_process_segment(peer_ip, local_ip, &segment,
 	    0, 43, &input) == TCP_RUNTIME_TEST_INPUT_CORE_REJECTED);
@@ -1169,6 +1220,219 @@ test_runtime_local_close_state_policy(void)
 }
 
 static void
+test_runtime_stream_transport(void)
+{
+	struct tcp_core_tuple tuple = tuple_for(9820);
+	struct tcp_runtime_test_active_result active, input;
+	struct tcp_runtime_test_close_result close_result;
+	struct tcp_runtime_test_io_result io;
+	struct tcp_runtime_test_tx_result tx;
+	struct tcp_runtime_timer_result timers;
+	struct tcp_wire_segment parsed;
+	uint8_t bytes[TCP_WIRE_SEGMENT_MAX];
+	uint8_t output[TCP_WIRE_SEGMENT_MAX];
+	uint8_t readback[8];
+	uint8_t overflow[TCP_CORE_TX_CAPACITY];
+	uint8_t rxfill[TCP_CORE_RX_CAPACITY];
+	size_t length;
+	const uint32_t local_isn = 0x1000;
+	const uint32_t peer_isn = 0x2000;
+	uint8_t application[] = "abcdefgh";
+	static const uint8_t peer_data[] = "peer";
+
+	assert(tcp_runtime_test_active_open(&tuple, local_isn, 0, &active) ==
+	    TCP_RUNTIME_TEST_ACTIVE_OK);
+	/* A short output buffer does not consume the queued SYN. */
+	assert(tcp_runtime_test_next_segment(active.handle, output, 20, &tx) ==
+	    TCP_RUNTIME_TEST_TX_OUTPUT_TOO_SMALL);
+	assert(tx.length == 0);
+	assert(tcp_runtime_test_next_segment(active.handle, output, sizeof(output),
+	    &tx) == TCP_RUNTIME_TEST_TX_OK);
+	assert(tx.length == 24 && (tx.actions & TCP_ACTION_SEND_SYN) != 0);
+	assert(parse_tcp_bytes(local_ip, peer_ip, output, tx.length, &parsed));
+	assert(parsed.source_port == tuple.local_port &&
+	    parsed.destination_port == tuple.remote_port &&
+	    parsed.sequence == local_isn && parsed.flags == TCP_FLAG_SYN &&
+	    parsed.parsed_options.mss_present &&
+	    parsed.parsed_options.mss == TCP_CORE_LOCAL_MSS);
+
+	assert(build_tcp_bytes_window(peer_ip, local_ip, tuple.remote_port,
+	    tuple.local_port, peer_isn, local_isn + 1, TCP_FLAG_SYN | TCP_FLAG_ACK,
+	    4, NULL, 0, bytes, sizeof(bytes), &length));
+	assert(tcp_runtime_test_active_input(active.handle, peer_ip, local_ip, bytes,
+	    length, 1, &input) == TCP_RUNTIME_TEST_ACTIVE_OK);
+	assert(input.state == TCP_STATE_ESTABLISHED &&
+	    input.actions == TCP_ACTION_SEND_ACK);
+	assert(tcp_runtime_test_next_segment(active.handle, output, sizeof(output),
+	    &tx) == TCP_RUNTIME_TEST_TX_OK);
+	assert(parse_tcp_bytes(local_ip, peer_ip, output, tx.length, &parsed));
+	assert(parsed.flags == TCP_FLAG_ACK && parsed.sequence == local_isn + 1 &&
+	    parsed.acknowledgment == peer_isn + 1 && parsed.payload_length == 0);
+
+	assert(tcp_runtime_test_write(active.handle, NULL, 0, 2, &io) ==
+	    TCP_RUNTIME_TEST_IO_OK && io.bytes == 0);
+	assert(tcp_runtime_test_write((struct tcp_connection_handle){
+	    .slot = active.handle.slot, .generation = active.handle.generation + 1},
+	    NULL, 0, 2, &io) == TCP_RUNTIME_TEST_IO_STALE_HANDLE);
+	assert(tcp_runtime_test_write(active.handle, application, 4, 2, &io) ==
+	    TCP_RUNTIME_TEST_IO_OK && io.bytes == 4);
+	assert(tcp_runtime_test_write(active.handle, application + 4, 4, 2, &io) ==
+	    TCP_RUNTIME_TEST_IO_OK && io.bytes == 4);
+	memset(overflow, 0xa5, sizeof(overflow));
+	assert(tcp_runtime_test_write(active.handle, overflow, sizeof(overflow),
+	    2, &io) == TCP_RUNTIME_TEST_IO_FULL && io.bytes == 0);
+	assert(tcp_runtime_test_local_close(active.handle, 2, &close_result) ==
+	    TCP_RUNTIME_TEST_CLOSE_BUSY);
+	/* Caller memory can be changed immediately; Core owns its queued copy. */
+	memset(application, 0, sizeof(application));
+	assert(tcp_runtime_test_next_segment(active.handle, output,
+	    TCP_WIRE_HEADER_MIN, &tx) ==
+	    TCP_RUNTIME_TEST_TX_OUTPUT_TOO_SMALL);
+	assert(tcp_runtime_test_next_segment(active.handle, output, sizeof(output),
+	    &tx) == TCP_RUNTIME_TEST_TX_OK);
+	assert(parse_tcp_bytes(local_ip, peer_ip, output, tx.length, &parsed));
+	assert(parsed.sequence == local_isn + 1 &&
+	    parsed.acknowledgment == peer_isn + 1 && parsed.payload_length == 4 &&
+	    memcmp(parsed.payload, "abcd", 4) == 0);
+
+	/* ACK of the first bounded segment opens the next one. Its ACK is dropped;
+	 * the deterministic Runtime timer produces an identical serialized retry. */
+	assert(build_tcp_bytes_window(peer_ip, local_ip, tuple.remote_port,
+	    tuple.local_port, peer_isn + 1, local_isn + 5, TCP_FLAG_ACK, 4, NULL, 0,
+	    bytes, sizeof(bytes), &length));
+	assert(tcp_runtime_test_active_input(active.handle, peer_ip, local_ip, bytes,
+	    length, 2, &input) == TCP_RUNTIME_TEST_ACTIVE_OK);
+	assert((input.actions & TCP_ACTION_SEND_DATA) != 0);
+	assert(tcp_runtime_test_next_segment(active.handle, output, sizeof(output),
+	    &tx) == TCP_RUNTIME_TEST_TX_OK);
+	assert(parse_tcp_bytes(local_ip, peer_ip, output, tx.length, &parsed));
+	assert(parsed.sequence == local_isn + 5 && parsed.payload_length == 4 &&
+	    memcmp(parsed.payload, "efgh", 4) == 0);
+	assert(tcp_runtime_service_timers(102, 1, &timers) ==
+	    TCP_RUNTIME_TIMER_OK);
+	assert(timers.count == 1 &&
+	    (timers.items[0].actions & TCP_ACTION_SEND_DATA) != 0 &&
+	    (timers.items[0].actions & TCP_ACTION_RETRANSMIT) != 0);
+	assert(tcp_runtime_test_next_segment(active.handle, output, sizeof(output),
+	    &tx) == TCP_RUNTIME_TEST_TX_OK);
+	assert((tx.actions & TCP_ACTION_RETRANSMIT) != 0 &&
+	    parse_tcp_bytes(local_ip, peer_ip, output, tx.length, &parsed));
+	assert(parsed.sequence == local_isn + 5 && parsed.payload_length == 4 &&
+	    memcmp(parsed.payload, "efgh", 4) == 0);
+
+	assert(build_tcp_bytes_window(peer_ip, local_ip, tuple.remote_port,
+	    tuple.local_port, peer_isn + 1, local_isn + 9, TCP_FLAG_ACK, 4, NULL, 0,
+	    bytes, sizeof(bytes), &length));
+	assert(tcp_runtime_test_active_input(active.handle, peer_ip, local_ip, bytes,
+	    length, 103, &input) == TCP_RUNTIME_TEST_ACTIVE_OK);
+	assert(build_tcp_bytes_window(peer_ip, local_ip, tuple.remote_port,
+	    tuple.local_port, peer_isn + 1, local_isn + 9,
+	    TCP_FLAG_ACK | TCP_FLAG_PSH, 4, peer_data, sizeof(peer_data) - 1,
+	    bytes, sizeof(bytes), &length));
+	assert(tcp_runtime_test_active_input(active.handle, peer_ip, local_ip, bytes,
+	    length, 104, &input) == TCP_RUNTIME_TEST_ACTIVE_OK);
+	assert(input.accepted_bytes == sizeof(peer_data) - 1 &&
+	    (input.actions & TCP_ACTION_DELIVER_DATA) != 0);
+	assert(tcp_runtime_test_next_segment(active.handle, output, sizeof(output),
+	    &tx) == TCP_RUNTIME_TEST_TX_OK);
+	assert(parse_tcp_bytes(local_ip, peer_ip, output, tx.length, &parsed));
+	assert(parsed.flags == TCP_FLAG_ACK && parsed.sequence == local_isn + 9 &&
+	    parsed.acknowledgment == peer_isn + 5);
+	assert(tcp_runtime_test_read(active.handle, readback, 0, &io) ==
+	    TCP_RUNTIME_TEST_IO_OK && io.bytes == 0);
+	assert(tcp_runtime_test_read(active.handle, readback, 2, &io) ==
+	    TCP_RUNTIME_TEST_IO_OK && io.bytes == 2 && memcmp(readback, "pe", 2) == 0);
+	assert(tcp_runtime_test_read(active.handle, readback, sizeof(readback), &io) ==
+	    TCP_RUNTIME_TEST_IO_OK && io.bytes == 2 && memcmp(readback, "er", 2) == 0);
+	assert(tcp_runtime_test_read(active.handle, readback, sizeof(readback), &io) ==
+	    TCP_RUNTIME_TEST_IO_WOULD_BLOCK);
+	/* Fill the bounded receive ring. Reading from a zero-window state must
+	 * queue a window-update ACK with the newly available capacity. */
+	memset(rxfill, 0x6d, sizeof(rxfill));
+	for (size_t offset = 0; offset < sizeof(rxfill); offset += 1024) {
+		assert(build_tcp_bytes_window(peer_ip, local_ip, tuple.remote_port,
+		    tuple.local_port, peer_isn + 5 + (uint32_t)offset,
+		    local_isn + 9, TCP_FLAG_ACK | TCP_FLAG_PSH, 4,
+		    rxfill + offset, 1024, bytes, sizeof(bytes), &length));
+		assert(tcp_runtime_test_active_input(active.handle, peer_ip, local_ip,
+		    bytes, length, 104 + offset / 1024, &input) ==
+		    TCP_RUNTIME_TEST_ACTIVE_OK);
+		assert(input.accepted_bytes == 1024 &&
+		    input.receive_window == (offset == 0 ? 1024 : 0));
+		assert(tcp_runtime_test_next_segment(active.handle, output,
+		    sizeof(output), &tx) == TCP_RUNTIME_TEST_TX_OK);
+		assert(parse_tcp_bytes(local_ip, peer_ip, output, tx.length, &parsed));
+		assert(parsed.flags == TCP_FLAG_ACK &&
+		    parsed.acknowledgment == peer_isn + 5 + (uint32_t)offset + 1024 &&
+		    parsed.window == input.receive_window);
+	}
+	assert(tcp_runtime_test_read(active.handle, rxfill, 512, &io) ==
+	    TCP_RUNTIME_TEST_IO_OK && io.bytes == 512);
+	assert(tcp_runtime_test_next_segment(active.handle, output, sizeof(output),
+	    &tx) == TCP_RUNTIME_TEST_TX_OK);
+	assert(parse_tcp_bytes(local_ip, peer_ip, output, tx.length, &parsed) &&
+	    parsed.flags == TCP_FLAG_ACK && parsed.acknowledgment == peer_isn + 2053 &&
+	    parsed.window == 512);
+	assert(tcp_runtime_test_read(active.handle, rxfill, sizeof(rxfill), &io) ==
+	    TCP_RUNTIME_TEST_IO_OK && io.bytes == 1536);
+
+	assert(build_tcp_bytes_window(peer_ip, local_ip, tuple.remote_port,
+	    tuple.local_port, peer_isn + 2053, local_isn + 9,
+	    TCP_FLAG_FIN | TCP_FLAG_ACK, 4, NULL, 0, bytes, sizeof(bytes), &length));
+	assert(tcp_runtime_test_active_input(active.handle, peer_ip, local_ip, bytes,
+	    length, 105, &input) == TCP_RUNTIME_TEST_ACTIVE_OK);
+	assert(input.state == TCP_STATE_CLOSE_WAIT &&
+	    input.rcv_nxt == peer_isn + 2054);
+	assert(tcp_runtime_test_next_segment(active.handle, output, sizeof(output),
+	    &tx) == TCP_RUNTIME_TEST_TX_OK);
+	assert(parse_tcp_bytes(local_ip, peer_ip, output, tx.length, &parsed) &&
+	    parsed.acknowledgment == peer_isn + 2054 && parsed.flags == TCP_FLAG_ACK);
+	assert(tcp_runtime_test_read(active.handle, readback, sizeof(readback), &io) ==
+	    TCP_RUNTIME_TEST_IO_EOF);
+	assert(tcp_runtime_test_local_close(active.handle, 106, &close_result) ==
+	    TCP_RUNTIME_TEST_CLOSE_FIN_STARTED);
+	assert(close_result.state == TCP_STATE_LAST_ACK);
+	assert(tcp_runtime_test_next_segment(active.handle, output, sizeof(output),
+	    &tx) == TCP_RUNTIME_TEST_TX_OK);
+	assert(parse_tcp_bytes(local_ip, peer_ip, output, tx.length, &parsed));
+	assert(parsed.flags == (TCP_FLAG_FIN | TCP_FLAG_ACK) &&
+	    parsed.sequence == local_isn + 9 &&
+	    parsed.acknowledgment == peer_isn + 2054);
+	assert(build_tcp_bytes_window(peer_ip, local_ip, tuple.remote_port,
+	    tuple.local_port, peer_isn + 2054, local_isn + 10, TCP_FLAG_ACK, 4, NULL, 0,
+	    bytes, sizeof(bytes), &length));
+	assert(tcp_runtime_test_active_input(active.handle, peer_ip, local_ip, bytes,
+	    length, 107, &input) == TCP_RUNTIME_TEST_ACTIVE_OK);
+	assert(input.state == TCP_STATE_CLOSED);
+	assert(tcp_runtime_test_read(active.handle, readback, sizeof(readback), &io) ==
+	    TCP_RUNTIME_TEST_IO_EOF);
+	assert(tcp_runtime_test_release(active.handle));
+	{
+		struct tcp_core_tuple reset_tuple = tuple_for(9821);
+		assert(tcp_runtime_test_active_open(&reset_tuple, 0x3000, 200,
+		    &active) == TCP_RUNTIME_TEST_ACTIVE_OK);
+		assert(build_tcp_bytes(peer_ip, local_ip, reset_tuple.remote_port,
+		    reset_tuple.local_port, 0x4000, 0x3001,
+		    TCP_FLAG_SYN | TCP_FLAG_ACK, bytes, sizeof(bytes), &length));
+		assert(tcp_runtime_test_active_input(active.handle, peer_ip, local_ip,
+		    bytes, length, 201, &input) == TCP_RUNTIME_TEST_ACTIVE_OK);
+		assert(input.state == TCP_STATE_ESTABLISHED);
+		assert(build_tcp_bytes(peer_ip, local_ip, reset_tuple.remote_port,
+		    reset_tuple.local_port, 0x4001, 0x3001,
+		    TCP_FLAG_RST | TCP_FLAG_ACK, bytes, sizeof(bytes), &length));
+		assert(tcp_runtime_test_active_input(active.handle, peer_ip, local_ip,
+		    bytes, length, 202, &input) == TCP_RUNTIME_TEST_ACTIVE_OK);
+		assert(input.state == TCP_STATE_CLOSED);
+		assert(tcp_runtime_test_read(active.handle, readback,
+		    sizeof(readback), &io) == TCP_RUNTIME_TEST_IO_RESET);
+		assert(tcp_runtime_test_write(active.handle, application, 1, 203, &io) ==
+		    TCP_RUNTIME_TEST_IO_RESET);
+		assert(tcp_runtime_test_release(active.handle));
+	}
+	puts("TCP Runtime simulated peer: SYN/data ACK/retry/read/FIN/EOF lifecycle PASS");
+}
+
+static void
 test_runtime_lifecycle_and_capacity(void)
 {
 	struct tcp_connection_handle handles[TCP_CORE_CONNECTION_LIMIT];
@@ -1178,6 +1442,9 @@ test_runtime_lifecycle_and_capacity(void)
 	struct tcp_runtime_test_core_result result;
 	struct tcp_runtime_timer_result timers;
 	struct tcp_runtime_test_close_result close_result;
+	struct tcp_runtime_test_io_result io;
+	struct tcp_runtime_test_tx_result tx;
+	uint8_t io_byte = 0;
 	assert(!tcp_runtime_ready());
 	assert(!tcp_runtime_shutdown()); /* shutdown before init */
 	assert(tcp_runtime_service_timers(0, TCP_RUNTIME_TIMER_EVENT_LIMIT,
@@ -1191,6 +1458,12 @@ test_runtime_lifecycle_and_capacity(void)
 		assert(tcp_runtime_test_local_close(
 		    (struct tcp_connection_handle){0}, 0, &close_result) ==
 		    TCP_RUNTIME_TEST_CLOSE_DISABLED);
+		assert(tcp_runtime_test_write((struct tcp_connection_handle){0},
+		    NULL, 0, 0, &io) == TCP_RUNTIME_TEST_IO_DISABLED);
+		assert(tcp_runtime_test_read((struct tcp_connection_handle){0},
+		    &io_byte, 1, &io) == TCP_RUNTIME_TEST_IO_DISABLED);
+		assert(tcp_runtime_test_next_segment((struct tcp_connection_handle){0},
+		    &io_byte, 1, &tx) == TCP_RUNTIME_TEST_TX_DISABLED);
 	}
 	assert(tcp_runtime_init());
 	assert(tcp_runtime_ready());
@@ -1222,6 +1495,7 @@ test_runtime_lifecycle_and_capacity(void)
 	test_runtime_rst_in_fin_wait_2_and_closing();
 	test_runtime_mixed_capacity();
 	test_runtime_local_close_state_policy();
+	test_runtime_stream_transport();
 	{
 		struct tcp_connection_handle timed[6];
 		struct tcp_runtime_test_core_result snapshot;
@@ -1409,6 +1683,12 @@ test_runtime_lifecycle_and_capacity(void)
 	    &timers) == TCP_RUNTIME_TIMER_DISABLED);
 	assert(tcp_runtime_test_local_close(handles[0], 0, &close_result) ==
 	    TCP_RUNTIME_TEST_CLOSE_DISABLED);
+	assert(tcp_runtime_test_write(handles[0], NULL, 0, 0, &io) ==
+	    TCP_RUNTIME_TEST_IO_DISABLED);
+	assert(tcp_runtime_test_read(handles[0], &io_byte, 1, &io) ==
+	    TCP_RUNTIME_TEST_IO_DISABLED);
+	assert(tcp_runtime_test_next_segment(handles[0], &io_byte, 1, &tx) ==
+	    TCP_RUNTIME_TEST_TX_DISABLED);
 	{
 		struct tcp_runtime_test_active_result active;
 		candidate = tuple_for(4450);

@@ -1586,3 +1586,179 @@ Echo Reply, and checks the Ring 3 command's result. Success demonstrates only
 an on-link ICMP Echo exchange in that QEMU profile; it does not imply Internet
 reachability or any TCP/DNS/HTTP/TLS support. No TCP routing, TCP TX, TCP
 syscall, production ISN, or package-manager feature is enabled.
+
+### Phase 15.5D — Isolated TCP reliability foundation
+
+The isolated Core provides fixed 2048-byte send and receive rings, strict
+in-order receive, MSS/window-bounded single-segment sending, partial-ACK
+reclamation, zero-window queuing/reopening, and bounded retransmission through
+the Core timer model. Phase 15.5E adds host-only Runtime write/read operations
+and caller-buffer TCP segment serialization. The deterministic simulated peer
+test covers handshake, data, ACK, retransmission, read, zero-window reopening,
+and close. A successful serializer result means a checksummed segment was
+constructed, not that a device accepted or transmitted it. RST response
+serialization remains unsupported because required triggering-packet context
+is not retained.
+
+Writes are all-or-nothing and bounded by the 2048-byte send ring; reads are
+nonblocking and partial from the 2048-byte receive ring. FIN is refused while
+queued application bytes remain. Empty read distinguishes WOULD_BLOCK, peer
+FIN EOF after drain, and reset. Runtime copies all caller data and retains no
+RX or caller buffer pointers. Runtime timer results feed bounded retransmit
+actions to the isolated serializer. Production RX still validates/discards
+TCP, and production TX, syscall, and timer hooks remain absent. Production
+ISNs remain unavailable. Out-of-order reassembly, fast retransmit, congestion
+control, robust RST response construction, and reviewed production entropy
+remain prerequisites; this is not a complete or live TCP transport.
+
+### Phase 15.5F — deterministic two-endpoint validation
+
+Host-only `make tcp-runtime-sim-test` switches between two fixed, independent
+Runtime/Core contexts and exchanges copied, checksummed serialized TCP segments
+through an eight-entry, 1480-byte-bounded deterministic packet queue. The
+queue supports immediate/delayed delivery, drop, identical duplication, and
+selected-order delivery. Coverage includes lossy handshake, data, ACK and FIN
+recovery; duplicates; delayed and reordered segments; in-order rejection of a
+future segment; bidirectional stream transfer; zero-window backpressure and
+reopening; retry exhaustion; and 10,000 mixed lifecycle/slot-reuse iterations,
+including 78 injected dropped-SYN retry-exhaustion cases and prior-generation
+ACK delivery after reuse.
+This is serialized host simulation, not concurrent or SMP execution. It does
+not add production TCP dispatch, TX, syscalls, or timer hooks and does not
+claim out-of-order reassembly or RFC 9293 conformance.
+
+### Phase 15.5G — parser and Runtime hardening
+
+The TCP Wire parser now clears the caller's parsed view on every failed parse,
+including failures before packet fields are read, so stale borrowed pointers
+cannot survive an error. Its host regression harness runs 100,000 seeded
+arbitrary parser inputs (seed `0x15c5f00d`), systematic truncation and
+structured mutations, and checks output guards, input immutability, mandatory
+success invariants, and cleared failure results. This is deterministic
+regression coverage, not a universal memory-safety proof. The simulator's
+bounded queue-full behavior is checked and its lifecycle/reuse loop runs
+10,000 iterations. Clang AddressSanitizer and UndefinedBehaviorSanitizer runs
+passed; GCC sanitizer linking was unavailable because the matching runtimes
+are absent. Production TCP remains disabled.
+
+### Phase 15.5H — RFC 9293 correctness/security audit
+
+The scoped audit corrected synchronized-state RST acceptance (exact
+`RCV.NXT` closes, in-window nonexact RST produces only an abstract challenge
+ACK, outside-window RST is ignored), unexpected SYN handling, zero-length
+receive-window sequence acceptability, and stale advertised-window updates
+using `SND.WL1/SND.WL2`. The Wire parser preserves nonzero reserved bits for
+diagnostics rather than rejecting them; unsupported bits gain no semantics.
+Regression tests cover these paths and ACK wraparound/partial retirement.
+
+This remains a partial host-only transport: strict in-order receive, no
+partial-overlap reassembly, congestion control, RTT estimator, SACK/window
+scale/timestamp negotiation, fixed retry/TIME-WAIT policies, and no production
+TCP dispatch, TX, syscall, timer hook, or ISN generation. This audit does not
+claim RFC 9293 conformance.
+
+### Phase 15.5I — isolated Linux TCP interoperability
+
+`make tcp-linux-interop-test` runs the host-only TCP Wire/Core/Runtime packet
+endpoint against the Linux kernel TCP implementation in a disposable
+`unshare -Urn` user/network namespace with a veth pair. Both active and
+passive handshakes, multi-segment bidirectional byte streams, advertised
+MSS/window exchange, and orderly close completed. The bridge validates each
+IPv4/TCP checksum independently before Core processing and records structured
+packet traces. Adversarial malformed/checksum/ACK/RST/SYN/data cases are
+injected through the Runtime Wire parser and preserve unrelated state.
+
+This does not establish broad Linux interoperability or RFC conformance.
+Loss against Linux, reset/challenge response serialization, zero-window and
+partial-read interoperability, and several close edge cases remain untested.
+The harness is host-test-only; production routing, TCP TX, syscalls, timers,
+and production ISNs remain disabled.
+
+### Phase 15.5J — production readiness assessment (planning only)
+
+The normal kernel links the experimental TCP Wire/Core/Runtime code and
+initializes an inert eight-entry Runtime owner when the UDP network stack is
+available. Production RX still validates the IPv4 packet and TCP Wire segment,
+then discards protocol 6. The cooperative network service polls UDP only; the
+LAPIC timer ISR increments ticks and wakes/preempts processes, but does not
+service TCP timers. Runtime routing/timer APIs are not called from those
+production paths, and no TCP response is passed to the device TX API. The
+normal build omits `OPEN_SILLICON_ENABLE_TCP_ROUTING`, `TCP_CORE_TESTING`, and
+`TCP_RUNTIME_TESTING`; deterministic ISN injection and the simulator remain
+host-test-only. `tcp_core_live_isn_available()` remains false.
+
+Current host-tested implementation is bounded: eight Core/Runtime table
+entries shared by listeners and connections, passive backlog four, 2 KiB
+send and receive rings per entry, max TCP segment 1480 bytes, local MSS 1460,
+Core timer service budget four, initial retransmission interval 100 ticks,
+maximum 800 ticks, five retries, and fixed TIME-WAIT 12,000 ticks. The model
+has wrap-safe sequence arithmetic, bounded ACK retirement, strict in-order
+receive, selected reset/close behavior, and serialized host tests. It lacks
+out-of-order reassembly, congestion control, RTT estimation, active option
+negotiation beyond MSS, production RX/TX connection, production timer hookup,
+and any TCP userspace API. Linux namespace tests establish narrow handshake,
+multi-segment data, and orderly close evidence, not production readiness.
+
+The production ISN blocker is not just an API switch: the random module exposes
+bounded RDRAND words when CPUID advertises the instruction, but the kernel has
+no reviewed CSPRNG, approved platform entropy-source trust policy, or wired
+boot entropy contract. RDRAND availability is not accepted as sufficient
+trust by this project. Keep production opens fail-closed. Before enabling
+ISNs, approve trusted seed sources and failure/reseed policy, use a reviewed
+CSPRNG, then use a keyed tuple/time ISN construction consistent with RFC 9293
+§3.4.1 (which incorporates the RFC 6528 design goals).
+
+The existing device boundary is potentially reusable but not yet connected:
+e1000 RX copies completed DMA data into a CORE-owned netbuf before descriptor
+reuse; transmit copies a CORE netbuf into a bounded TX DMA slot and transfers
+ownership to DEVICE until completion. The configured QEMU 8086:100e profile
+uses identity DMA and does not prove generic hardware support. TCP needs
+explicit IPv4/Ethernet response construction, ARP next-hop resolution,
+queue-full and completion policy, and proof of exactly-once packet/reference
+release. TCP payload must be copied into Core storage before the RX netbuf is
+released. TCP timer work must run in bounded cooperative context, honor
+`more_due`, reject stale generations, and never execute from the timer ISR.
+
+Recommended first API: a project-native, file-descriptor-backed TCP object
+with dedicated socket operations. Existing `fd_table_clone()` shares
+`fd_object`s by reference across fork and final put invokes the object's close
+callback; define whether fork shares one connection, make listener/child
+ownership explicit, and clean up on process exit. Add explicit bind/listen/
+accept/connect/send/receive/shutdown/close operations without changing UDP
+syscalls 28–31 or ICMP Echo 33. Use validated copy-in/copy-out buffers,
+bounded Core rings, partial IO and distinct EOF/reset/timeout errors. Blocking
+needs scheduler wait queues, cancellation, timeout semantics, and exit-safe
+unregistration; busy polling inside a syscall is not the target design. This
+is not a POSIX compatibility promise.
+
+#### Proposed 15.6 dependency sequence
+
+| Phase | Work and likely areas | Exit criteria |
+| --- | --- | --- |
+| 15.6A — entropy and ISN readiness | Trust review and boot entropy policy; reviewed CSPRNG/reseed/fail-closed behavior; `kernel/random.*`, boot interface, Core provider. | Security review approves source/trust model; unavailable/failed source blocks active/passive opens; production/test symbol separation verified. |
+| 15.6B — production timer service | Bounded Runtime servicing from cooperative network work; generation-tagged due events, retransmit/TIME-WAIT action scheduling. | Deterministic due/more_due, retry, stale event, close/timeout tests; ISR only updates tick/scheduler state; UDP progress preserved. |
+| 15.6C — production RX/TX integration | Route validated protocol 6 after IPv4 checks; copy accepted bytes before RX release; bounded TCP+IPv4+Ethernet output to net_device. | Checksum/length/fragment/tuple tests, packet ownership and TX completion/failure tests, saturation and device-down handling, UDP/ICMP regressions. |
+| 15.6D — descriptor API | FD-backed TCP socket operations, user-copy contract, fork/exit cleanup, blocking/cancel/timeout semantics. | ABI and user-memory fault tests; shared descriptor semantics, references, close/accept ownership, partial IO and error distinction validated. |
+| 15.6E — production-path interoperability | Independent Linux peer through production QEMU packet path, in addition to host namespace harness. | Handshake/data/close/loss/window/reset/TIME-WAIT and process lifecycle verified; exact packets and bytes checked; QEMU and host tests reproducible. |
+| 15.6F — hardening / controlled enablement | Resolve scoped protocol/security gaps; explicit unsupported-feature policy and device support scope. | Every production gate passes; enablement is an explicit later change. Failure leaves current validation-and-discard path intact. |
+
+#### Production enablement gates
+
+Do not enable production routing until all gates pass: (1) reviewed trusted
+entropy and secure ISN source; (2) test-only hooks absent from kernel objects
+and ELF; (3) bounded connection/backlog/buffer allocation and atomic failure;
+(4) production bounded timers with generation-safe stale-event handling;
+(5) RX buffer lifetime and exactly-once release; (6) TX packet/DMA ownership,
+completion and failure behavior; (7) IPv4/TCP checksums, lengths, fragmentation
+policy and tuple isolation; (8) descriptor, fork, process-exit and cancellation
+ownership; (9) retransmission, ACK/window, RST/FIN, timeout and TIME-WAIT tests;
+(10) independent Linux interoperability under loss, duplicates, delay,
+partial IO, zero-window and close/reset cases; (11) QEMU tests through actual
+production RX/TX and only supported e1000 profile claims; (12) fuzz, sanitizer
+and lifecycle stress with documented seeds/counts; (13) UDP and ICMP ABI and
+behavior regressions; and (14) documented RFC deviations with no unsupported
+claim of RFC 9293 conformance. Build success alone is not a readiness gate.
+
+No production functionality was enabled in 15.5J. See the readiness assessment
+in `DESIGN.md` for the component diagram, capability matrix, ownership detail,
+and entropy/timer/RX/TX rationale.

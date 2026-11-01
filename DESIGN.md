@@ -1015,10 +1015,12 @@ state machine. Tests include checksum and pseudoheader failures, truncation,
 data-offset and total-length errors, duplicate SYN, incorrect ACK/sequence,
 unknown well-formed option handling, simultaneous open, RST validation,
 duplicate SYN-ACK/final ACK, serial-number boundary cases, and TIME-WAIT
-restart/expiration. These tests do not transmit any packet. The production kernel still does not call the TCP parser or
-`tcp_core_step()` from RX, has no TCP syscall or TX path, and has no approved
-production ISN source. `tcp_core_live_isn_available()` remains false; this
-bounded model is not a standards-complete TCP implementation.
+restart/expiration. These tests do not transmit any packet. The production
+IPv4 receive path invokes the TCP Wire parser for validation and then discards
+the segment; it does not call `tcp_core_step()`. There is no TCP syscall or TX
+path and no approved production ISN source. `tcp_core_live_isn_available()`
+remains false; this bounded model is not a standards-complete TCP
+implementation.
 
 RFC 9293 audit (Sections 3.3, 3.3.2, 3.4, 3.5.2–3.5.4, 3.9, and 3.10.7;
 reference: <https://www.rfc-editor.org/rfc/rfc9293.html>):
@@ -1026,14 +1028,14 @@ reference: <https://www.rfc-editor.org/rfc/rfc9293.html>):
 | Feature | RFC requirement | Current model | Status | Required action |
 |---|---|---|---|---|
 | §3.3 sequence space | Modulo-2^32 arithmetic; SYN/FIN each consume one; validate ACK and receive-window overlap | Serial comparisons are wrap-safe for bounded spans; handshake SYN consumption and boundary tests exist. Receive accepts only exact in-order data and rejects overlap/out-of-order data rather than trimming/queuing. Data on SYN is unsupported. | Partially implemented | Add segment trimming/reassembly and support or explicitly negotiate SYN data before claiming conformance. |
-| §3.3 TCP options | Parse mandatory options and ignore unknown well-formed options | MSS/NOP/EOL parsed; unknown length-delimited options are skipped; malformed lengths are rejected. Reserved/ECN/URG bits are unsupported. | Partially implemented | Broaden header/option feature handling and malformed-option reporting. |
+| §3.3 TCP options | Parse mandatory options and ignore unknown well-formed options | MSS/NOP/EOL parsed; unknown length-delimited options are skipped; malformed lengths are rejected. Reserved nibble is preserved/ignored; ECN and URG semantics are unsupported. | Partially implemented | Negotiate and implement extensions only with their complete semantics. |
 | §3.3.2 state machine | State-specific event transitions | Eleven states are represented; common handshake and close paths are modeled, not the complete RFC event table. | Partially implemented | Complete state-specific packet/event processing and verify all transitions. |
 | §3.4 establishing | Active/passive handshake and simultaneous open | Active, passive child, and simultaneous-open transitions are deterministic host-tested. No production ISN source, runtime listener, or packet path exists. | Requires runtime integration | Add trusted ISN policy, one runtime owner, dispatch, and packet output before live connections. |
 | §3.5.2 reset generation | Generate state-appropriate reset sequence/ACK fields | Core returns only `TCP_ACTION_SEND_RST`; it does not build the reset segment or its SEQ/ACK fields. | Requires runtime integration | Add RFC state-aware reset packet construction and peer-fixture validation. |
-| §3.5.3 reset processing | Validate reset sequence; SYN-SENT uses ACK of SYN; passive SYN-RECEIVED returns to LISTEN, active SYN-RECEIVED closes | SYN-SENT checks ACK; other resets use exact `RCV.NXT` in handshake states and receive-window membership when synchronized. Passive child removal leaves the independent listener alive. No RFC 5961 challenge ACK is produced. | Partially implemented | Decide and implement standards-compatible window/challenge behavior and expose reset effects to a future socket API. |
+| §3.5.3 reset processing | Validate reset sequence; SYN-SENT uses ACK of SYN; passive SYN-RECEIVED returns to LISTEN, active SYN-RECEIVED closes | SYN-SENT validates ACK; SYN-RECEIVED uses exact sequence in this model; synchronized and TIME-WAIT states accept exact `RCV.NXT`, abstractly challenge non-exact in-window RST, and ignore out-of-window RST. Passive child removal preserves listener. | Partially implemented | Complete state-specific reset handling and build a correct response only with retained packet context and an output path. |
 | §3.5.4 closing | Correct FIN sequence consumption and close-state transitions | Common FIN-WAIT/CLOSE-WAIT/CLOSING/LAST-ACK/TIME-WAIT paths and timer expiry are tested. Queue draining, application notification, and combined data/control cases are incomplete. | Partially implemented | Complete the transition matrix, queued-data semantics, and API notifications. |
 | §3.9 interfaces | TCP/user and TCP/IP interfaces | No TCP user API, syscall, or live lower-layer handoff is in scope. | Not applicable to current scope | Define the native socket and IP handoff in a later approved milestone. |
-| §3.10.7 arrival processing | Ordered state-specific sequence, RST, SYN, ACK, data, and FIN processing | A bounded subset processes handshake controls, in-order established data, resets, and close events. Future ACKs request ACK; stale ACKs do not block in-order data. Out-of-order data, full ACK/window-update rules, challenge ACK, and many flag combinations remain unsupported. | Partially implemented | Implement and test the complete arrival algorithm before claiming RFC conformance. |
+| §3.10.7 arrival processing | Ordered state-specific sequence, RST, SYN, ACK, data, and FIN processing | Bounded subset processes handshake controls, in-order data, resets, and close events. Zero-length sequence acceptability uses the receive window; future ACKs request ACK; ACKs are bounded by sent range; WL1/WL2 freshness is tracked. Out-of-order data, complete flag/state processing, and serialized challenge ACK remain unsupported. | Partially implemented | Implement and test the complete arrival algorithm before claiming RFC conformance. |
 
 This matrix audits the deterministic model; it is not a conformance claim.
 Action bits are abstract requests and do not prove that wire packets are
@@ -1752,3 +1754,475 @@ control-register settings, and uses eager per-process FXSAVE/FXRSTOR at the
 process scheduler boundary. Kernel C remains built with MMX/SSE disabled and
 soft-float; only the architecture FPU initializer explicitly clears XMM state.
 AVX and XSAVE remain disabled. See ADR-034 for ownership and lifecycle rules.
+
+### Phase 15.5D — Isolated bounded TCP data transport
+
+The isolated TCP Core has fixed 2048-byte receive and send rings per
+connection. Receive is in-order only: payload is copied before the Core call
+returns and advances `RCV.NXT` only when the bytes fit in both the advertised
+receive window and the ring. A full ring advertises a zero window and does not
+acknowledge discarded payload; `tcp_core_connection_read()` returns owned
+bytes and restores window capacity. Out-of-order reassembly is not implemented.
+
+`tcp_core_connection_write()` accepts an all-or-nothing bounded enqueue in
+ESTABLISHED or CLOSE-WAIT and rejects writes larger than remaining capacity.
+The sender permits one outstanding data segment at a time, bounded by queued
+bytes, peer MSS, and the advertised peer window. `SEND_DATA` is an abstract
+Core action. `tcp_core_connection_build_outstanding_data()` serializes the
+current outstanding bytes into caller-owned storage with sequence,
+acknowledgment, receive window, and TCP pseudoheader checksum; it neither
+transmits nor consumes them. Partial ACKs reclaim only acknowledged bytes.
+Timeout results request retransmission of the retained segment, with the
+existing bounded policy: 100-tick initial RTO, doubling to 800 ticks, then
+connection cleanup after five retries. A zero peer window holds queued data;
+an acceptable same-ACK window update may resume it. Local close is rejected
+while queued bytes remain, preventing FIN from overtaking them.
+
+This is a narrow stop-and-wait sender, not a complete TCP transport. Fast
+retransmit, out-of-order receive/reassembly, SACK, window scaling, and
+congestion control remain absent. Production IPv4 still validates and discards
+TCP; the network service does not run TCP timers, and no TCP packet reaches
+e1000. Deterministic ISNs remain host-test-only and the production entropy
+policy still provides no trusted ISN source.
+
+### Phase 15.5E — Isolated Runtime stream I/O and segment serialization
+
+The host-only `TCP_RUNTIME_TESTING` Runtime surface now connects bounded Core
+send/receive rings to generation-checked Runtime handles. `tcp_runtime_test_write`
+copies a nonempty write all-or-nothing into Core storage, accepts zero-length
+writes as zero-byte success, and reports full/too-large/not-connected/stale
+conditions without retaining caller memory. It does not wait for ring space.
+Local close remains busy while queued application bytes remain, so FIN cannot
+overtake data.
+
+`tcp_runtime_test_read` is nonblocking and copies a partial available prefix to
+caller storage. A zero-capacity read consumes nothing. Empty reads report
+WOULD_BLOCK until peer FIN (EOF after buffered bytes drain) or RST (RESET,
+with Core's reset handling discarding buffered data). Draining a zero receive
+window queues a bounded/coalesced ACK window update. No Core buffer pointer or
+input RX pointer escapes the call.
+
+`tcp_runtime_test_next_segment` serializes one pending abstract action into
+caller-owned TCP segment storage with checksum. It retains an action if output
+capacity is too small. SYN/SYN-ACK include the configured MSS; ACK, data, and
+FIN use current Core sequence/window state. This is serialization only: no
+network handoff, DMA ownership, or successful transmission is implied. RST
+serialization is explicitly unsupported because the Runtime does not preserve
+enough triggering-segment context to construct a validated reset response.
+Timer results queue retransmission actions for the same serializer; Core keeps
+the outstanding segment bytes until ACK or bounded retry exhaustion.
+
+The deterministic simulated-peer Runtime test covers active open, serialized
+SYN and ACK, copied writes, segmentation, partial ACK, data retransmission,
+in-order receive, partial reads, zero-window reopening, EOF, FIN, and terminal
+cleanup. These APIs and deterministic ISNs exist only in host tests. There is
+still no production TCP RX dispatch, TX, syscall, or timer-service hook, and
+no live TCP connectivity claim. Production ISNs remain unavailable.
+
+### Phase 15.5F — Two-endpoint TCP Runtime simulation
+
+`make tcp-runtime-sim-test` runs two separately saved Runtime/Core contexts in
+one deterministic host thread. The test-only selector switches contexts only
+between API calls; it does not run two Runtimes concurrently. Each context has
+its own fixed eight-entry Core table, generations, timers, child links, and
+send/receive storage. The simulator uses an eight-entry queue of copied TCP
+segments, each bounded to 1480 bytes. Enqueue copies Runtime output before its
+caller buffer goes out of scope. Queue entries carry direction, due tick, and
+serial number. Delivery, delayed delivery, deliberate drop, byte-identical
+duplication, and selected-index reordering are deterministic; a dropped packet
+is not delivered by another path.
+
+The simulated peer exchanges actual TCP Wire segments and validates checksum
+and tuple fields before invoking the destination Runtime receive API. Tests
+cover loss and recovery for the initial SYN, SYN-ACK, final ACK, data, data ACK,
+and FIN; byte-identical retransmission; duplicate SYN/SYN-ACK/ACK/data/FIN;
+out-of-order tail rejection followed by in-order recovery; delayed packet
+delivery; bidirectional 1500/2048-byte streams; partial reads; zero-window
+advertisement and reopening; EOF; TIME-WAIT; and bounded SYN retry exhaustion.
+The deterministic lifecycle also performs 10,000 mixed close/release/slot-reuse
+iterations, including 78 periodic dropped-SYN retry-exhaustion cases, and
+injects the previous generation's serialized ACK after reuse. The current
+stop-and-wait Core deliberately does not reassemble out-of-order data: it leaves `RCV.NXT`
+unchanged and requests an ACK until the missing prefix arrives.
+
+The test-only Runtime action sidecar queues only serializable packet actions;
+Core metadata such as `DELIVER_DATA`, `DUPLICATE_ACK`, or `ENTER_TIME_WAIT` is
+not mistaken for another packet. This distinction was exposed by the
+out-of-order simulation and prevents a completed ACK from leaving an
+unserializable metadata bit pending. This harness validates isolated protocol
+behavior, not device transmission, production scheduling, SMP behavior, or
+RFC 9293 conformance. Production IPv4 still validates and discards TCP, and
+production TX, syscalls, and TCP timer scheduling remain disabled.
+
+### Phase 15.5G — TCP parser and lifecycle hardening
+
+`tcp_wire_parse()` zeroes its output view before validating arguments or packet
+contents. A failed parse therefore cannot leave stale scalar metadata or
+borrowed option/payload pointers from an earlier successful parse. The parser
+still accepts only protocol 6, a pseudo-header length exactly equal to the
+supplied segment length, lengths from 20 through 1480 bytes, a data offset
+within 20–60 bytes and within the segment, nonzero ports,
+well-formed bounded options, and a valid IPv4 pseudo-header checksum. EOL,
+NOP, MSS, Window Scale, SACK Permitted, SACK, Timestamp and unknown
+well-formed options are parsed/validated as previously documented; parsing
+does not negotiate or activate their protocol semantics. The builder validates
+the total length and caller capacity before writing. Its documented
+non-overlap requirement for source options/payload and output remains a caller
+contract.
+
+`make tcp-wire-fuzz-test` runs 100,000 fixed-seed (`0x15c5f00d`) arbitrary
+byte/length/pseudo-header cases, systematic input truncations and offsets,
+and structured mutations of a valid checksummed fixture. It checks unchanged
+input bytes, guard bytes around input/output objects, parser success
+invariants, and a completely zero result view on failure. This deterministic
+host harness is regression coverage, not a proof of universal memory safety
+or cryptographic/protocol correctness. Clang AddressSanitizer plus
+UndefinedBehaviorSanitizer completed successfully; GCC sanitizer linking was
+unavailable because its ASan/UBSan runtime libraries are absent. The simulator
+now also verifies that
+its eight-entry copied-packet queue rejects a ninth packet without replacing
+queued bytes, and completes 10,000 deterministic mixed lifecycle iterations
+with 78 injected SYN retry-exhaustion cases before checking stale handles and
+baseline queue capacity. Generation wraparound is not exercised; doing so
+would require billions of reuse cycles or an artificial test-only generation
+override. Production TCP routing and transmission remain disabled.
+
+### Phase 15.5H — RFC 9293 TCP correctness and security audit
+
+The audit uses [RFC 9293](https://www.rfc-editor.org/rfc/rfc9293.html) as the
+primary reference. This is a scoped audit of the isolated host-test transport,
+not a declaration of conformance. Corrections covered by Core/Wire regressions:
+
+- Zero-sequence-space segments follow receive-window acceptability: with a
+  nonzero window, `SEG.SEQ` may be anywhere in
+  `[RCV.NXT, RCV.NXT + RCV.WND)`; with a zero window only exact `RCV.NXT` is
+  acceptable. Payload/SYN/FIN segments remain strict in-order and must fit in
+  the receive window. Partial overlap and reassembly are unsupported.
+- ACK advancement is wrap-safe and bounded to `[SND.UNA, SND.NXT]`. Future
+  ACKs cannot release bytes; partial ACKs retire only the acknowledged prefix.
+  Send-window updates track `SND.WL1/SND.WL2`, so stale advertisements cannot
+  replace a newer window. Serial comparisons assume all bounded live windows
+  and spans remain below half the 32-bit sequence space.
+- In synchronized and TIME-WAIT states, exact `RCV.NXT` RST closes; a
+  non-exact in-window RST is ignored with an abstract challenge-ACK action;
+  out-of-window RST is ignored. Production cannot serialize or transmit the
+  challenge response. Unexpected SYN in synchronized states produces an
+  abstract ACK without changing state. The Wire parser preserves the reserved
+  nibble rather than rejecting it; senders must zero reserved bits, while
+  receivers ignore unsupported bits. ECE/CWR semantics remain unsupported.
+
+| RFC area | Expected behavior | Current implementation | Status |
+| --- | --- | --- | --- |
+| §3.1 header/checksum/options | Bound and validate header/checksum; process options only when supported | 20–1480-byte parser validates lengths/checksum/options; reserved nibble preserved. MSS is used. WS/SACK/TS are parsed, not negotiated or acted on. | Partially implemented |
+| §3.3 sequence arithmetic | Serial arithmetic with comparisons unambiguous below half-space | Wrap-safe 32-bit helpers; bounded spans below `2^31`; no partial-overlap trimming/reassembly. | Partially implemented |
+| §3.3 ACK/window updates | Reject ACK beyond sent range; retire acknowledged data; accept fresh window updates | ACK checked against `SND.UNA..SND.NXT`; partial-prefix retirement; `SND.WL1/WL2` freshness. No SACK recovery. | Partially implemented |
+| §3.4, §3.10.7 segment acceptability | Apply receive-window rules before state/data changes | Zero-length sequence acceptability follows the window rule; data/FIN must be in-order and fully bounded. | Partially implemented |
+| §3.4 SYN/establishment | Validate SYN/ACK, consume SYN sequence space, support defined open paths | Active/passive and simultaneous-open deterministic Core paths; SYN consumes one sequence. SYN data and complete option negotiation unsupported. Runtime is test-only. | Partially implemented |
+| §3.5.2–3.5.3 reset | State-aware reset acceptance and response | Exact sequence accepted in synchronized/TIME-WAIT; in-window nonexact challenged abstractly; outside ignored. Handshake states use narrower Core rules. No serialized challenge/reset response. | Partially implemented |
+| §3.5.4 FIN/close | Consume FIN sequence space and follow close states | In-order FIN and supported FIN-WAIT/CLOSE-WAIT/LAST-ACK/CLOSING/TIME-WAIT transitions tested. Partial overlap and general data-after-FIN handling unsupported. | Partially implemented |
+| §3.5.4 TIME-WAIT | Retain tuple for 2MSL; handle duplicate FIN | Fixed 12,000 ticks (100 Hz assumption); prior duplicate FIN ACKed and deadline restarted. This constant is not a configurable MSL policy. | Partially implemented |
+| §3.8/§3.9 flow control/interface | Bound windows and define transport handoff | 2048-byte rings, MSS/window-bounded stop-and-wait sender, strict in-order receive, zero-window queue/reopen. No congestion control, user TCP API, or production handoff. | Partially implemented / integration required |
+| §3.9 retransmission | Retransmit outstanding sequence space with timer behavior | Fixed initial 100 ticks, doubles to 800, five retries; outstanding SYN/data/FIN rebuilt. No RTT estimator or congestion control. | Partially implemented |
+
+Tests cover wraparound, ACK bounds, partial ACK retirement, stale window
+advertisements, in-window/out-of-window RST, TIME-WAIT reset checks, malformed
+wire packets/options/checksums, and seeded parser/two-endpoint simulations.
+The zero-length sequence correction followed a failing Core test and is
+exercised with an ACK-only segment inside the receive window.
+
+Important remaining deviations include strict in-order receive (no overlap
+trimming/reassembly), no congestion control, no RTT estimation, no SACK or
+window-scale negotiation, no timestamp semantics, limited reset handling,
+fixed retry/TIME-WAIT constants, and incomplete RFC state/event processing.
+Core/Runtime and simulator are isolated host-test models. Production TCP
+routing, transmission, syscalls, timer integration, and ISN generation remain
+disabled; `tcp_core_live_isn_available()` remains false.
+
+### Phase 15.5I — isolated Linux TCP interoperability
+
+`make tcp-linux-interop-test` builds a host-only packet endpoint from the
+existing Core, Wire, and Runtime sources with `TCP_CORE_TESTING` and
+`TCP_RUNTIME_TESTING`, then runs it inside `unshare -Urn`. The harness creates
+only a private network namespace and one `osi0`/`lin0` veth pair. Its static
+test addresses are OpenSillicon `10.55.0.1` and Linux `10.55.0.2/24`; the
+Linux endpoint uses port 19090 and the active-open OpenSillicon endpoint uses
+42000. A static neighbor entry exists only on `lin0`. Namespace teardown
+removes the pair and routes; no host interface, route, or DNS configuration is
+changed. Required tools are Linux user/network namespaces, `ip`, `ethtool`,
+`tcpdump`, Python 3, and a C compiler. The test fails explicitly if setup or
+capabilities are unavailable; it does not skip silently.
+
+The AF_PACKET bridge copies actual TCP bytes between veth and the test
+Runtime. It bounds frames to 1514 bytes, TCP payloads to the current 1480-byte
+wire limit, and relies on Core's 2048-byte per-connection rings. It validates
+IPv4 header checksum/length and TCP pseudoheader checksum with a separate
+test checksum routine before passing incoming bytes to `tcp_wire_parse()` and
+Runtime. Outgoing checksum validation is also independent of the production
+Wire helper. Trace lines record direction, sequence, acknowledgment, flags,
+window, payload length, and checksum result. `tcpdump` is started inside the
+namespace; the harness disables checksum offload only on its disposable
+`lin0` interface to prevent pre-offload checksum artifacts. The endpoint
+trace and Linux application checks are the primary assertions; capture output
+is supplementary and is not treated as a protocol oracle.
+
+The Linux listener test completed SYN/SYN-ACK/ACK, advertised MSS/window
+exchange, 1800-byte OpenSillicon-to-Linux data, 1750-byte Linux-to-OpenSillicon
+data, multi-segment transfer, exact byte comparisons, and orderly FIN/TIME-WAIT
+cleanup. The reverse test completed Linux active open, OpenSillicon listener
+selection and passive child creation, final ACK establishment, peer FIN,
+LAST-ACK completion, parent unlink, and listener/Runtime cleanup. Adversarial
+Runtime injection also traverses the real Wire parser: corrupted checksum,
+truncation, invalid data offset/options, future ACK, nonexact in-window and
+out-of-window RST, unexpected SYN, and out-of-window data leave the connection
+state/data sequence unchanged or produce only the documented abstract ACK.
+These crafted packets are test inputs, not traffic emitted by Linux.
+
+The harness is a narrow Linux interoperability result, not general TCP
+compatibility. It does not test loss/retransmission against Linux, Linux's
+invalid-packet responses, duplicate SYN recovery under loss, partial reads,
+zero-window behavior, simultaneous close, or serialized challenge-ACK/reset
+responses. Linux peer behavior is observed only for this local kernel and
+namespace configuration. Production TCP remains validation/discard-only and
+has no packet TX, TCP syscall, timer hook, or approved production ISN source.
+
+### Phase 15.5J — TCP production readiness assessment
+
+This section separates the experimental implementation from the kernel's
+production packet path. The normal build links the Wire, Core, and Runtime
+objects, and boot initializes the Runtime's inert fixed table when the UDP
+network service is available. Linking and initialization do not connect TCP
+traffic to that table. The normal IPv4 protocol-6 path validates the enclosing
+IPv4 packet, parses/checksums the exact TCP payload with `tcp_wire_parse()`,
+then returns the TCP-disabled classification. The optional source-level
+`OPEN_SILLICON_ENABLE_TCP_ROUTING` block is absent from normal build flags; its
+route API is classification-only even when compiled. No production Core event,
+TCP response, or TCP timer service is invoked from RX or network service.
+
+```mermaid
+flowchart LR
+  NIC[Ethernet NIC / e1000 RX DMA] -->|implemented: bounded descriptor poll; copy to netbuf| RX[net_device / netbuf owner]
+  RX -->|implemented: cooperative UDP poll owns RX frame| IP[Ethernet, ARP, IPv4 validation]
+  IP -->|implemented: protocol 6 parse + checksum, then discard| W[TCP Wire]
+  W -.->|absent in production| R[Runtime tuple lookup]
+  R -.->|host-test only| C[TCP Core state and bounded rings]
+  C -.->|implemented API; no production caller| T[Runtime timer processing]
+  C -.->|host-test only: abstract actions / segment serialization| B[TCP response packet assembly]
+  B -.->|absent| TX[IPv4/Ethernet transmit]
+  TX -.->|existing generic device ownership path, not connected to TCP| NIC
+  R -.->|absent| U[userspace TCP socket / descriptor ABI]
+```
+
+The diagram's Core-to-Wire serializer path is test-only; the bounded Core and
+Runtime timer APIs are present in production objects but have no production
+caller. Neither path is wired from production RX. The device layer already
+has a bounded generic netbuf ownership contract: receive transfers a packet to
+CORE, and transmit success transfers it to DEVICE. The e1000 driver copies a
+CORE netbuf into a TX DMA slot before transferring its reference and keeps it
+until completion/reap. RX copies a completed DMA buffer into a CORE netbuf
+before rearming the descriptor. This gives a possible synchronous parsing
+boundary, but TCP must copy accepted payload into its bounded ring before the
+RX netbuf is released. TCP still lacks a production IPv4/Ethernet response
+builder and a safe response enqueue/completion policy. The current driver
+evidence is the configured QEMU 8086:100e profile with identity DMA; it is not
+a generic physical-device guarantee.
+
+#### Capability matrix
+
+“Implemented, not integrated” means code/tests exist in isolated host builds;
+it is not a production readiness claim.
+
+| Capability | Current status | Source-backed boundary / remaining work |
+| --- | --- | --- |
+| TCP header, IPv4 pseudoheader checksum, bounded options | Implemented but not production-integrated | Wire accepts segment lengths 20–1480 and validates checksum/data offset/options. IPv4 RX discards valid TCP after parsing. |
+| MSS | Partially implemented | MSS is parsed and used; local MSS is 1460. Full path-MTU and option negotiation policy is absent. |
+| Window Scale, SACK, timestamps, ECN | Unsupported | Some option encodings/flags parse, but no negotiation/use; do not advertise or infer support. |
+| Serial sequence arithmetic | Requires further validation | Wrap-safe helpers and bounded windows are tested. Receive is strict in-order; no overlap trimming or out-of-order reassembly. |
+| ACK processing / send ring | Implemented, not production-integrated | Bounded 2048-byte TX ring, partial ACK retirement, constrained send window and retransmission; no congestion control/RTT estimator. |
+| Receive window / duplicate suppression | Partially implemented | 2048-byte RX ring, in-order acceptance, duplicate ACK behavior and zero-window reopening are tested; arbitrary overlap/reassembly is absent. |
+| SYN, active/passive open, tuple isolation | Implemented but not production-integrated | Deterministic test ISNs, fixed table of 8 entries shared by listeners and connections, backlog 4. No production open API or packet dispatch. |
+| RST | Partially implemented | Core has exact-sequence synchronized reset policy and abstract challenge ACK for in-window nonexact RST. No production response serialization; not a full state/window RFC audit. |
+| FIN and TIME-WAIT | Partially implemented | Several close transitions and fixed 12,000-tick TIME-WAIT are tested. This is not complete RFC termination; simultaneous-open/close and duplicate/edge combinations need continued validation. |
+| Retransmission | Implemented but not production-integrated | RTO starts at 100 ticks, doubles to 800, retry limit 5; Core service budget is 4. No production schedule, RTT estimation, congestion control, or driver handoff. |
+| Timers and stale-event protection | Partially implemented | Timer service is bounded and generation-aware in Runtime tests. LAPIC timer only increments ticks and wakes/preempts processes; no TCP timer hook. |
+| Buffer/connection bounds | Implemented but not production-integrated | Eight table entries; 2 KiB RX and TX per entry; max segment 1480; listener backlog 4; Core table is fixed-size. No production resource policy/accounting with process ownership. |
+| RX ownership | Implemented lower-layer; TCP integration blocked by architecture | e1000 DMA completion is copied to netbuf before descriptor reuse. Netstack's TCP parser borrows only during call then discards; no Core payload copy occurs in production. |
+| TCP response serialization and TX | Implemented but not production-integrated | Runtime can produce a bounded serialized TCP segment in test APIs. No TCP-to-IPv4/Ethernet assembly or production device submission/completion path. |
+| Active/passive Linux interoperability | Requires further validation | Private namespace/veth harness tests handshakes, 1,800/1,750-byte bidirectional data, and orderly close. Loss, zero-window interoperability, broad termination/security matrix, and hardware are not covered. |
+| TCP sockets / descriptors / syscalls | Unsupported | No TCP syscall or user-visible TCP object. UDP uses dedicated syscalls 28–31; ICMP Echo uses syscall 33. |
+| bind/listen/accept/connect/send/receive/shutdown/close | Unsupported | No TCP userspace API, blocking contract, cancellation model, or process-exit connection cleanup. |
+| Fork inheritance | Partially implemented at generic FD layer | `fd_table_clone()` increments shared `fd_object` references; final `fd_object_put()` calls close. A TCP descriptor would need an explicit shared-connection/fork contract and tested teardown. |
+| IPv4 fragmentation / routing | Unsupported | Netstack rejects fragmented IPv4 and current configuration is a static on-link profile; no general router or PMTU discovery. |
+| Production entropy / ISN | Blocked by architecture | `tcp_core_live_isn_available()` is false. Deterministic ISN injection is test-only. The random module uses RDRAND when available but there is no reviewed CSPRNG, seed/trust policy, or accepted entropy assurance for ISNs. |
+| Generic hardware support | Requires further validation | Current e1000 profile is QEMU-specific; identity-DMA assumptions and device behavior must be validated before broader claims. |
+
+The TCP state enum includes LISTEN, SYN-SENT, SYN-RECEIVED, ESTABLISHED,
+FIN-WAIT-1/2, CLOSE-WAIT, LAST-ACK, CLOSING, TIME-WAIT, and CLOSED. Enum
+presence does not imply every RFC state/event combination. The host Core and
+Runtime tests cover selected handshake, data, reset, close, timeout, and slot
+reuse paths. Strict in-order receive, fixed retry/TIME-WAIT constants, no
+congestion control, no RTT estimator, no option negotiation beyond MSS, and
+the limited response context remain protocol deviations or deliberate gaps.
+The Linux harness is useful independent evidence but is narrow: the current
+run covered both active and passive handshakes, exact multi-segment byte
+exchange, and orderly close; it did not test Linux interoperability under
+loss, zero-window/partial-read behavior, every RST policy, or simultaneous
+close.
+
+#### Production ISN and entropy prerequisite
+
+`kernel_random_init()` checks CPUID RDRAND and obtains words with bounded
+retry; failure is latched and requests fail closed. This source is not a
+reviewed kernel CSPRNG or a documented system entropy trust policy. The boot
+log's “hardware DRBG available” describes the CPU facility only; it is not
+evidence that the platform's output is trusted, seeded independently, or
+appropriate as the sole security source. No Limine entropy request or other
+approved boot entropy source is currently wired. Consequently, production
+TCP ISNs must remain unavailable; no timestamp, counter, MAC, PID, deterministic
+test seed, or unapproved RDRAND-only fallback is acceptable.
+
+Before enabling ISNs, define and review an entropy policy for supported boot
+environments, obtain sufficient seed material from a source the project
+explicitly trusts, initialize a reviewed cryptographic DRBG, define reseed and
+failure behavior, and keep connections fail-closed before readiness. Then
+derive ISNs using a keyed tuple/time-based construction consistent with the
+security goals of RFC 6528 (now incorporated/obsoleted by RFC 9293 §3.4.1).
+The tuple input should include the local and remote addresses and ports; the
+secret key must come from the approved CSPRNG. A monotonic component may
+provide progression but cannot replace the secret PRF. The generator must be
+tested for wraparound, restart/key rotation policy, failure, and separation
+between test and production APIs. This is a design prerequisite, not an
+implemented proposal.
+
+#### Timer, RX/TX, and ownership integration design
+
+Production timer processing must run in bounded non-interrupt context. The
+100 Hz LAPIC ISR currently increments `timer_ticks()`, wakes sleepers, and
+preempts; it must not scan TCP connections, serialize packets, or release
+connection references. A future service should schedule a bounded cooperative
+TCP timer pass with the current tick value, honor the Core's `more_due`, map
+generation-tagged results to live Runtime entries, serialize resulting
+actions, release each service reference once, and re-request work if due items
+remain. Closing a descriptor must not invalidate queued generation tokens;
+stale tokens must be discarded without touching a reused slot. TIME-WAIT and
+retransmission need the same service path and bounded per-call budget.
+
+RX should remain single-owner: the current e1000 poll copies descriptor data
+into a CORE-owned netbuf before descriptor reuse; netstack validates Ethernet,
+IPv4 lengths/checksum/address/fragment policy and TCP checksum/options. The
+future dispatcher must synchronously route only after those checks, let Core
+copy accepted payload before netbuf release, and never retain packet pointers.
+TX should build TCP, IPv4, and Ethernet bytes in a bounded CORE-owned netbuf,
+resolve the next-hop MAC through the existing ARP cache/request path, and
+submit through `net_device_transmit()`. A successful device submission
+transfers ownership to DEVICE, not proof of wire delivery; completion, ring
+exhaustion, device stop, and retry-after-TX-failure need explicit handling.
+The existing e1000 has eight TX and eight RX descriptors, a 64-entry netbuf
+pool, and 1600-byte netbuf capacity. These bounds constrain batching and must
+be reconciled with TCP segmentation and packet headroom before integration.
+
+The cooperative `network_service_run()` has an 8-entry event queue and a
+maximum budget of four. It currently handles RX polling through
+`udp_socket_poll()` only. It is invoked at process/syscall safe points, while
+the blocked-process idle path also requests/polls service after timer wakeup.
+The timer ISR does not run network service. TCP work must be bounded and must
+not execute under unrelated UDP state guards; queue overflow must be explicit
+and pending work must remain observable. Before SMP, all local-IRQ critical
+sections and shared queue ownership must be replaced or proven safe with
+cross-CPU synchronization and device-affinity rules.
+
+#### User interface recommendation and first MVP
+
+Recommendation: use a file-descriptor-backed TCP object with dedicated,
+project-native syscalls, reusing the existing `fd_object` lifetime model rather
+than exposing Runtime handles or adding a generic raw-packet API. Keep
+socket-specific operations explicit (`socket`, `bind`, `listen`, `accept`,
+`connect`, `send`, `receive`, `shutdown`, `close`) and preserve syscall numbers
+28–31 for UDP and 33 for ICMP. Existing `fd_table_clone()` shares objects by
+reference across fork and final close occurs when the last descriptor
+reference is dropped. TCP must specify whether fork shares one connection
+(the natural fit for this model), define listener/accepted-child ownership,
+and guarantee process-exit cleanup. User buffers must be validated and copied
+through the existing VMM helpers; Core rings own all retained bytes.
+
+The first MVP should be IPv4-only, on the existing statically configured
+on-link network, with a fixed connection table (initially the existing eight
+entries shared by listeners and connections), active/passive open, bounded
+send/receive rings, MSS-bounded segments, ACK/window handling, bounded
+retransmission, RST/FIN, and TIME-WAIT. It should explicitly omit IPv4
+fragmentation/reassembly, out-of-order TCP reassembly, Window Scaling, SACK,
+timestamps, ECN, simultaneous open unless separately completed, congestion
+control beyond a conservative fixed-window policy, DNS, and general routing.
+Applications must see partial reads/writes, EOF, reset, would-block/timeout,
+and transport errors distinctly. Blocking operations need scheduler wait
+queues, interruptible cancellation, timeout semantics, and process-exit
+cleanup; busy-polling the network from a syscall is not an acceptable TCP
+design. Do not claim POSIX compatibility.
+
+| MVP operation | Kernel component and proposed interface | Ownership / bounds | Failure cases and required proof |
+| --- | --- | --- | --- |
+| Create/bind/listen | TCP FD factory plus explicit socket syscalls | FD object owns one Runtime reference; shared table has 8 entries; address/port validated. | Invalid tuple, bind conflict, descriptor/table full; atomic allocation and fork/close tests. |
+| Accept | Runtime listener/backlog plus accept syscall | Accepted FD owns child handle; listener retains bounded child relationship; backlog 4 initially. | Empty backlog, full table, listener close, process exit; child unlink/ref tests. |
+| Connect | Runtime active open plus connect syscall | Descriptor retains connection until final FD close; no production open before secure ISN readiness. | Entropy unavailable, timeout, RST, table full, cancellation; handshake/retry and failure cleanup tests. |
+| Send | Runtime bounded TX ring plus send syscall | Copy-in to the 2 KiB send ring; partial result or explicit would-block/error. | Buffer full, reset, closing state, user-copy fault; no silent truncation and ACK retirement tests. |
+| Receive | Runtime bounded RX ring plus receive syscall | Copy-out from 2 KiB RX ring; partial reads, buffered data before EOF. | Empty, EOF, reset, timeout, copy fault; ensure failed copy consumes no bytes. |
+| Shutdown/close | Runtime Core close plus FD close callback | FIN remains ordered after buffered data; shared FD reference closes transport only on defined final owner/policy. | Repeated close, FIN timeout, RST, TIME-WAIT, forked descriptor; idempotent teardown tests. |
+| Timer/TX service | Cooperative network service + Runtime/Core | Bounded per-run work; netbuf owns serialized frame until device ownership transfer/completion. | `more_due`, stale token, queue full, device down; prove reference and DMA ownership exactly once. |
+
+For each MVP operation: Runtime owns bounded Core state; a descriptor object
+owns a Runtime reference; process descriptor tables own descriptor-object
+references; copied user bytes enter/leave bounded Core rings. Table exhaustion,
+buffer full, timer exhaustion, TX ring full, device down, timeout, reset, and
+allocation failure must return stable errors without retaining user/RX
+pointers. Listener close with children needs explicit policy. Each operation
+requires host tests plus Linux/QEMU tests through actual serialized packets;
+production enablement additionally requires the gates below.
+
+#### Dependency roadmap
+
+| Proposed phase | Prerequisites and scope | Required tests / exit criteria |
+| --- | --- | --- |
+| 15.6A — trusted entropy and ISN readiness | Define trusted boot entropy sources, reviewed CSPRNG and reseed/failure policy; implement only after source/trust review. Likely `kernel/random.*`, boot request/config, Core ISN provider. | Fail-closed tests on unavailable/failed source, statistical and tuple-separation sanity tests (not a security proof), restart/key policy review, test hooks absent in production; `tcp_core_live_isn_available()` true only after approval. |
+| 15.6B — production TCP timer service | Connect Core due-time service to bounded cooperative service; generation tokens, stale-event handling, retransmit/TIME-WAIT actions, no ISR work. Likely timer, network_service, Runtime/Core. | Deterministic tick tests, bounded `more_due`, close/timeout races, no duplicate service refs, no timer work in interrupt context, UDP progress preserved. |
+| 15.6C — production IPv4 TCP RX/TX | Only after 15.6A/B. RX dispatch after all IPv4 checks; Core copies payload before RX release. Add bounded TCP→IPv4→Ethernet packet assembly and net_device TX ownership/completion handling. | Malformed/checksum/fragment rejection; packet/netbuf failure and device-down paths; ownership exactly once; e1000 queue saturation/recovery; no UDP/ICMP regression. |
+| 15.6D — descriptor-backed TCP API | Add FD object and project-native syscalls for bind/listen/accept/connect/send/receive/shutdown; define fork sharing, blocked wait/cancel, error ABI and process exit behavior. Preserve existing syscall numbers. | ABI tests, user-copy faults, fork/close/exit ref tests, partial IO, timeout/cancel, backlog/table full, reset/EOF semantics. |
+| 15.6E — independent end-to-end tests | Run actual production path in QEMU against independent Linux peer; instrument packet ownership and state. Expand current host namespace harness as useful but do not treat it as production path. | Handshakes/data/close, loss/reorder/duplication, window exhaustion/reopen, RST/TIME-WAIT, process/fork cleanup, UDP/ICMP regression, repeatable QEMU markers and sanitizer/stress baselines. |
+| 15.6F — hardening and controlled enablement | Resolve remaining scoped protocol deviations; review unsupported behavior, hardware assumptions, logs and resource caps. Gate production dispatch on every readiness criterion. | All readiness gates below pass in documented configurations; enablement is an explicit later change with independent review. Any failure leaves validation-and-discard behavior intact. |
+
+#### Objective production readiness gates
+
+All gates are required; compilation or host simulation alone is insufficient.
+
+1. Approved trusted entropy policy and production ISN generation; fail closed.
+2. Test macros, deterministic ISNs, simulators, and fuzz hooks absent from
+   production objects/ELF.
+3. Fixed, measured connection/listener/backlog/buffer limits and atomic failure
+   behavior under exhaustion.
+4. Bounded production timers with generation-safe stale-event handling and no
+   TCP work in interrupt context.
+5. RX frame lifetime proved through IPv4 validation, Core payload copy, and
+   exactly-once netbuf release.
+6. TX packet/DMA ownership proved across queue-full, completion, device stop,
+   and driver failure; packet serialization does not imply delivery.
+7. IPv4/TCP length and checksum validation, fragmentation policy, tuple
+   isolation, and malformed-packet resistance tested in the production path.
+8. Descriptor/process ownership, fork inheritance, close, exit, and blocked
+   operation cancellation proven without leaked Runtime/Core references.
+9. ACK, flow-control, retransmission, timeout, FIN/RST, retry exhaustion, and
+   TIME-WAIT behavior tested against independent peers and deterministic
+   adversarial cases.
+10. Independent Linux interoperability includes packet loss, duplicate and
+    delayed traffic, partial IO, zero-window/reopen, termination and reset;
+    both sides' bytes/states are checked.
+11. QEMU regression covers the actual production IPv4-to-device path and the
+    configured e1000 profile; hardware claims remain limited to validated
+    devices.
+12. Sanitizer, fuzz, and lifecycle stress runs pass with documented seeds,
+    counts, toolchains, and actual ownership accounting.
+13. UDP syscall ABI/behavior and ICMP Echo syscall 33 regressions pass.
+14. Unsupported protocol features and security deviations are documented;
+    no full RFC 9293 claim is made without a requirement-by-requirement audit.
+
+RFC 9293 is the primary protocol reference; RFC 5961 informs reset hardening.
+RFC 6528's keyed tuple/time construction is relevant to ISN design, but the
+RFC has been obsoleted by RFC 9293 §3.4.1. This assessment is a plan, not a
+conformance statement or production TCP enablement.

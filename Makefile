@@ -62,7 +62,7 @@ endif
 	pci-test pci-resource-test dma-test pmm-contiguous-test network-foundation-test block-test phase10-test phase11-test terminal-test \
 	dma-ring-test e1000-profile-test e1000-ring-test e1000-init-qemu-test \
 	e1000-dma-qemu-test e1000-icmp-qemu-test e1000-udp-qemu-test \
-	netstack-test udp-socket-test tcp-wire-test tcp-core-test tcp-runtime-test network-service-test \
+	netstack-test udp-socket-test tcp-wire-test tcp-wire-fuzz-test tcp-core-test tcp-runtime-test tcp-runtime-sim-test tcp-linux-interop-test network-service-test \
 	netdiag-args-test e1000-netdiag-qemu-test e1000-icmp-ping-qemu-test \
 	terminal-qemu-test user-path-test phase12-qemu-test phase12-test \
 	pipe-test phase13a-test signal-state-test phase13b-test refresh-test-root \
@@ -900,6 +900,14 @@ $(BUILD_DIR)/tcp_wire_test: kernel/net/tcp_wire.c tests/tcp_wire_test.c \
 tcp-wire-test: $(BUILD_DIR)/tcp_wire_test
 	$(BUILD_DIR)/tcp_wire_test
 
+$(BUILD_DIR)/tcp_wire_fuzz_test: kernel/net/tcp_wire.c \
+		tests/tcp_wire_fuzz_test.c include/kernel/tcp_wire.h | $(BUILD_DIR)
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Iinclude \
+		kernel/net/tcp_wire.c tests/tcp_wire_fuzz_test.c -o $@
+
+tcp-wire-fuzz-test: $(BUILD_DIR)/tcp_wire_fuzz_test
+	$(BUILD_DIR)/tcp_wire_fuzz_test
+
 tcp-core-test: $(BUILD_DIR)/tcp_core_test
 	$(BUILD_DIR)/tcp_core_test
 
@@ -921,9 +929,35 @@ $(BUILD_DIR)/tcp_runtime_disabled_test: kernel/net/tcp_core.c \
 		kernel/net/tcp_runtime.c tests/tcp_runtime_disabled_test.c -o $@
 
 tcp-runtime-test: $(BUILD_DIR)/tcp_runtime_test \
-		$(BUILD_DIR)/tcp_runtime_disabled_test
+		$(BUILD_DIR)/tcp_runtime_disabled_test \
+		$(BUILD_DIR)/tcp_runtime_sim_test
 	$(BUILD_DIR)/tcp_runtime_test
 	$(BUILD_DIR)/tcp_runtime_disabled_test
+	$(BUILD_DIR)/tcp_runtime_sim_test
+
+$(BUILD_DIR)/tcp_runtime_sim_test: kernel/net/tcp_core.c \
+		kernel/net/tcp_runtime.c kernel/net/tcp_wire.c \
+		tests/tcp_runtime_sim_test.c include/kernel/tcp_core.h \
+		include/kernel/tcp_wire.h include/kernel/tcp_runtime.h | $(BUILD_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -DOPEN_SILLICON_ENABLE_TCP_ROUTING \
+		-DTCP_CORE_TESTING -DTCP_RUNTIME_TESTING -Iinclude \
+		kernel/net/tcp_core.c kernel/net/tcp_wire.c kernel/net/tcp_runtime.c \
+		tests/tcp_runtime_sim_test.c -o $@
+
+tcp-runtime-sim-test: $(BUILD_DIR)/tcp_runtime_sim_test
+	$(BUILD_DIR)/tcp_runtime_sim_test
+
+$(BUILD_DIR)/tcp_linux_interop: kernel/net/tcp_core.c \
+		kernel/net/tcp_wire.c kernel/net/tcp_runtime.c \
+		tests/tcp_linux_interop.c include/kernel/tcp_core.h \
+		include/kernel/tcp_wire.h include/kernel/tcp_runtime.h | $(BUILD_DIR)
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -DOPEN_SILLICON_ENABLE_TCP_ROUTING \
+		-DTCP_CORE_TESTING -DTCP_RUNTIME_TESTING -Iinclude \
+		kernel/net/tcp_core.c kernel/net/tcp_wire.c kernel/net/tcp_runtime.c \
+		tests/tcp_linux_interop.c -o $@
+
+tcp-linux-interop-test: $(BUILD_DIR)/tcp_linux_interop
+	unshare -Urn python3 tests/tcp_linux_interop.py $(BUILD_DIR)/tcp_linux_interop
 
 e1000-icmp-qemu-test:
 	$(MAKE) BUILD_DIR=build/e1000-icmp \

@@ -249,6 +249,19 @@ test_bounds_and_mutations(void)
 	    TCP_WIRE_INVALID_ARGUMENT);
 	assert(tcp_wire_parse(&p, base, sizeof(base) - 1, &parsed) ==
 	    TCP_WIRE_LENGTH);
+	/* Failed parses clear the entire public view, so borrowed pointers from a
+	 * prior success cannot remain live after a rejected input. */
+	assert(tcp_wire_parse(&(struct tcp_wire_pseudo_header){
+	    .source = {192,0,2,1}, .destination = {198,51,100,2},
+	    .protocol = 6, .segment_length = sizeof(base)
+	    }, base, sizeof(base), &parsed) == TCP_WIRE_OK);
+	assert(parsed.payload != NULL);
+	assert(tcp_wire_parse(&p, base, sizeof(base) - 1, &parsed) ==
+	    TCP_WIRE_LENGTH);
+	{
+		const struct tcp_wire_segment zero = {0};
+		assert(memcmp(&parsed, &zero, sizeof(parsed)) == 0);
+	}
 	p.protocol = 17;
 	assert(tcp_wire_parse(&p, base, sizeof(base), &parsed) == TCP_WIRE_LENGTH);
 	p = pseudo(sizeof(base));
@@ -260,8 +273,14 @@ test_bounds_and_mutations(void)
 	    TCP_WIRE_HEADER);
 	memcpy(segment, base, sizeof(base));
 	segment[12] |= 1;
-	assert(tcp_wire_parse(&p, segment, sizeof(base), &parsed) ==
-	    TCP_WIRE_RESERVED);
+	segment[16] = segment[17] = 0;
+	{
+		uint16_t checksum = ref_checksum(segment, sizeof(base));
+		segment[16] = (uint8_t)(checksum >> 8);
+		segment[17] = (uint8_t)checksum;
+	}
+	assert(tcp_wire_parse(&p, segment, sizeof(base), &parsed) == TCP_WIRE_OK);
+	assert(parsed.reserved == 1 && parsed.payload_length == 3);
 	memcpy(segment, base, sizeof(base));
 	segment[16] ^= 1;
 	assert(tcp_wire_parse(&p, segment, sizeof(base), &parsed) ==

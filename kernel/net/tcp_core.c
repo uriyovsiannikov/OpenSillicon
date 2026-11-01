@@ -338,6 +338,9 @@ receive_window(const struct tcp_core_connection *connection)
 	return (uint16_t)(TCP_CORE_RX_CAPACITY - connection->rx_length);
 }
 
+static bool start_data_segment(struct tcp_core_connection *connection,
+	uint64_t now_tick);
+
 static void
 fill_result(const struct tcp_core_connection *connection,
 	struct tcp_core_result *result)
@@ -399,6 +402,80 @@ tcp_core_connection_read(struct tcp_connection_table *table,
 		connection->rx_head = 0;
 	*length = amount;
 	return true;
+}
+
+bool
+tcp_core_connection_write(struct tcp_connection_table *table,
+	struct tcp_connection_handle handle, const uint8_t *data, size_t length,
+	uint64_t now_tick, struct tcp_core_result *result)
+{
+	struct tcp_core_connection *connection = connection_lookup(table, handle);
+	if (connection == NULL || result == NULL ||
+	    (length != 0 && data == NULL) || length > TCP_CORE_TX_CAPACITY ||
+	    (connection->state != TCP_STATE_ESTABLISHED &&
+	    connection->state != TCP_STATE_CLOSE_WAIT) ||
+	    length > TCP_CORE_TX_CAPACITY - connection->tx_length)
+		return false;
+	*result = (struct tcp_core_result){0};
+	for (size_t i = 0; i < length; i++)
+		connection->tx_data[(connection->tx_head + connection->tx_length + i) %
+		    TCP_CORE_TX_CAPACITY] = data[i];
+	connection->tx_length += length;
+	result->accepted_bytes = length;
+	if (start_data_segment(connection, now_tick))
+		result->actions |= TCP_ACTION_SEND_DATA;
+	fill_result(connection, result);
+	return true;
+}
+
+bool
+tcp_core_connection_copy_outstanding(const struct tcp_connection_table *table,
+	struct tcp_connection_handle handle, uint8_t *data, size_t capacity,
+	size_t *length, uint32_t *sequence)
+{
+	const struct tcp_core_connection *connection =
+	    connection_lookup_const(table, handle);
+	if (connection == NULL || length == NULL || sequence == NULL ||
+	    connection->outstanding_data_length == 0 ||
+	    capacity < connection->outstanding_data_length || data == NULL)
+		return false;
+	for (size_t i = 0; i < connection->outstanding_data_length; i++)
+		data[i] = connection->tx_data[(connection->tx_head + i) %
+		    TCP_CORE_TX_CAPACITY];
+	*length = connection->outstanding_data_length;
+	*sequence = connection->snd_una;
+	return true;
+}
+
+bool
+tcp_core_connection_build_outstanding_data(
+	const struct tcp_connection_table *table,
+	struct tcp_connection_handle handle, uint8_t *segment, size_t capacity,
+	size_t *length)
+{
+	const struct tcp_core_connection *connection =
+	    connection_lookup_const(table, handle);
+	struct tcp_segment_spec spec;
+	uint8_t payload[TCP_CORE_MAX_SEGMENT];
+	size_t payload_length;
+	uint32_t sequence;
+	if (connection == NULL || segment == NULL || length == NULL ||
+	    connection->outstanding_data_length > sizeof(payload) ||
+	    !tcp_core_connection_copy_outstanding(table, handle, payload,
+	    sizeof(payload), &payload_length, &sequence))
+		return false;
+	spec = (struct tcp_segment_spec){
+		.source_port = connection->tuple.local_port,
+		.destination_port = connection->tuple.remote_port,
+		.sequence = sequence,
+		.acknowledgment = connection->rcv_nxt,
+		.flags = TCP_FLAG_ACK,
+		.window = receive_window(connection),
+		.payload = payload,
+		.payload_length = payload_length
+	};
+	return tcp_segment_build_ipv4(connection->tuple.local_address,
+	    connection->tuple.remote_address, &spec, segment, capacity, length);
 }
 
 static bool
@@ -474,8 +551,12 @@ segment_sequence_acceptable(const struct tcp_core_connection *connection,
 	    ((segment->flags & TCP_FLAG_FIN) != 0 ? 1U : 0U) +
 	    ((segment->flags & TCP_FLAG_SYN) != 0 ? 1U : 0U);
 	uint16_t window = receive_window(connection);
-	if (span == 0)
-		return segment->sequence == connection->rcv_nxt;
+	if (span == 0) {
+		if (window == 0)
+			return segment->sequence == connection->rcv_nxt;
+		return sequence_in_window(segment->sequence, connection->rcv_nxt,
+		    window);
+	}
 	if (window == 0 || span > window)
 		return false;
 	return segment->sequence == connection->rcv_nxt ||
@@ -498,6 +579,13 @@ close_connection(struct tcp_core_connection *connection,
 	connection->timer_armed = false;
 	connection->rx_head = 0;
 	connection->rx_length = 0;
+	connection->tx_head = 0;
+	connection->tx_length = 0;
+	connection->outstanding_data_length = 0;
+	for (size_t i = 0; i < TCP_CORE_RX_CAPACITY; i++)
+		connection->rx_data[i] = 0;
+	for (size_t i = 0; i < TCP_CORE_TX_CAPACITY; i++)
+		connection->tx_data[i] = 0;
 	if (aborted)
 		result->actions |= TCP_ACTION_ABORT;
 	table_reference_drop(connection);
@@ -514,6 +602,38 @@ arm_control_timer(struct tcp_core_connection *connection, uint64_t now_tick)
 }
 
 static bool
+start_data_segment(struct tcp_core_connection *connection, uint64_t now_tick)
+{
+	size_t length;
+	uint32_t in_flight;
+	uint32_t window_available;
+	if (connection->outstanding_control ||
+	    connection->outstanding_data_length != 0 ||
+	    (connection->state != TCP_STATE_ESTABLISHED &&
+	    connection->state != TCP_STATE_CLOSE_WAIT) ||
+	    connection->tx_length == 0)
+		return false;
+	in_flight = connection->snd_nxt - connection->snd_una;
+	if (in_flight >= connection->snd_wnd)
+		return false;
+	window_available = (uint32_t)connection->snd_wnd - in_flight;
+	length = connection->tx_length;
+	if (length > connection->peer_mss)
+		length = connection->peer_mss;
+	if (length > window_available)
+		length = window_available;
+	if (length == 0)
+		return false;
+	connection->outstanding_data_length = length;
+	connection->snd_nxt += (uint32_t)length;
+	connection->outstanding_end = connection->snd_nxt;
+	connection->outstanding_flags = 0;
+	connection->outstanding_control = false;
+	arm_control_timer(connection, now_tick);
+	return true;
+}
+
+static bool
 acknowledgment_valid(const struct tcp_core_connection *connection,
 	const struct tcp_segment_view *segment)
 {
@@ -522,12 +642,36 @@ acknowledgment_valid(const struct tcp_core_connection *connection,
 	    connection->snd_nxt);
 }
 
+static bool
+window_update_newer(const struct tcp_core_connection *connection,
+	const struct tcp_segment_view *segment)
+{
+	return sequence_after(segment->sequence, connection->snd_wl1) ||
+	    (segment->sequence == connection->snd_wl1 &&
+	    (segment->acknowledgment == connection->snd_wl2 ||
+	    sequence_after(segment->acknowledgment, connection->snd_wl2)));
+}
+
 static void
 accept_ack(struct tcp_core_connection *connection,
-	const struct tcp_segment_view *segment)
+	const struct tcp_segment_view *segment, uint64_t now_tick,
+	struct tcp_core_result *result)
 {
 	if ((segment->flags & TCP_FLAG_ACK) == 0)
 		return;
+	if (!sequence_between(segment->acknowledgment, connection->snd_una,
+	    connection->snd_nxt))
+		return;
+	/* Reject stale window advertisements using the RFC send-window update
+	 * ordering variables. ACK processing and window-update freshness are
+	 * separate: an acceptable ACK can advance SND.UNA without replacing a
+	 * newer SND.WND value. */
+	if (window_update_newer(connection, segment)) {
+		connection->snd_wnd = segment->window < TCP_CORE_SEND_WINDOW_LIMIT ?
+		    segment->window : TCP_CORE_SEND_WINDOW_LIMIT;
+		connection->snd_wl1 = segment->sequence;
+		connection->snd_wl2 = segment->acknowledgment;
+	}
 	if (sequence_after(segment->acknowledgment, connection->snd_una) &&
 	    sequence_between(segment->acknowledgment, connection->snd_una,
 	    connection->snd_nxt)) {
@@ -535,18 +679,45 @@ accept_ack(struct tcp_core_connection *connection,
 		bool acknowledges_control = connection->outstanding_control &&
 		    sequence_between(connection->outstanding_end, old_una,
 		    segment->acknowledgment);
+		size_t acknowledged_data = connection->outstanding_data_length;
+		uint32_t acknowledged_span = segment->acknowledgment - old_una;
 		connection->snd_una = segment->acknowledgment;
 		connection->duplicate_acks = 0;
-		connection->snd_wnd = segment->window < TCP_CORE_SEND_WINDOW_LIMIT ?
-		    segment->window : TCP_CORE_SEND_WINDOW_LIMIT;
 		if (acknowledges_control) {
 			connection->outstanding_control = false;
 			connection->timer_armed = false;
+		}
+		if (acknowledged_data != 0) {
+			if (acknowledged_span > acknowledged_data)
+				acknowledged_span = (uint32_t)acknowledged_data;
+			connection->tx_head = (connection->tx_head + acknowledged_span) %
+			    TCP_CORE_TX_CAPACITY;
+			connection->tx_length -= acknowledged_span;
+			connection->outstanding_data_length -= acknowledged_span;
+			if (acknowledged_span != 0) {
+				connection->retransmissions = 0;
+				connection->retransmit_interval =
+				    TCP_CORE_RTO_INITIAL_TICKS;
+				connection->retransmit_deadline = now_tick +
+				    connection->retransmit_interval;
+				connection->timer_armed =
+				    connection->outstanding_data_length != 0;
+			}
+			if (connection->outstanding_data_length == 0) {
+				connection->timer_armed = false;
+				if (start_data_segment(connection, now_tick))
+					result->actions |= TCP_ACTION_SEND_DATA;
+			}
 		}
 	} else if (segment->acknowledgment == connection->snd_una &&
 	    connection->outstanding_control &&
 	    connection->duplicate_acks < TCP_CORE_RETRY_LIMIT) {
 		connection->duplicate_acks++;
+		if (start_data_segment(connection, now_tick))
+			result->actions |= TCP_ACTION_SEND_DATA;
+	} else if (segment->acknowledgment == connection->snd_una) {
+		if (start_data_segment(connection, now_tick))
+			result->actions |= TCP_ACTION_SEND_DATA;
 	}
 }
 
@@ -625,6 +796,9 @@ process_listener_segment(struct tcp_connection_table *table,
 	child->rcv_nxt = child->irs + 1;
 	child->snd_wnd = segment->window < TCP_CORE_SEND_WINDOW_LIMIT ?
 	    segment->window : TCP_CORE_SEND_WINDOW_LIMIT;
+	child->snd_wl1 = segment->sequence;
+	child->snd_wl2 = (segment->flags & TCP_FLAG_ACK) != 0 ?
+	    segment->acknowledgment : 0;
 	child->peer_mss = segment->mss_present &&
 	    segment->mss < TCP_CORE_LOCAL_MSS ? segment->mss :
 	    (segment->mss_present ? TCP_CORE_LOCAL_MSS : TCP_CORE_DEFAULT_MSS);
@@ -669,6 +843,9 @@ process_syn_sent(struct tcp_core_connection *connection,
 		return true;
 	connection->irs = segment->sequence;
 	connection->rcv_nxt = segment->sequence + 1;
+	connection->snd_wl1 = segment->sequence;
+	connection->snd_wl2 = (segment->flags & TCP_FLAG_ACK) != 0 ?
+	    segment->acknowledgment : 0;
 	if ((segment->flags & TCP_FLAG_ACK) != 0) {
 		connection->snd_una = segment->acknowledgment;
 		connection->state = TCP_STATE_ESTABLISHED;
@@ -722,6 +899,8 @@ process_syn_received(struct tcp_core_connection *connection,
 		connection->snd_una = segment->acknowledgment;
 		connection->snd_wnd = segment->window < TCP_CORE_SEND_WINDOW_LIMIT ?
 		    segment->window : TCP_CORE_SEND_WINDOW_LIMIT;
+		connection->snd_wl1 = segment->sequence;
+		connection->snd_wl2 = segment->acknowledgment;
 		connection->outstanding_control = false;
 		connection->timer_armed = false;
 		connection->state = TCP_STATE_ESTABLISHED;
@@ -737,6 +916,8 @@ process_syn_received(struct tcp_core_connection *connection,
 	connection->snd_una = segment->acknowledgment;
 	connection->snd_wnd = segment->window < TCP_CORE_SEND_WINDOW_LIMIT ?
 	    segment->window : TCP_CORE_SEND_WINDOW_LIMIT;
+	connection->snd_wl1 = segment->sequence;
+	connection->snd_wl2 = segment->acknowledgment;
 	connection->outstanding_control = false;
 	connection->timer_armed = false;
 	connection->state = TCP_STATE_ESTABLISHED;
@@ -754,16 +935,19 @@ process_established_segment(struct tcp_core_connection *connection,
 	uint32_t sequence_span = (uint32_t)segment->payload_length +
 	    ((segment->flags & TCP_FLAG_FIN) != 0 ? 1U : 0U);
 	if ((segment->flags & TCP_FLAG_RST) != 0) {
-		if ((window == 0 && segment->sequence == connection->rcv_nxt) ||
-		    sequence_in_window(segment->sequence, connection->rcv_nxt, window))
+		if (segment->sequence == connection->rcv_nxt)
 			close_connection(connection, result, true);
+		else if (sequence_in_window(segment->sequence,
+		    connection->rcv_nxt, window))
+			/* RFC 5961 exact-sequence reset validation: an in-window but
+			 * non-exact RST is challenged and dropped, never accepted. */
+			result->actions |= TCP_ACTION_SEND_ACK;
 		return true;
 	}
 	if ((segment->flags & TCP_FLAG_SYN) != 0) {
-		if (segment->sequence == connection->irs &&
-		    (segment->flags & TCP_FLAG_ACK) != 0 &&
-		    segment->acknowledgment == connection->snd_una)
-			result->actions |= TCP_ACTION_SEND_ACK;
+		/* Challenge unexpected SYNs in synchronized states; they cannot
+		 * reset or advance this connection. */
+		result->actions |= TCP_ACTION_SEND_ACK;
 		return true;
 	}
 	if (!segment_sequence_acceptable(connection, segment)) {
@@ -783,14 +967,8 @@ process_established_segment(struct tcp_core_connection *connection,
 		result->actions |= TCP_ACTION_SEND_ACK;
 		return true;
 	}
-	accept_ack(connection, segment);
-	if ((connection->state == TCP_STATE_CLOSE_WAIT ||
-	    connection->state == TCP_STATE_LAST_ACK ||
-	    connection->state == TCP_STATE_CLOSING) &&
-	    segment->payload_length != 0) {
-		result->actions |= TCP_ACTION_SEND_ACK;
-		return true;
-	}
+	/* Do not release queued send bytes or advance snd_una for a segment whose
+	 * receive sequence is unacceptable. */
 	if (has_sequence_space && segment->sequence != connection->rcv_nxt) {
 		result->actions |= TCP_ACTION_SEND_ACK;
 		if (sequence_in_window(segment->sequence, connection->rcv_nxt,
@@ -798,12 +976,16 @@ process_established_segment(struct tcp_core_connection *connection,
 			result->actions |= TCP_ACTION_DUPLICATE_ACK;
 		return true;
 	}
-	if (!has_sequence_space && segment->sequence != connection->rcv_nxt) {
+	if (sequence_span > window || segment->payload_length > window ||
+	    segment->payload_length > TCP_CORE_RX_CAPACITY - connection->rx_length) {
 		result->actions |= TCP_ACTION_SEND_ACK;
 		return true;
 	}
-	if (sequence_span > window || segment->payload_length > window ||
-	    segment->payload_length > TCP_CORE_RX_CAPACITY - connection->rx_length) {
+	accept_ack(connection, segment, event->now_tick, result);
+	if ((connection->state == TCP_STATE_CLOSE_WAIT ||
+	    connection->state == TCP_STATE_LAST_ACK ||
+	    connection->state == TCP_STATE_CLOSING) &&
+	    segment->payload_length != 0) {
 		result->actions |= TCP_ACTION_SEND_ACK;
 		return true;
 	}
@@ -911,7 +1093,14 @@ tcp_core_step(struct tcp_connection_table *table,
 		if (connection->state == TCP_STATE_CLOSED)
 			return true;
 		if (connection->state == TCP_STATE_TIME_WAIT) {
-			if ((event->segment->flags & TCP_FLAG_FIN) != 0 &&
+			if ((event->segment->flags & TCP_FLAG_RST) != 0) {
+				uint16_t window = receive_window(connection);
+				if (event->segment->sequence == connection->rcv_nxt)
+					close_connection(connection, result, true);
+				else if (sequence_in_window(event->segment->sequence,
+				    connection->rcv_nxt, window))
+					result->actions |= TCP_ACTION_SEND_ACK;
+			} else if ((event->segment->flags & TCP_FLAG_FIN) != 0 &&
 			    event->segment->sequence +
 			    (uint32_t)event->segment->payload_length + 1U ==
 			    connection->rcv_nxt) {
@@ -950,6 +1139,8 @@ tcp_core_step(struct tcp_connection_table *table,
 			close_connection(connection, result, true);
 		} else if (connection->state == TCP_STATE_ESTABLISHED ||
 		    connection->state == TCP_STATE_CLOSE_WAIT) {
+			if (connection->tx_length != 0)
+				return false;
 			connection->outstanding_control = true;
 			connection->outstanding_flags = TCP_FLAG_FIN | TCP_FLAG_ACK;
 			connection->snd_nxt++;
@@ -964,7 +1155,9 @@ tcp_core_step(struct tcp_connection_table *table,
 		}
 		break;
 	case TCP_EVENT_RETRANSMIT_TIMEOUT:
-		if (!connection->outstanding_control || !connection->timer_armed ||
+		if ((!connection->outstanding_control &&
+		    connection->outstanding_data_length == 0) ||
+		    !connection->timer_armed ||
 		    !tick_reached(event->now_tick, connection->retransmit_deadline))
 			break;
 		if (connection->retransmissions >= TCP_CORE_RETRY_LIMIT) {
@@ -986,6 +1179,8 @@ tcp_core_step(struct tcp_connection_table *table,
 			result->actions |= TCP_ACTION_SEND_ACK;
 		if ((connection->outstanding_flags & TCP_FLAG_FIN) != 0)
 			result->actions |= TCP_ACTION_SEND_FIN;
+		if (connection->outstanding_data_length != 0)
+			result->actions |= TCP_ACTION_SEND_DATA;
 		break;
 	case TCP_EVENT_TIME_WAIT_EXPIRE:
 		if (connection->state == TCP_STATE_TIME_WAIT &&

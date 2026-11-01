@@ -1,5 +1,7 @@
 #include "kernel/tcp_wire.h"
 
+#include <string.h>
+
 #define TCP_OPTION_EOL 0U
 #define TCP_OPTION_NOP 1U
 #define TCP_OPTION_MSS 2U
@@ -161,6 +163,11 @@ tcp_wire_parse(const struct tcp_wire_pseudo_header *pseudo,
 	struct tcp_wire_options options = {0};
 	size_t header_length;
 	enum tcp_wire_error error;
+	/* Make the failure contract deterministic. In particular, a rejected
+	 * packet must not leave borrowed pointers from an earlier successful parse
+	 * in the caller's result object. */
+	if (parsed != NULL)
+		memset(parsed, 0, sizeof(*parsed));
 	if (pseudo == NULL || segment == NULL || parsed == NULL)
 		return TCP_WIRE_INVALID_ARGUMENT;
 	if (pseudo->protocol != 6 || pseudo->segment_length != available ||
@@ -171,8 +178,9 @@ tcp_wire_parse(const struct tcp_wire_pseudo_header *pseudo,
 	    header_length > TCP_WIRE_HEADER_MAX || header_length > available)
 		return TCP_WIRE_HEADER;
 	result.reserved = (uint8_t)(segment[12] & 0x0fU);
-	if (result.reserved != 0)
-		return TCP_WIRE_RESERVED;
+	/* RFC 9293 requires senders to zero reserved bits, but receivers ignore
+	 * unsupported reserved bits. Preserve the field for diagnostics while
+	 * allowing normal checksum and segment validation to continue. */
 	result.source_port = read_be16(segment);
 	result.destination_port = read_be16(segment + 2);
 	if (result.source_port == 0 || result.destination_port == 0)

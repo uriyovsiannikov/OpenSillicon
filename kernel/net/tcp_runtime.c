@@ -18,9 +18,99 @@ struct runtime_child_link {
 	struct tcp_connection_handle listener;
 };
 
+struct runtime_test_connection {
+	bool occupied;
+	bool peer_eof;
+	bool reset;
+	struct tcp_connection_handle handle;
+	uint32_t pending_actions;
+};
+
 /* The core table remains the sole slot allocator. This bounded side table
  * records runtime ownership and the parent listener for each passive child. */
 static struct runtime_child_link child_links[TCP_RUNTIME_CONNECTION_LIMIT];
+static struct runtime_test_connection test_connections[
+	TCP_RUNTIME_CONNECTION_LIMIT];
+
+/* The production Runtime remains a singleton. Host simulation can select one
+ * of two saved deterministic owners between calls, so the two peers have
+ * independent Core tables and sidecar ownership without a second production
+ * runtime architecture. */
+struct runtime_test_instance {
+	struct tcp_connection_table table;
+	enum tcp_runtime_state state;
+	bool timer_active;
+	struct runtime_child_link children[TCP_RUNTIME_CONNECTION_LIMIT];
+	struct runtime_test_connection connections[TCP_RUNTIME_CONNECTION_LIMIT];
+};
+
+static struct runtime_test_instance test_instances[
+	TCP_RUNTIME_TEST_INSTANCE_LIMIT];
+static size_t test_current_instance;
+
+bool
+tcp_runtime_test_select_instance(size_t instance)
+{
+	struct runtime_test_instance *current;
+	struct runtime_test_instance *selected;
+	if (instance >= TCP_RUNTIME_TEST_INSTANCE_LIMIT || timer_service_active)
+		return false;
+	current = &test_instances[test_current_instance];
+	current->table = connection_table;
+	current->state = runtime_state;
+	current->timer_active = timer_service_active;
+	for (size_t i = 0; i < TCP_RUNTIME_CONNECTION_LIMIT; i++) {
+		current->children[i] = child_links[i];
+		current->connections[i] = test_connections[i];
+	}
+	selected = &test_instances[instance];
+	connection_table = selected->table;
+	runtime_state = selected->state;
+	timer_service_active = selected->timer_active;
+	for (size_t i = 0; i < TCP_RUNTIME_CONNECTION_LIMIT; i++) {
+		child_links[i] = selected->children[i];
+		test_connections[i] = selected->connections[i];
+	}
+	test_current_instance = instance;
+	return true;
+}
+
+static struct runtime_test_connection *
+test_connection_get(struct tcp_connection_handle handle, bool create)
+{
+	struct runtime_test_connection *entry;
+	if (handle.slot >= TCP_RUNTIME_CONNECTION_LIMIT || handle.generation == 0)
+		return NULL;
+	entry = &test_connections[handle.slot];
+	if (entry->occupied && entry->handle.generation == handle.generation)
+		return entry;
+	if (!create)
+		return NULL;
+	*entry = (struct runtime_test_connection){
+		.occupied = true,
+		.handle = handle
+	};
+	return entry;
+}
+
+static void
+test_queue_actions(struct tcp_connection_handle handle, uint32_t actions)
+{
+	const uint32_t serializable = TCP_ACTION_SEND_SYN | TCP_ACTION_SEND_ACK |
+	    TCP_ACTION_SEND_FIN | TCP_ACTION_SEND_RST | TCP_ACTION_SEND_DATA |
+	    TCP_ACTION_RETRANSMIT;
+	struct runtime_test_connection *entry = test_connection_get(handle, true);
+	if (entry != NULL)
+		entry->pending_actions |= actions & serializable;
+}
+
+static void
+test_mark_reset(struct tcp_connection_handle handle)
+{
+	struct runtime_test_connection *entry = test_connection_get(handle, true);
+	if (entry != NULL)
+		entry->reset = true;
+}
 #endif
 
 static uint64_t
@@ -92,6 +182,8 @@ tcp_runtime_init(void)
 #ifdef TCP_RUNTIME_TESTING
 		for (size_t i = 0; i < TCP_RUNTIME_CONNECTION_LIMIT; i++)
 			child_links[i] = (struct runtime_child_link){0};
+		for (size_t i = 0; i < TCP_RUNTIME_CONNECTION_LIMIT; i++)
+			test_connections[i] = (struct runtime_test_connection){0};
 #endif
 		timer_service_active = false;
 		runtime_state = TCP_RUNTIME_READY;
@@ -181,7 +273,13 @@ runtime_terminal_cleanup(struct tcp_connection_handle handle,
 #ifdef TCP_RUNTIME_TESTING
 	{
 		struct runtime_child_link *link = child_link_find(handle);
-		return link == NULL || child_link_drop(link);
+		struct runtime_test_connection *entry;
+		if (link != NULL && !child_link_drop(link))
+			return false;
+		entry = test_connection_get(handle, false);
+		if (entry != NULL)
+			entry->pending_actions = 0;
+		return true;
 	}
 #else
 	(void)handle;
@@ -282,6 +380,9 @@ runtime_service_timers_at(uint64_t now_tick, size_t budget,
 			.retransmissions = item->result.retransmissions
 		};
 #ifdef TCP_RUNTIME_TESTING
+		test_queue_actions(handle, item->result.actions);
+		if ((item->result.actions & TCP_ACTION_ABORT) != 0)
+			test_mark_reset(handle);
 		if (runtime_state_terminal(item->result.state)) {
 			if (!runtime_terminal_cleanup(handle, item->result.state)) {
 				(void)tcp_core_connection_release(&connection_table,
@@ -565,6 +666,7 @@ tcp_runtime_test_active_open(const struct tcp_core_tuple *tuple,
 	result->handle = handle; /* creation reference transfers to caller */
 	result->has_reference = true;
 	active_result_copy(result, &core_result);
+	test_queue_actions(handle, core_result.actions);
 	status = TCP_RUNTIME_TEST_ACTIVE_OK;
 out:
 	result->status = status;
@@ -605,10 +707,6 @@ tcp_runtime_test_active_input(struct tcp_connection_handle handle,
 	if (tcp_wire_parse(&pseudo, segment_bytes, segment_length, &parsed) !=
 	    TCP_WIRE_OK) {
 		result->status = TCP_RUNTIME_TEST_ACTIVE_MALFORMED;
-		return result->status;
-	}
-	if (parsed.payload_length != 0) {
-		result->status = TCP_RUNTIME_TEST_ACTIVE_UNSUPPORTED;
 		return result->status;
 	}
 	for (size_t i = 0; i < 4; i++) {
@@ -653,6 +751,16 @@ tcp_runtime_test_active_input(struct tcp_connection_handle handle,
 		goto out;
 	}
 	active_result_copy(result, &core_result);
+	test_queue_actions(handle, core_result.actions);
+	if ((core_result.actions & TCP_ACTION_ABORT) != 0)
+		test_mark_reset(handle);
+	if ((parsed.flags & TCP_FLAG_FIN) != 0 &&
+	    core_result.rcv_nxt != snapshot.rcv_nxt) {
+		struct runtime_test_connection *entry =
+		    test_connection_get(handle, true);
+		if (entry != NULL)
+			entry->peer_eof = true;
+	}
 	if (!runtime_terminal_cleanup(handle, core_result.state)) {
 		status = TCP_RUNTIME_TEST_ACTIVE_CORE_ERROR;
 		goto out;
@@ -692,16 +800,15 @@ tcp_runtime_test_process_segment(const uint8_t source_address[4],
 	    !address_unicast(destination_address) || !parsed_segment_valid(segment))
 		return result->status;
 	is_syn = segment->flags == TCP_FLAG_SYN && segment->payload_length == 0;
-	is_ack = segment->flags == TCP_FLAG_ACK && segment->payload_length == 0;
+	is_ack = (segment->flags & TCP_FLAG_ACK) != 0 &&
+	    (segment->flags & (TCP_FLAG_SYN | TCP_FLAG_RST)) == 0;
 	is_reset = (segment->flags == TCP_FLAG_RST ||
 	    segment->flags == (TCP_FLAG_RST | TCP_FLAG_ACK)) &&
 	    segment->payload_length == 0;
-	is_fin = (segment->flags == TCP_FLAG_FIN ||
-	    segment->flags == (TCP_FLAG_FIN | TCP_FLAG_ACK)) &&
-	    segment->payload_length == 0;
+	is_fin = (segment->flags & TCP_FLAG_FIN) != 0 &&
+	    (segment->flags & (TCP_FLAG_SYN | TCP_FLAG_RST)) == 0;
 	if (!is_syn && !is_ack && !is_reset && !is_fin)
-		return input_result_set(result,
-		    TCP_RUNTIME_TEST_INPUT_UNSUPPORTED);
+		return input_result_set(result, TCP_RUNTIME_TEST_INPUT_UNSUPPORTED);
 	for (size_t i = 0; i < 4; i++) {
 		tuple.local_address[i] = destination_address[i];
 		tuple.remote_address[i] = source_address[i];
@@ -781,6 +888,15 @@ tcp_runtime_test_process_segment(const uint8_t source_address[4],
 			(void)tcp_core_connection_release(&connection_table, matched);
 			status = TCP_RUNTIME_TEST_INPUT_CORE_REJECTED;
 			goto out;
+		}
+		test_queue_actions(matched, core_result.actions);
+		if ((core_result.actions & TCP_ACTION_ABORT) != 0)
+			test_mark_reset(matched);
+		if (is_fin && core_result.rcv_nxt != before.rcv_nxt) {
+			struct runtime_test_connection *entry =
+			    test_connection_get(matched, true);
+			if (entry != NULL)
+				entry->peer_eof = true;
 		}
 		/* Preserve the exact Core outcome even when Runtime classifies the
 		 * event as unsupported or non-establishing. Actions such as SEND_RST
@@ -902,6 +1018,7 @@ process_listener:
 		.child = core_result.child,
 		.listener = listener
 	};
+	test_queue_actions(core_result.child, core_result.actions);
 	result->handle = core_result.child;
 	result->has_reference = true;
 	status = TCP_RUNTIME_TEST_INPUT_CHILD_CREATED;
@@ -1049,7 +1166,10 @@ tcp_runtime_test_activate(struct tcp_connection_handle handle,
 	bool success = runtime_state == TCP_RUNTIME_READY &&
 	    tcp_core_step(&connection_table, handle, &event, &core_result);
 	if (success)
+	{
 		test_core_result_copy(result, &core_result);
+		test_queue_actions(handle, core_result.actions);
+	}
 	runtime_guard_leave(flags);
 	return success;
 }
@@ -1081,6 +1201,9 @@ tcp_runtime_test_close(struct tcp_connection_handle handle,
 	if (!tcp_core_step(&connection_table, handle, &event, &core_result))
 		goto out;
 	test_core_result_copy(result, &core_result);
+	test_queue_actions(handle, core_result.actions);
+	if ((core_result.actions & TCP_ACTION_ABORT) != 0)
+		test_mark_reset(handle);
 	if (!runtime_terminal_cleanup(handle, core_result.state))
 		goto out;
 	success = true;
@@ -1289,12 +1412,24 @@ tcp_runtime_test_local_close(struct tcp_connection_handle handle,
 		status = TCP_RUNTIME_TEST_CLOSE_UNSUPPORTED;
 		goto out;
 	}
+	if ((before.state == TCP_STATE_ESTABLISHED ||
+	    before.state == TCP_STATE_CLOSE_WAIT) && handle.slot <
+	    TCP_RUNTIME_CONNECTION_LIMIT &&
+	    connection_table.slots[handle.slot].generation == handle.generation &&
+	    connection_table.slots[handle.slot].tx_length != 0) {
+		test_close_result_copy(result, &before);
+		status = TCP_RUNTIME_TEST_CLOSE_BUSY;
+		goto out;
+	}
 	if (!tcp_core_step(&connection_table, handle, &event, &after)) {
 		test_close_result_copy(result, &before);
 		status = TCP_RUNTIME_TEST_CLOSE_CORE_ERROR;
 		goto out;
 	}
 	test_close_result_copy(result, &after);
+	test_queue_actions(handle, after.actions);
+	if ((after.actions & TCP_ACTION_ABORT) != 0)
+		test_mark_reset(handle);
 	if (!runtime_terminal_cleanup(handle, after.state)) {
 		status = TCP_RUNTIME_TEST_CLOSE_CORE_ERROR;
 		goto out;
@@ -1315,6 +1450,274 @@ tcp_runtime_test_local_close(struct tcp_connection_handle handle,
 		    TCP_RUNTIME_TEST_CLOSE_FIN_STARTED :
 		    TCP_RUNTIME_TEST_CLOSE_CORE_ERROR;
 	}
+out:
+	result->status = status;
+	runtime_guard_leave(flags);
+	return status;
+}
+
+static enum tcp_runtime_test_io_status
+runtime_test_io_state(struct tcp_connection_handle handle,
+	struct tcp_core_result *snapshot)
+{
+	if (runtime_state == TCP_RUNTIME_STOPPING)
+		return TCP_RUNTIME_TEST_IO_STOPPING;
+	if (runtime_state != TCP_RUNTIME_READY)
+		return TCP_RUNTIME_TEST_IO_DISABLED;
+	if (!tcp_core_connection_get(&connection_table, handle, snapshot))
+		return TCP_RUNTIME_TEST_IO_STALE_HANDLE;
+	return TCP_RUNTIME_TEST_IO_OK;
+}
+
+enum tcp_runtime_test_io_status
+tcp_runtime_test_write(struct tcp_connection_handle handle, const uint8_t *data,
+	size_t length, uint64_t now_tick,
+	struct tcp_runtime_test_io_result *result)
+{
+	struct tcp_core_result snapshot, written;
+	struct runtime_test_connection *entry;
+	uint64_t flags;
+	enum tcp_runtime_test_io_status status;
+	if (result == NULL)
+		return TCP_RUNTIME_TEST_IO_INVALID;
+	*result = (struct tcp_runtime_test_io_result){
+		.status = TCP_RUNTIME_TEST_IO_INVALID
+	};
+	if ((length != 0 && data == NULL))
+		return result->status;
+	flags = runtime_guard_enter();
+	status = runtime_test_io_state(handle, &snapshot);
+	if (status != TCP_RUNTIME_TEST_IO_OK)
+		goto out;
+	result->state = snapshot.state;
+	entry = test_connection_get(handle, false);
+	if (entry != NULL && entry->reset) {
+		status = TCP_RUNTIME_TEST_IO_RESET;
+		goto out;
+	}
+	if (snapshot.state != TCP_STATE_ESTABLISHED &&
+	    snapshot.state != TCP_STATE_CLOSE_WAIT) {
+		status = snapshot.state == TCP_STATE_CLOSED ?
+		    TCP_RUNTIME_TEST_IO_EOF : TCP_RUNTIME_TEST_IO_NOT_CONNECTED;
+		goto out;
+	}
+	if (length > TCP_CORE_TX_CAPACITY) {
+		status = TCP_RUNTIME_TEST_IO_TOO_LARGE;
+		goto out;
+	}
+	if (length == 0) {
+		status = TCP_RUNTIME_TEST_IO_OK;
+		goto out;
+	}
+	if (handle.slot >= TCP_RUNTIME_CONNECTION_LIMIT ||
+	    connection_table.slots[handle.slot].generation != handle.generation ||
+	    length > TCP_CORE_TX_CAPACITY -
+	    connection_table.slots[handle.slot].tx_length) {
+		status = TCP_RUNTIME_TEST_IO_FULL;
+		goto out;
+	}
+	if (!tcp_core_connection_write(&connection_table, handle, data, length,
+	    now_tick, &written)) {
+		status = TCP_RUNTIME_TEST_IO_CORE_ERROR;
+		goto out;
+	}
+	test_queue_actions(handle, written.actions);
+	result->bytes = written.accepted_bytes;
+	result->state = written.state;
+	status = TCP_RUNTIME_TEST_IO_OK;
+out:
+	result->status = status;
+	runtime_guard_leave(flags);
+	return status;
+}
+
+enum tcp_runtime_test_io_status
+tcp_runtime_test_read(struct tcp_connection_handle handle, uint8_t *data,
+	size_t capacity, struct tcp_runtime_test_io_result *result)
+{
+	struct tcp_core_result snapshot, after;
+	struct runtime_test_connection *entry;
+	uint64_t flags;
+	enum tcp_runtime_test_io_status status;
+	size_t count;
+	if (result == NULL || (capacity != 0 && data == NULL))
+		return TCP_RUNTIME_TEST_IO_INVALID;
+	*result = (struct tcp_runtime_test_io_result){
+		.status = TCP_RUNTIME_TEST_IO_INVALID
+	};
+	flags = runtime_guard_enter();
+	if (runtime_state != TCP_RUNTIME_READY &&
+	    runtime_state != TCP_RUNTIME_STOPPING) {
+		status = TCP_RUNTIME_TEST_IO_DISABLED;
+		goto out;
+	}
+	if (!tcp_core_connection_get(&connection_table, handle, &snapshot)) {
+		status = TCP_RUNTIME_TEST_IO_STALE_HANDLE;
+		goto out;
+	}
+	result->state = snapshot.state;
+	entry = test_connection_get(handle, false);
+	if (entry != NULL && entry->reset) {
+		status = TCP_RUNTIME_TEST_IO_RESET;
+		goto out;
+	}
+	if (capacity == 0) {
+		status = TCP_RUNTIME_TEST_IO_OK;
+		goto out;
+	}
+	if (handle.slot >= TCP_RUNTIME_CONNECTION_LIMIT ||
+	    connection_table.slots[handle.slot].generation != handle.generation) {
+		status = TCP_RUNTIME_TEST_IO_STALE_HANDLE;
+		goto out;
+	}
+	if (connection_table.slots[handle.slot].rx_length == 0) {
+		status = (entry != NULL && entry->peer_eof) ||
+		    snapshot.state == TCP_STATE_CLOSED ? TCP_RUNTIME_TEST_IO_EOF :
+		    TCP_RUNTIME_TEST_IO_WOULD_BLOCK;
+		goto out;
+	}
+	if (!tcp_core_connection_read(&connection_table, handle, data, capacity,
+	    &count)) {
+		status = TCP_RUNTIME_TEST_IO_CORE_ERROR;
+		goto out;
+	}
+	if (!tcp_core_connection_get(&connection_table, handle, &after)) {
+		status = TCP_RUNTIME_TEST_IO_CORE_ERROR;
+		goto out;
+	}
+	/* A peer that observed a zero receive window needs an explicit update when
+	 * application reads reopen capacity; Core owns the sequence state and this
+	 * Runtime sidecar only coalesces the abstract ACK request. */
+	if (snapshot.receive_window == 0 && after.receive_window != 0)
+		test_queue_actions(handle, TCP_ACTION_SEND_ACK);
+	result->bytes = count;
+	status = TCP_RUNTIME_TEST_IO_OK;
+out:
+	result->status = status;
+	runtime_guard_leave(flags);
+	return status;
+}
+
+enum tcp_runtime_test_tx_status
+tcp_runtime_test_next_segment(struct tcp_connection_handle handle,
+	uint8_t *output, size_t capacity,
+	struct tcp_runtime_test_tx_result *result)
+{
+	struct runtime_test_connection *entry;
+	struct tcp_core_tuple tuple;
+	struct tcp_core_result snapshot;
+	struct tcp_segment_spec spec = {0};
+	uint32_t available, selected, consumed;
+	size_t expected_length;
+	bool include_mss = false;
+	enum tcp_runtime_test_tx_status status;
+	uint64_t flags;
+	if (result == NULL)
+		return TCP_RUNTIME_TEST_TX_INVALID;
+	*result = (struct tcp_runtime_test_tx_result){
+		.status = TCP_RUNTIME_TEST_TX_INVALID
+	};
+	if (output == NULL)
+		return result->status;
+	flags = runtime_guard_enter();
+	if (runtime_state == TCP_RUNTIME_STOPPING) {
+		status = TCP_RUNTIME_TEST_TX_STOPPING;
+		goto out;
+	}
+	if (runtime_state != TCP_RUNTIME_READY) {
+		status = TCP_RUNTIME_TEST_TX_DISABLED;
+		goto out;
+	}
+	if (!tcp_core_connection_get(&connection_table, handle, &snapshot) ||
+	    !tcp_core_connection_get_tuple(&connection_table, handle, &tuple)) {
+		status = TCP_RUNTIME_TEST_TX_STALE_HANDLE;
+		goto out;
+	}
+	entry = test_connection_get(handle, false);
+	if (entry == NULL || entry->pending_actions == 0) {
+		status = TCP_RUNTIME_TEST_TX_EMPTY;
+		goto out;
+	}
+	available = entry->pending_actions;
+	if ((available & TCP_ACTION_SEND_RST) != 0) {
+		entry->pending_actions &= ~TCP_ACTION_SEND_RST;
+		status = TCP_RUNTIME_TEST_TX_UNSUPPORTED;
+		goto out;
+	}
+	selected = 0;
+	if ((available & TCP_ACTION_SEND_SYN) != 0) {
+		selected = TCP_ACTION_SEND_SYN;
+		include_mss = true;
+		if (snapshot.state == TCP_STATE_SYN_SENT)
+			spec.flags = TCP_FLAG_SYN;
+		else if (snapshot.state == TCP_STATE_SYN_RECEIVED) {
+			spec.flags = TCP_FLAG_SYN | TCP_FLAG_ACK;
+			selected |= TCP_ACTION_SEND_ACK;
+		} else {
+			status = TCP_RUNTIME_TEST_TX_CORE_ERROR;
+			goto out;
+		}
+	} else if ((available & TCP_ACTION_SEND_FIN) != 0) {
+		selected = TCP_ACTION_SEND_FIN | TCP_ACTION_SEND_ACK;
+		spec.flags = TCP_FLAG_FIN | TCP_FLAG_ACK;
+	} else if ((available & TCP_ACTION_SEND_ACK) != 0) {
+		selected = TCP_ACTION_SEND_ACK;
+		spec.flags = TCP_FLAG_ACK;
+	} else if ((available & TCP_ACTION_SEND_DATA) != 0) {
+		expected_length = TCP_WIRE_HEADER_MIN +
+		    connection_table.slots[handle.slot].outstanding_data_length;
+		if (capacity < expected_length) {
+			status = TCP_RUNTIME_TEST_TX_OUTPUT_TOO_SMALL;
+			goto out;
+		}
+		if (!tcp_core_connection_build_outstanding_data(&connection_table,
+		    handle, output, capacity, &result->length)) {
+			status = TCP_RUNTIME_TEST_TX_CORE_ERROR;
+			goto out;
+		}
+		selected = TCP_ACTION_SEND_DATA;
+		goto serialized;
+	} else {
+		status = TCP_RUNTIME_TEST_TX_UNSUPPORTED;
+		goto out;
+	}
+	if (tuple.remote_port == 0) {
+		status = TCP_RUNTIME_TEST_TX_UNSUPPORTED;
+		goto out;
+	}
+	if (include_mss)
+		expected_length = TCP_WIRE_HEADER_MIN + 4U;
+	else
+		expected_length = TCP_WIRE_HEADER_MIN;
+	if (capacity < expected_length) {
+		status = TCP_RUNTIME_TEST_TX_OUTPUT_TOO_SMALL;
+		goto out;
+	}
+	spec.source_port = tuple.local_port;
+	spec.destination_port = tuple.remote_port;
+	spec.sequence = (selected & TCP_ACTION_SEND_FIN) != 0 ?
+	    snapshot.snd_nxt - 1U :
+	    ((selected & TCP_ACTION_SEND_SYN) != 0 ? snapshot.snd_una :
+	    snapshot.snd_nxt);
+	spec.acknowledgment = (spec.flags & TCP_FLAG_ACK) != 0 ?
+	    snapshot.rcv_nxt : 0;
+	spec.window = snapshot.receive_window;
+	spec.include_mss = include_mss;
+	spec.mss = TCP_CORE_LOCAL_MSS;
+	if (!tcp_segment_build_ipv4(tuple.local_address, tuple.remote_address,
+	    &spec, output, capacity, &result->length)) {
+		status = TCP_RUNTIME_TEST_TX_CORE_ERROR;
+		goto out;
+	}
+serialized:
+	consumed = selected;
+	if ((available & TCP_ACTION_RETRANSMIT) != 0 &&
+	    (selected & (TCP_ACTION_SEND_SYN | TCP_ACTION_SEND_FIN |
+	    TCP_ACTION_SEND_DATA)) != 0)
+		consumed |= TCP_ACTION_RETRANSMIT;
+	entry->pending_actions &= ~consumed;
+	result->actions = consumed;
+	status = TCP_RUNTIME_TEST_TX_OK;
 out:
 	result->status = status;
 	runtime_guard_leave(flags);

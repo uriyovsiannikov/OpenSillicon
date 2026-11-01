@@ -386,7 +386,7 @@ test_active_state_and_sequence(void)
 	segment = make_view(3, 0xffffffffU, TCP_FLAG_ACK, NULL, 0);
 	event = segment_event(&segment, 12);
 	assert(step_report(&table, handle, &event, &result));
-	assert(result.rcv_nxt == 2 && result.actions == TCP_ACTION_SEND_ACK);
+	assert(result.rcv_nxt == 2 && result.actions == 0);
 	segment = make_view(2, 0xffffffffU, TCP_FLAG_ACK, NULL, 1);
 	event = segment_event(&segment, 12);
 	assert(!step_report(&table, handle, &event, &result));
@@ -513,8 +513,8 @@ test_isolated_active_passive_handshakes(void)
 	    result.snd_nxt == 0 && result.rcv_nxt == 0 &&
 	    result.actions == TCP_ACTION_SEND_ACK && !result.timer_armed);
 
-	/* An invalid RST does not close; an in-window RST closes and stale handles
-	 * cannot subsequently step the reclaimed slot. */
+	/* Out-of-window and in-window non-exact RSTs cannot close. The in-window
+	 * case gets a challenge ACK; an exact RCV.NXT RST closes. */
 	spec = (struct tcp_segment_spec){
 		.source_port = tuple.remote_port,
 		.destination_port = tuple.local_port,
@@ -528,6 +528,14 @@ test_isolated_active_passive_handshakes(void)
 	event = segment_event(&view, 23);
 	assert(step_report(&table, active, &event, &result));
 	assert(result.state == TCP_STATE_ESTABLISHED && result.actions == 0);
+	spec.sequence = 1;
+	assert(build_ipv4_fixture(&tuple, &spec, packet, sizeof(packet),
+	    &packet_length));
+	assert(parse_ipv4_fixture(packet, packet_length, peer_ip, local_ip, &view));
+	event = segment_event(&view, 24);
+	assert(step_report(&table, active, &event, &result));
+	assert(result.state == TCP_STATE_ESTABLISHED &&
+	    result.actions == TCP_ACTION_SEND_ACK);
 	spec.sequence = 0;
 	assert(build_ipv4_fixture(&tuple, &spec, packet, sizeof(packet),
 	    &packet_length));
@@ -1025,6 +1033,210 @@ test_passive_close_and_time_wait(void)
 }
 
 static void
+test_bounded_send_retransmit_and_window(void)
+{
+	struct tcp_connection_table table;
+	struct tcp_connection_handle handle;
+	struct tcp_core_tuple tuple = active_tuple();
+	struct tcp_core_result result;
+	struct tcp_core_event event = {.type = TCP_EVENT_ACTIVE_OPEN,
+	    .initial_sequence = 100};
+	struct tcp_segment_view segment;
+	uint8_t bytes[TCP_CORE_TX_CAPACITY];
+	uint8_t copied[TCP_CORE_TX_CAPACITY];
+	uint8_t encoded[TCP_CORE_MAX_SEGMENT];
+	size_t copied_length;
+	size_t encoded_length;
+	uint32_t copied_sequence;
+	struct tcp_segment_view parsed;
+	static const uint8_t payload[] = "abcdefghij";
+	tcp_core_table_init(&table);
+	assert(tcp_core_connection_create(&table, &tuple, &handle));
+	assert(tcp_core_step(&table, handle, &event, &result));
+	segment = make_view(900, 101, TCP_FLAG_SYN | TCP_FLAG_ACK, NULL, 0);
+	segment.mss_present = true;
+	segment.mss = 4;
+	segment.window = 6;
+	event = segment_event(&segment, 1);
+	assert(tcp_core_step(&table, handle, &event, &result));
+	assert(result.state == TCP_STATE_ESTABLISHED && result.send_window == 6);
+	assert(tcp_core_connection_write(&table, handle, payload,
+	    sizeof(payload) - 1, 20, &result));
+	assert(result.accepted_bytes == sizeof(payload) - 1 &&
+	    result.actions == TCP_ACTION_SEND_DATA && result.snd_nxt == 105 &&
+	    result.timer_armed && result.timer_deadline == 120);
+	assert(tcp_core_connection_copy_outstanding(&table, handle, copied,
+	    sizeof(copied), &copied_length, &copied_sequence));
+	assert(copied_length == 4 && copied_sequence == 101 &&
+	    copied[0] == 'a' && copied[3] == 'd');
+	assert(tcp_core_connection_build_outstanding_data(&table, handle, encoded,
+	    sizeof(encoded), &encoded_length));
+	assert(tcp_segment_parse_ipv4(local_ip, peer_ip, encoded, encoded_length,
+	    &parsed));
+	assert(parsed.source_port == tuple.local_port &&
+	    parsed.destination_port == tuple.remote_port && parsed.sequence == 101 &&
+	    parsed.acknowledgment == 901 && parsed.flags == TCP_FLAG_ACK &&
+	    parsed.payload_length == 4 && parsed.payload[0] == 'a' &&
+	    parsed.payload[3] == 'd');
+
+	/* Partial ACK releases only acknowledged bytes. The remaining exact suffix
+	 * stays outstanding and is the data selected for timeout retransmission.
+	 * A zero-length ACK at RCV.NXT+1 is still within the receive window. */
+	segment = make_view(902, 103, TCP_FLAG_ACK, NULL, 0);
+	segment.window = 6;
+	event = segment_event(&segment, 21);
+	assert(tcp_core_step(&table, handle, &event, &result));
+	assert(result.snd_una == 103 && result.timer_armed &&
+	    tcp_core_connection_copy_outstanding(&table, handle, copied,
+	    sizeof(copied), &copied_length, &copied_sequence));
+	assert(copied_length == 2 && copied_sequence == 103 &&
+	    copied[0] == 'c' && copied[1] == 'd');
+	event = (struct tcp_core_event){.type = TCP_EVENT_RETRANSMIT_TIMEOUT,
+	    .now_tick = result.timer_deadline};
+	assert(tcp_core_step(&table, handle, &event, &result));
+	assert((result.actions & (TCP_ACTION_RETRANSMIT | TCP_ACTION_SEND_DATA)) ==
+	    (TCP_ACTION_RETRANSMIT | TCP_ACTION_SEND_DATA));
+	assert(tcp_core_connection_copy_outstanding(&table, handle, copied,
+	    sizeof(copied), &copied_length, &copied_sequence));
+	assert(copied_length == 2 && copied_sequence == 103 && copied[0] == 'c');
+
+	/* A stale sequence-space window advertisement cannot replace the newer
+	 * window update, though its acceptable ACK still advances SND.UNA. */
+	segment = make_view(901, 105, TCP_FLAG_ACK, NULL, 0);
+	segment.window = 0;
+	event = segment_event(&segment, result.timer_deadline + 1);
+	assert(tcp_core_step(&table, handle, &event, &result));
+	assert(result.actions == TCP_ACTION_SEND_DATA && result.snd_una == 105 &&
+	    result.snd_nxt == 109 && result.timer_armed && result.send_window == 6);
+	assert(tcp_core_connection_copy_outstanding(&table, handle, copied,
+	    sizeof(copied), &copied_length, &copied_sequence));
+	assert(copied_length == 4 && copied_sequence == 105 && copied[0] == 'e' &&
+	    copied[3] == 'h');
+
+	/* An out-of-window segment cannot ACK data or reclaim its queue bytes. */
+	segment = make_view(900 + TCP_CORE_RX_CAPACITY + 1U, 109, TCP_FLAG_ACK,
+	    NULL, 0);
+	segment.window = 0;
+	event = segment_event(&segment, 200);
+	assert(tcp_core_step(&table, handle, &event, &result));
+	assert(result.snd_una == 105 && result.actions == TCP_ACTION_SEND_ACK);
+	assert(tcp_core_connection_copy_outstanding(&table, handle, copied,
+	    sizeof(copied), &copied_length, &copied_sequence) && copied_length == 4);
+	/* The final ACK closes this flight but advertises a zero window, so queued
+	 * bytes wait without consuming sequence space or arming a timer. */
+	segment = make_view(903, 109, TCP_FLAG_ACK, NULL, 0);
+	segment.window = 0;
+	event = segment_event(&segment, 202);
+	assert(tcp_core_step(&table, handle, &event, &result));
+	assert(result.snd_una == 109 && result.snd_nxt == 109 &&
+	    result.send_window == 0 && !result.timer_armed && result.actions == 0);
+	segment.sequence = 903;
+	segment.acknowledgment = 109;
+	segment.window = 2; /* a valid window update resumes only two bytes */
+	event = segment_event(&segment, 203);
+	assert(tcp_core_step(&table, handle, &event, &result));
+	assert(result.actions == TCP_ACTION_SEND_DATA && result.snd_nxt == 111);
+	assert(tcp_core_connection_copy_outstanding(&table, handle, copied,
+	    sizeof(copied), &copied_length, &copied_sequence));
+	assert(copied_length == 2 && copied_sequence == 109 && copied[0] == 'i' &&
+	    copied[1] == 'j');
+	segment.acknowledgment = 111;
+	segment.window = 0;
+	event = segment_event(&segment, 204);
+	assert(tcp_core_step(&table, handle, &event, &result));
+	assert(result.snd_una == 111 && result.actions == 0 && !result.timer_armed);
+
+	/* Queue capacity is fixed and overflow is all-or-nothing. */
+	for (size_t i = 0; i < sizeof(bytes); i++)
+		bytes[i] = (uint8_t)i;
+	assert(tcp_core_connection_write(&table, handle, bytes, sizeof(bytes),
+	    205, &result));
+	assert(result.accepted_bytes == TCP_CORE_TX_CAPACITY &&
+	    result.actions == 0 && result.send_window == 0);
+	assert(!tcp_core_connection_write(&table, handle, payload, 1, 206, &result));
+	assert(tcp_core_connection_get(&table, handle, &result) &&
+	    result.state == TCP_STATE_ESTABLISHED && result.snd_una == 111);
+	event = (struct tcp_core_event){.type = TCP_EVENT_APPLICATION_CLOSE,
+	    .now_tick = 207};
+	assert(!tcp_core_step(&table, handle, &event, &result));
+	assert(tcp_core_connection_get(&table, handle, &result) &&
+	    result.state == TCP_STATE_ESTABLISHED && result.snd_una == 111);
+	assert(tcp_core_connection_release(&table, handle));
+	/* A lost data ACK follows the same bounded exponential retry policy; the
+	 * exact outstanding bytes remain serializable until retry exhaustion. */
+	tuple.local_port++;
+	assert(tcp_core_connection_create(&table, &tuple, &handle));
+	event = (struct tcp_core_event){.type = TCP_EVENT_ACTIVE_OPEN,
+	    .initial_sequence = 300};
+	assert(tcp_core_step(&table, handle, &event, &result));
+	segment = make_view(1200, 301, TCP_FLAG_SYN | TCP_FLAG_ACK, NULL, 0);
+	segment.destination_port = tuple.local_port;
+	segment.mss_present = true;
+	segment.mss = 4;
+	segment.window = 4;
+	event = segment_event(&segment, 1);
+	assert(tcp_core_step(&table, handle, &event, &result));
+	assert(tcp_core_connection_write(&table, handle, payload, 4, 10, &result));
+	for (size_t retry = 1; retry <= TCP_CORE_RETRY_LIMIT; retry++) {
+		event = (struct tcp_core_event){
+			.type = TCP_EVENT_RETRANSMIT_TIMEOUT,
+			.now_tick = result.timer_deadline
+		};
+		assert(tcp_core_step(&table, handle, &event, &result));
+		assert(result.state == TCP_STATE_ESTABLISHED &&
+		    result.retransmissions == retry &&
+		    (result.actions & (TCP_ACTION_RETRANSMIT | TCP_ACTION_SEND_DATA)) ==
+		    (TCP_ACTION_RETRANSMIT | TCP_ACTION_SEND_DATA));
+		assert(tcp_core_connection_copy_outstanding(&table, handle, copied,
+		    sizeof(copied), &copied_length, &copied_sequence));
+		assert(copied_length == 4 && copied_sequence == 301 &&
+		    copied[0] == 'a' && copied[3] == 'd');
+	}
+	event.now_tick = result.timer_deadline;
+	assert(tcp_core_step(&table, handle, &event, &result));
+	assert(result.state == TCP_STATE_CLOSED &&
+	    (result.actions & TCP_ACTION_ABORT) != 0 &&
+	    !tcp_core_connection_copy_outstanding(&table, handle, copied,
+	    sizeof(copied), &copied_length, &copied_sequence));
+	assert(tcp_core_connection_release(&table, handle));
+
+	/* The data queue and partial ACK offsets use modulo-2^32 sequence math. */
+	tuple.local_port++;
+	assert(tcp_core_connection_create(&table, &tuple, &handle));
+	event = (struct tcp_core_event){.type = TCP_EVENT_ACTIVE_OPEN,
+	    .initial_sequence = 0xfffffffeU};
+	assert(tcp_core_step(&table, handle, &event, &result));
+	segment = make_view(200, 0xffffffffU, TCP_FLAG_SYN | TCP_FLAG_ACK, NULL, 0);
+	segment.destination_port = tuple.local_port;
+	segment.mss_present = true;
+	segment.mss = 4;
+	segment.window = 4;
+	event = segment_event(&segment, 1);
+	assert(tcp_core_step(&table, handle, &event, &result));
+	assert(tcp_core_connection_write(&table, handle, payload, 3, 2, &result));
+	assert(result.snd_nxt == 2);
+	segment = make_view(201, 0, TCP_FLAG_ACK, NULL, 0);
+	segment.destination_port = tuple.local_port;
+	event = segment_event(&segment, 3);
+	assert(tcp_core_step(&table, handle, &event, &result));
+	assert(result.snd_una == 0 && result.snd_nxt == 2 &&
+	    tcp_core_connection_copy_outstanding(&table, handle, copied,
+	    sizeof(copied), &copied_length, &copied_sequence));
+	assert(copied_sequence == 0 && copied_length == 2 && copied[0] == 'b' &&
+	    copied[1] == 'c');
+	segment.acknowledgment = 2;
+	event = segment_event(&segment, 4);
+	assert(tcp_core_step(&table, handle, &event, &result));
+	assert(result.snd_una == 2 && !result.timer_armed);
+	assert(tcp_core_step(&table, handle,
+	    &(struct tcp_core_event){.type = TCP_EVENT_APPLICATION_CLOSE}, &result));
+	assert(result.state == TCP_STATE_FIN_WAIT_1 &&
+	    (result.actions & TCP_ACTION_SEND_FIN) != 0);
+	assert(tcp_core_connection_release(&table, handle));
+	puts("TCP bounded send queue, MSS/window segmentation, partial ACK, retransmit PASS");
+}
+
+static void
 test_receive_bound_and_retry_limit(void)
 {
 	struct tcp_connection_table table;
@@ -1093,6 +1305,47 @@ test_receive_bound_and_retry_limit(void)
 	    (result.actions & TCP_ACTION_ABORT) != 0);
 	assert(tcp_core_connection_release(&table, handle));
 	puts("TCP bounded receive window and five-retry timeout: PASS");
+}
+
+static void
+test_time_wait_reset_validation(void)
+{
+	struct tcp_connection_table table;
+	struct tcp_connection_handle handle;
+	struct tcp_core_tuple tuple = active_tuple();
+	struct tcp_core_result result;
+	struct tcp_segment_view segment;
+	struct tcp_core_event event = {.type = TCP_EVENT_ACTIVE_OPEN,
+	    .initial_sequence = 100};
+	tcp_core_table_init(&table);
+	assert(tcp_core_connection_create(&table, &tuple, &handle));
+	assert(step_report(&table, handle, &event, &result));
+	segment = make_view(10, 101, TCP_FLAG_SYN | TCP_FLAG_ACK, NULL, 0);
+	event = segment_event(&segment, 1);
+	assert(step_report(&table, handle, &event, &result));
+	event = (struct tcp_core_event){.type = TCP_EVENT_APPLICATION_CLOSE,
+	    .now_tick = 2};
+	assert(step_report(&table, handle, &event, &result));
+	segment = make_view(11, 102, TCP_FLAG_ACK, NULL, 0);
+	event = segment_event(&segment, 3);
+	assert(step_report(&table, handle, &event, &result));
+	assert(result.state == TCP_STATE_FIN_WAIT_2);
+	segment.flags = TCP_FLAG_FIN | TCP_FLAG_ACK;
+	event = segment_event(&segment, 4);
+	assert(step_report(&table, handle, &event, &result));
+	assert(result.state == TCP_STATE_TIME_WAIT && result.rcv_nxt == 12);
+	segment = make_view(13, 0, TCP_FLAG_RST, NULL, 0);
+	event = segment_event(&segment, 5);
+	assert(step_report(&table, handle, &event, &result));
+	assert(result.state == TCP_STATE_TIME_WAIT &&
+	    result.actions == TCP_ACTION_SEND_ACK);
+	segment.sequence = 12;
+	event = segment_event(&segment, 6);
+	assert(step_report(&table, handle, &event, &result));
+	assert(result.state == TCP_STATE_CLOSED &&
+	    result.actions == TCP_ACTION_ABORT);
+	assert(tcp_core_connection_release(&table, handle));
+	puts("TCP TIME-WAIT RST: challenge in-window non-exact reset, close on exact RCV.NXT PASS");
 }
 
 static void
@@ -1561,7 +1814,9 @@ main(void)
 	test_isolated_active_passive_handshakes();
 	test_passive_close_and_time_wait();
 	test_close_wait_last_ack_and_closing();
+	test_bounded_send_retransmit_and_window();
 	test_receive_bound_and_retry_limit();
+	test_time_wait_reset_validation();
 	test_table_lifetime_and_backlog();
 	test_tcp_service_budget_and_cancellation();
 	test_timer_pending_handle_lifetime();

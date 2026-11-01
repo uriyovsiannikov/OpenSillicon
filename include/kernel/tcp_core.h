@@ -14,6 +14,7 @@
 #define TCP_CORE_CONNECTION_LIMIT 8U
 #define TCP_CORE_LISTEN_BACKLOG 4U
 #define TCP_CORE_RX_CAPACITY 2048U
+#define TCP_CORE_TX_CAPACITY 2048U
 #define TCP_CORE_MAX_SEGMENT 1480U
 #define TCP_CORE_LOCAL_MSS 1460U
 #define TCP_CORE_DEFAULT_MSS 536U
@@ -36,6 +37,7 @@
 #define TCP_ACTION_DUPLICATE_ACK (1U << 6)
 #define TCP_ACTION_ENTER_TIME_WAIT (1U << 7)
 #define TCP_ACTION_ABORT (1U << 8)
+#define TCP_ACTION_SEND_DATA (1U << 9)
 
 struct tcp_core_tuple {
 	uint8_t local_address[4];
@@ -115,6 +117,8 @@ struct tcp_core_connection {
 	uint32_t irs;
 	uint32_t snd_una;
 	uint32_t snd_nxt;
+	uint32_t snd_wl1;
+	uint32_t snd_wl2;
 	uint32_t outstanding_end;
 	uint32_t rcv_nxt;
 	uint16_t snd_wnd;
@@ -130,6 +134,10 @@ struct tcp_core_connection {
 	uint8_t rx_data[TCP_CORE_RX_CAPACITY];
 	size_t rx_head;
 	size_t rx_length;
+	uint8_t tx_data[TCP_CORE_TX_CAPACITY];
+	size_t tx_head;
+	size_t tx_length;
+	size_t outstanding_data_length;
 };
 
 struct tcp_connection_table {
@@ -223,6 +231,23 @@ bool tcp_core_connection_get(const struct tcp_connection_table *table,
 size_t tcp_core_connection_count(const struct tcp_connection_table *table);
 bool tcp_core_connection_read(struct tcp_connection_table *table,
 	struct tcp_connection_handle handle, uint8_t *data, size_t capacity,
+	size_t *length);
+/* Copies a bounded amount into the Core-owned send queue. The result reports
+ * SEND_DATA when a segment becomes outstanding. Accepted bytes remain owned
+ * by Core until acknowledged; callers retain no pointer into Core storage. */
+bool tcp_core_connection_write(struct tcp_connection_table *table,
+	struct tcp_connection_handle handle, const uint8_t *data, size_t length,
+	uint64_t now_tick, struct tcp_core_result *result);
+/* Copies the current outstanding data segment to caller storage. This is a
+ * snapshot for an isolated transport driver; it does not consume queued data. */
+bool tcp_core_connection_copy_outstanding(const struct tcp_connection_table *table,
+	struct tcp_connection_handle handle, uint8_t *data, size_t capacity,
+	size_t *length, uint32_t *sequence);
+/* Serializes the current outstanding data segment into caller-owned storage,
+ * including IPv4 pseudoheader checksum. It does not transmit or consume data. */
+bool tcp_core_connection_build_outstanding_data(
+	const struct tcp_connection_table *table,
+	struct tcp_connection_handle handle, uint8_t *segment, size_t capacity,
 	size_t *length);
 bool tcp_core_step(struct tcp_connection_table *table,
 	struct tcp_connection_handle handle, const struct tcp_core_event *event,

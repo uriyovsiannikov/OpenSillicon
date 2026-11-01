@@ -135,6 +135,8 @@ enum tcp_runtime_route_status tcp_runtime_route_segment(
 	struct tcp_runtime_route_result *result);
 
 #ifdef TCP_RUNTIME_TESTING
+#define TCP_RUNTIME_TEST_INSTANCE_LIMIT 2U
+
 /* Every declaration below exists only in TCP_RUNTIME_TESTING host builds.
  * Deterministic ISNs and injected packet events are test inputs, not production
  * entropy. Results are initialized before validation; their outcome fields
@@ -179,6 +181,47 @@ enum tcp_runtime_test_close_status {
 	TCP_RUNTIME_TEST_CLOSE_STALE_HANDLE,
 	TCP_RUNTIME_TEST_CLOSE_INVALID,
 	TCP_RUNTIME_TEST_CLOSE_CORE_ERROR
+};
+
+enum tcp_runtime_test_io_status {
+	TCP_RUNTIME_TEST_IO_OK = 0,
+	TCP_RUNTIME_TEST_IO_WOULD_BLOCK,
+	TCP_RUNTIME_TEST_IO_EOF,
+	TCP_RUNTIME_TEST_IO_RESET,
+	TCP_RUNTIME_TEST_IO_INVALID,
+	TCP_RUNTIME_TEST_IO_DISABLED,
+	TCP_RUNTIME_TEST_IO_STOPPING,
+	TCP_RUNTIME_TEST_IO_STALE_HANDLE,
+	TCP_RUNTIME_TEST_IO_NOT_CONNECTED,
+	TCP_RUNTIME_TEST_IO_FULL,
+	TCP_RUNTIME_TEST_IO_TOO_LARGE,
+	TCP_RUNTIME_TEST_IO_CORE_ERROR
+};
+
+struct tcp_runtime_test_io_result {
+	enum tcp_runtime_test_io_status status;
+	size_t bytes;
+	enum tcp_connection_state state;
+};
+
+enum tcp_runtime_test_tx_status {
+	TCP_RUNTIME_TEST_TX_OK = 0,
+	TCP_RUNTIME_TEST_TX_EMPTY,
+	TCP_RUNTIME_TEST_TX_INVALID,
+	TCP_RUNTIME_TEST_TX_DISABLED,
+	TCP_RUNTIME_TEST_TX_STOPPING,
+	TCP_RUNTIME_TEST_TX_STALE_HANDLE,
+	TCP_RUNTIME_TEST_TX_OUTPUT_TOO_SMALL,
+	TCP_RUNTIME_TEST_TX_UNSUPPORTED,
+	TCP_RUNTIME_TEST_TX_CORE_ERROR
+};
+
+struct tcp_runtime_test_tx_result {
+	enum tcp_runtime_test_tx_status status;
+	size_t length;
+	uint32_t actions;
+	/* Successful status means serialization into caller storage only. It is not
+	 * a device handoff or evidence of packet transmission. */
 };
 
 /* Scalar-only observation of a host-test local close. No Core handle, pointer,
@@ -294,6 +337,29 @@ bool tcp_runtime_test_set_references(struct tcp_connection_handle handle,
 bool tcp_runtime_test_reference_count(struct tcp_connection_handle handle,
 	uint16_t *references);
 bool tcp_runtime_test_set_timer_service_active(bool active);
+/* Host simulator context selector. Each index owns a distinct Core table,
+ * Runtime lifecycle, relationships, references, and test action metadata.
+ * Select only between API calls; contexts are deterministic and serialized,
+ * not concurrent or SMP-safe. */
+bool tcp_runtime_test_select_instance(size_t instance);
+/* Bounded nonblocking stream-style I/O for isolated host Runtime tests only.
+ * Writes are all-or-nothing; zero-length write succeeds with zero bytes.
+ * Reads may be partial. A zero-capacity read succeeds without consuming data.
+ * Empty reads return WOULD_BLOCK until peer FIN (then EOF after buffered bytes)
+ * or reset (RESET immediately; Core discards buffered data on RST). */
+enum tcp_runtime_test_io_status tcp_runtime_test_write(
+	struct tcp_connection_handle handle, const uint8_t *data, size_t length,
+	uint64_t now_tick, struct tcp_runtime_test_io_result *result);
+enum tcp_runtime_test_io_status tcp_runtime_test_read(
+	struct tcp_connection_handle handle, uint8_t *data, size_t capacity,
+	struct tcp_runtime_test_io_result *result);
+/* Returns one queued serialized TCP segment at a time in caller-owned storage.
+ * Too-small output leaves the pending action intact. Success means only that
+ * a checksummed TCP segment was constructed; no TX/device ownership transfers.
+ * RST actions lacking enough saved input context are reported UNSUPPORTED. */
+enum tcp_runtime_test_tx_status tcp_runtime_test_next_segment(
+	struct tcp_connection_handle handle, uint8_t *output, size_t capacity,
+	struct tcp_runtime_test_tx_result *result);
 #endif
 
 #endif
