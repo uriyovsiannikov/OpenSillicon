@@ -67,6 +67,9 @@ struct interrupt_frame *process_waitpid(struct interrupt_frame *frame,
 	uint64_t *error);
 struct interrupt_frame *process_sleep_ticks(struct interrupt_frame *frame,
 	uint64_t ticks, uint64_t *error);
+struct interrupt_frame *process_nanosleep(struct interrupt_frame *frame,
+	uint64_t ticks, int64_t seconds, int64_t nanoseconds,
+	uint64_t remaining_address, uint64_t *error);
 struct interrupt_frame *process_block_on_channel(
 	struct interrupt_frame *frame, void *channel);
 void process_wake_channel(void *channel);

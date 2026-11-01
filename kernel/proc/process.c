@@ -28,6 +28,7 @@
 #define PROCESS_WAIT_ANY UINT64_MAX
 #define PROCESS_ERROR_ECHILD 10U
 #define PROCESS_ERROR_EFAULT 14U
+#define PROCESS_ERROR_EFAULT 14U
 #define PROCESS_ERROR_EAGAIN 11U
 #define PROCESS_ERROR_ENOMEM 12U
 #define PROCESS_ERROR_EINVAL 22U
@@ -72,6 +73,11 @@ struct process {
 	uint64_t waiting_for;
 	uint64_t wait_status_address;
 	uint64_t wake_tick;
+	uint64_t nanosleep_start_tick;
+	int64_t nanosleep_seconds;
+	int64_t nanosleep_nanoseconds;
+	uint64_t nanosleep_remaining_address;
+	bool nanosleep_active;
 	void *blocked_channel;
 	enum process_block_reason block_reason;
 	bool retry_pending;
@@ -164,11 +170,50 @@ process_has_pending_signal(const struct process *process)
 static void
 process_set_interrupted_result(struct process *process)
 {
-	process->saved_frame->rax = PROCESS_ERROR_EINTR;
+	if (process->nanosleep_active &&
+	    process->nanosleep_remaining_address != 0) {
+		struct { int64_t tv_sec; int64_t tv_nsec; } remaining;
+		uint64_t elapsed = timer_ticks() - process->nanosleep_start_tick;
+		uint64_t elapsed_ticks = elapsed > 0 ? elapsed - 1 : 0;
+		uint64_t elapsed_seconds = elapsed_ticks / 100U;
+		uint64_t elapsed_nanoseconds = (elapsed_ticks % 100U) * 10000000U;
+		remaining.tv_sec = process->nanosleep_seconds;
+		remaining.tv_nsec = process->nanosleep_nanoseconds;
+		if (remaining.tv_nsec < (int64_t)elapsed_nanoseconds) {
+			if (remaining.tv_sec > 0) {
+				remaining.tv_sec--;
+				remaining.tv_nsec += 1000000000LL;
+			} else {
+				remaining.tv_sec = 0;
+				remaining.tv_nsec = 0;
+			}
+		}
+		if (remaining.tv_sec >= (int64_t)elapsed_seconds) {
+			remaining.tv_sec -= (int64_t)elapsed_seconds;
+			remaining.tv_nsec -= (int64_t)elapsed_nanoseconds;
+		} else {
+			remaining.tv_sec = 0;
+			remaining.tv_nsec = 0;
+		}
+		if (remaining.tv_sec < 0 || remaining.tv_nsec < 0) {
+			remaining.tv_sec = 0;
+			remaining.tv_nsec = 0;
+		}
+		if (!vmm_copy_to_user(process->address_space,
+		    process->nanosleep_remaining_address, &remaining,
+		    sizeof(remaining)))
+			process->saved_frame->rax = PROCESS_ERROR_EFAULT;
+		else
+			process->saved_frame->rax = PROCESS_ERROR_EINTR;
+	} else {
+		process->saved_frame->rax = PROCESS_ERROR_EINTR;
+	}
 	process->saved_frame->rflags |= 1U;
 	process->waiting_for = 0;
 	process->wait_status_address = 0;
 	process->wake_tick = 0;
+	process->nanosleep_active = false;
+	process->nanosleep_remaining_address = 0;
 	process->blocked_channel = NULL;
 	process->block_reason = PROCESS_BLOCK_NONE;
 	process->retry_pending = false;
@@ -202,6 +247,8 @@ process_wake_for_signal(struct process *process)
 	if (process->block_reason == PROCESS_BLOCK_SLEEP &&
 	    timer_ticks() >= process->wake_tick) {
 		process->wake_tick = 0;
+		process->nanosleep_active = false;
+		process->nanosleep_remaining_address = 0;
 		process->block_reason = PROCESS_BLOCK_NONE;
 		process->state = PROCESS_READY;
 		return;
@@ -839,6 +886,11 @@ process_run_elf_internal(const void *image, size_t image_size,
 	root->waiting_for = 0;
 	root->wait_status_address = 0;
 	root->wake_tick = 0;
+	root->nanosleep_start_tick = 0;
+	root->nanosleep_seconds = 0;
+	root->nanosleep_nanoseconds = 0;
+	root->nanosleep_remaining_address = 0;
+	root->nanosleep_active = false;
 	root->blocked_channel = NULL;
 	root->block_reason = PROCESS_BLOCK_NONE;
 	root->retry_pending = false;
@@ -1042,6 +1094,11 @@ process_fork(struct interrupt_frame *frame, uint64_t *error)
 	child->waiting_for = 0;
 	child->wait_status_address = 0;
 	child->wake_tick = 0;
+	child->nanosleep_start_tick = 0;
+	child->nanosleep_seconds = 0;
+	child->nanosleep_nanoseconds = 0;
+	child->nanosleep_remaining_address = 0;
+	child->nanosleep_active = false;
 	child->blocked_channel = NULL;
 	child->block_reason = PROCESS_BLOCK_NONE;
 	child->retry_pending = false;
@@ -1439,8 +1496,54 @@ process_sleep_ticks(struct interrupt_frame *frame, uint64_t ticks,
 		return frame;
 	}
 	current_process->wake_tick = now + ticks;
+	current_process->blocked_channel = NULL;
 	current_process->state = PROCESS_BLOCKED;
 	current_process->saved_frame = frame;
+	current_process->block_reason = PROCESS_BLOCK_SLEEP;
+	current_process->retry_pending = false;
+	current_process->retry_in_progress = false;
+	frame->rax = 0;
+	frame->rflags &= ~1ULL;
+	*error = 0;
+	return schedule_from(current_process);
+}
+
+struct interrupt_frame *
+process_nanosleep(struct interrupt_frame *frame, uint64_t ticks,
+	int64_t seconds, int64_t nanoseconds, uint64_t remaining_address,
+	uint64_t *error)
+{
+	uint64_t now;
+
+	if (current_process == NULL) {
+		*error = PROCESS_ERROR_ECHILD;
+		return frame;
+	}
+	if (ticks == 0) {
+		frame->rax = 0;
+		frame->rflags &= ~1ULL;
+		*error = 0;
+		return frame;
+	}
+	now = timer_ticks();
+	if (ticks > UINT64_MAX - now) {
+		*error = PROCESS_ERROR_EINVAL;
+		return frame;
+	}
+	current_process->saved_frame = frame;
+	current_process->nanosleep_start_tick = now;
+	current_process->nanosleep_seconds = seconds;
+	current_process->nanosleep_nanoseconds = nanoseconds;
+	current_process->nanosleep_remaining_address = remaining_address;
+	current_process->nanosleep_active = true;
+	if (process_has_pending_signal(current_process)) {
+		process_set_interrupted_result(current_process);
+		*error = 0;
+		return frame;
+	}
+	current_process->wake_tick = now + ticks;
+	current_process->blocked_channel = NULL;
+	current_process->state = PROCESS_BLOCKED;
 	current_process->block_reason = PROCESS_BLOCK_SLEEP;
 	current_process->retry_pending = false;
 	current_process->retry_in_progress = false;
@@ -1506,6 +1609,8 @@ process_timer_wakeup(uint64_t ticks)
 		if (process->state == PROCESS_BLOCKED && process->wake_tick != 0 &&
 		    ticks >= process->wake_tick) {
 			process->wake_tick = 0;
+			process->nanosleep_active = false;
+			process->nanosleep_remaining_address = 0;
 			process->blocked_channel = NULL;
 			process->block_reason = PROCESS_BLOCK_NONE;
 			process->state = PROCESS_READY;

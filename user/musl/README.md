@@ -152,17 +152,19 @@ make native-musl-inspect
 make native-musl-qemu-test
 make native-musl-alloc-qemu-test
 make native-musl-stdio-qemu-test
+make native-musl-clock-qemu-test
+make native-musl-nanosleep-qemu-test
 ```
 
 All generated paths can be isolated. For example, after copying the pinned
 archive into a new temporary bootstrap directory, set `MUSL_BOOTSTRAP_DIR`,
-`MUSL_BUILD_DIR`, and the three `MUSL_*_QEMU_BUILD_DIR` variables to fresh
+`MUSL_BUILD_DIR`, and the `MUSL_*_QEMU_BUILD_DIR` variables to fresh
 directories. `native-musl-verify`, `native-musl-build`, the fixture link
 targets, `native-musl-inspect`, and all QEMU recipes honor those locations.
 The Make targets do not clear the configured QEMU directories before use;
 choose empty paths for a clean run.
 
-`native-musl-inspect` checks all four fixtures for static ELF output, no
+`native-musl-inspect` checks all five fixtures for static ELF output, no
 `PT_INTERP`/`PT_DYNAMIC`, and no unresolved strong symbols. Each QEMU target
 keeps the guest running after its musl harness reports success, so the host
 `timeout` is expected to return 124. The target then requires the guest
@@ -254,7 +256,39 @@ marker; the guest fixture itself must exit with status zero for that marker to
 appear.
 
 Other time interfaces, including `CLOCK_REALTIME`, `gettimeofday`,
-`nanosleep`, and POSIX timers, remain unsupported.
+and POSIX timers, remain unsupported.
+
+### `nanosleep()` support
+
+OpenSillicon syscall 35 backs musl's `nanosleep()` selector. Its arguments are
+two user addresses in `RDI` and `RSI`: request and optional remaining
+`timespec`, each two signed 64-bit fields (`tv_sec`, `tv_nsec`). The syscall
+copies and validates the request, rejects negative seconds or nanoseconds and
+nanoseconds outside `[0, 999999999]` with `EINVAL`, and validates a non-null
+remaining-time range before blocking. Invalid pointers return `EFAULT`.
+Successful zero-duration requests return immediately. Positive durations use
+the scheduler's existing blocked-sleep state; they do not busy-wait. The
+duration is rounded up to timer ticks and one additional tick is added to
+account for the unknown phase of the request within the current tick. This
+guarantees no early return at the cost of up to roughly one extra 10 ms tick.
+Durations too large for the monotonic tick deadline are rejected with
+`EINVAL`.
+
+Deliverable signals interrupt the blocked sleep using the existing process
+signal path. The syscall returns `EINTR`; if `rem` is non-null, it contains a
+normalized, nonnegative estimate no greater than the original request. Since
+the timer exposes only ticks, remaining time subtracts only elapsed time that
+is guaranteed by the tick count and may overstate the true remainder by less
+than one tick. As with `CLOCK_MONOTONIC`, `timespec` nanosecond units do not
+imply nanosecond resolution. `clock_nanosleep()` and other time interfaces
+remain unsupported.
+
+`make native-musl-nanosleep-qemu-test` builds and runs the focused
+`tests/musl_nanosleep.c` fixture. It checks zero and positive sleeps, monotonic
+elapsed time, invalid requests and pointers, `rem == NULL`, and signal-driven
+`EINTR` with a bounded normalized remainder. The fixture uses existing native
+fork, kill, wait, and signal syscalls only to orchestrate interruption; these
+selectors are not added to the musl adapter.
 
 ### Clean verification procedure
 
@@ -278,6 +312,9 @@ make MUSL_BOOTSTRAP_DIR="$tmp/bootstrap" MUSL_BUILD_DIR="$tmp/port" \
   MUSL_STDIO_QEMU_BUILD_DIR="$tmp/qemu-stdio" native-musl-stdio-qemu-test
 make MUSL_BOOTSTRAP_DIR="$tmp/bootstrap" MUSL_BUILD_DIR="$tmp/port" \
   MUSL_CLOCK_QEMU_BUILD_DIR="$tmp/qemu-clock" native-musl-clock-qemu-test
+make MUSL_BOOTSTRAP_DIR="$tmp/bootstrap" MUSL_BUILD_DIR="$tmp/port" \
+  MUSL_NANOSLEEP_QEMU_BUILD_DIR="$tmp/qemu-nanosleep" \
+  native-musl-nanosleep-qemu-test
 ```
 
 The native build target bootstraps pristine and confirmed-patched source in
@@ -304,11 +341,13 @@ checked nondecreasing reads, advancement after a two-tick kernel sleep,
 unsupported-clock and invalid-pointer errors, and retained TLS. QEMU is
 intentionally terminated by the host timeout after the guest returns zero.
 
-The existing `timer-test` target's 8-second timeout expired before its timer
-markers on this host. The same isolated image was rerun with a 30-second
-timeout; that invocation returned status 0 after expected timeout status 124
-and logged `OpenSillicon: Round Robin scheduler passed` and
-`OpenSillicon: timer tick count 73`.
+The `timer-test` timeout measures only QEMU runtime; prerequisites and root
+image creation occur before the timeout wrapper starts. The guest test waits
+for four scheduler alternation rounds and at least five timer ticks, prints
+both markers, then intentionally keeps the kernel running. The former fixed
+8-second cap expired before these markers on this host. `TIMER_TEST_TIMEOUT`
+now controls the cap and defaults to 15 seconds; a successful harness run is
+still expected to end with timeout status 124 and requires both markers.
 
 ### Verification record — 2026-11-01
 

@@ -22,6 +22,7 @@
 #define OS_SYSCALL_READV 25
 #define OS_SYSCALL_IOCTL 26
 #define OS_SYSCALL_CLOCK_GETTIME 34
+#define OS_SYSCALL_NANOSLEEP 35
 
 static long
 unsupported(void)
@@ -63,6 +64,9 @@ __opensillicon_syscall(long number, long a1, long a2, long a3, long a4,
 		break;
 	case SYS_clock_gettime:
 		native_number = OS_SYSCALL_CLOCK_GETTIME;
+		break;
+	case SYS_nanosleep:
+		native_number = OS_SYSCALL_NANOSLEEP;
 		break;
 	case SYS_close:
 		native_number = OS_SYSCALL_CLOSE;

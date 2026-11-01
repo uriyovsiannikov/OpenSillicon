@@ -37,6 +37,7 @@
 #define ERRNO_ENOTTY 25U
 #define CLOCK_MONOTONIC_ID 1U
 #define MONOTONIC_TICK_HZ 100U
+#define MONOTONIC_TICK_NS (1000000000ULL / MONOTONIC_TICK_HZ)
 
 struct native_timespec {
 	int64_t tv_sec;
@@ -492,6 +493,56 @@ syscall_interrupt(struct interrupt_frame *frame)
 		break;
 	case SYSCALL_SLEEP_TICKS:
 		frame = process_sleep_ticks(frame, frame->rdi, &error);
+		break;
+	case SYSCALL_NANOSLEEP:
+		{
+			struct native_timespec request;
+			struct address_space *space = vmm_active_address_space();
+			uint64_t ticks;
+
+			if (!vmm_copy_from_user(space, &request, frame->rdi,
+			    sizeof(request))) {
+				syscall_error(frame, ERRNO_EFAULT);
+				break;
+			}
+			if (request.tv_sec < 0 || request.tv_nsec < 0 ||
+			    request.tv_nsec >= 1000000000LL) {
+				syscall_error(frame, ERRNO_EINVAL);
+				break;
+			}
+			if (frame->rsi != 0 && !vmm_validate_user_write(space,
+			    frame->rsi, sizeof(request))) {
+				syscall_error(frame, ERRNO_EFAULT);
+				break;
+			}
+			if ((uint64_t)request.tv_sec >
+			    (UINT64_MAX - 1U) / MONOTONIC_TICK_HZ) {
+				syscall_error(frame, ERRNO_EINVAL);
+				break;
+			}
+			ticks = (uint64_t)request.tv_sec * MONOTONIC_TICK_HZ;
+			if (request.tv_nsec != 0) {
+				uint64_t fractional_ticks =
+				    ((uint64_t)request.tv_nsec + MONOTONIC_TICK_NS - 1U) /
+				    MONOTONIC_TICK_NS;
+				if (ticks > UINT64_MAX - fractional_ticks - 1U) {
+					syscall_error(frame, ERRNO_EINVAL);
+					break;
+				}
+				ticks += fractional_ticks;
+			}
+			if (ticks != 0) {
+				if (ticks == UINT64_MAX) {
+					syscall_error(frame, ERRNO_EINVAL);
+					break;
+				}
+				/* One extra tick accounts for unknown phase within the
+				 * current tick; the wait therefore cannot finish early. */
+				ticks++;
+			}
+			frame = process_nanosleep(frame, ticks, request.tv_sec,
+			    request.tv_nsec, frame->rsi, &error);
+		}
 		break;
 	case SYSCALL_CLOCK_GETTIME:
 		{
