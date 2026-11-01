@@ -42,9 +42,15 @@ def send_line(connection, stream, line):
 	qcodes = {" ": "spc", "/": "slash", ".": "dot", "_": "underscore",
 	    "-": "minus", "\t": "tab"}
 	for character in line:
-		qcode = qcodes.get(character, character.lower())
-		qmp(connection, stream, "send-key", {"keys": [{"type": "qcode",
-		    "data": qcode}]})
+		if character in "_:!@":
+			base = {"_": "minus", ":": "semicolon", "!": "1",
+			    "@": "2"}[character]
+			keys = [{"type": "qcode", "data": "shift"},
+			    {"type": "qcode", "data": base}]
+		else:
+			qcode = qcodes.get(character, character.lower())
+			keys = [{"type": "qcode", "data": qcode}]
+		qmp(connection, stream, "send-key", {"keys": keys})
 		time.sleep(0.025)
 	qmp(connection, stream, "send-key", {"keys": [{"type": "qcode",
 	    "data": "ret"}]})
@@ -83,7 +89,7 @@ def run_interactive(qemu, ovmf, iso, disk, work):
 			("/init/bin/argv_probe a b c d e f g h i j k l m n o p",
 			    "sh: too many arguments"),
 			("/init/bin/argv_limit_test", "argv limits passed"),
-			("help", "external commands: ls cat echo pwd true false"),
+			("help", "basename"),
 			("echo", None),
 			("pwd", None),
 			("cd /etc", None),
@@ -91,6 +97,15 @@ def run_interactive(qemu, ovmf, iso, disk, work):
 			("ls", "bin"),
 			("ls /etc/passwd", "/etc/passwd"),
 			("cat /etc/passwd", "root:*:0:0:OpenSillicon root"),
+			("head -n 1 /etc/passwd", "root:*:0:0:OpenSillicon root"),
+			("wc -l /etc/passwd", "2 /etc/passwd"),
+			("stat /etc/passwd", "Type: regular file"),
+			("basename /etc/passwd", "passwd"),
+			("dirname /etc/passwd", "/etc"),
+			("which ls", "/bin/ls"),
+			("kill -s TERM 999999", "kill: cannot signal pid 999999 (error 3)"),
+			("sleep 0", None),
+			("ps", "PID PPID STATE STATUS"),
 			("uname -sm", "OpenSillicon x86_64"),
 			("true", None),
 			("false", "sh: command exited status 1"),
@@ -99,10 +114,12 @@ def run_interactive(qemu, ovmf, iso, disk, work):
 			("badcmd", "sh: exec: /bin/badcmd failed"),
 		]
 		for command, marker in commands:
+			before = len(serial_text(serial_path))
 			send_line(connection, stream, command)
 			if marker is not None:
 				try:
-					wait_for(lambda marker=marker: marker in serial_text(serial_path),
+					wait_for(lambda marker=marker, before=before:
+					    marker in serial_text(serial_path)[before:],
 					    15, "shell command " + command)
 				except RuntimeError as error:
 					raise RuntimeError(str(error) + "\nserial:\n" +

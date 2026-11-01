@@ -63,6 +63,24 @@ net_device_transmit(struct net_device *device, struct netbuf_ref packet)
 }
 
 int
+net_device_wait_transmit(struct net_device *device, struct netbuf_ref packet,
+	size_t poll_limit)
+{
+	if (device == NULL || device->state != NET_DEVICE_UP || poll_limit == 0 ||
+	    device->operations == NULL || device->operations->wait_transmit == NULL)
+		return NET_DEVICE_UNAVAILABLE;
+	if (netbuf_data(packet, NETBUF_OWNER_CORE) != NULL)
+		return NET_DEVICE_OK;
+	if (netbuf_data(packet, NETBUF_OWNER_DEVICE) == NULL)
+		return NET_DEVICE_INVALID;
+	if (device->operations->wait_transmit(device, packet, poll_limit) !=
+	    NET_DEVICE_OK)
+		return NET_DEVICE_IO_ERROR;
+	return netbuf_data(packet, NETBUF_OWNER_CORE) != NULL ? NET_DEVICE_OK :
+	    NET_DEVICE_BAD_DRIVER_CONTRACT;
+}
+
+int
 net_device_receive(struct net_device *device, size_t budget,
 	struct netbuf_ref *packets, size_t capacity, size_t *count)
 {

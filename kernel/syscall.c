@@ -11,6 +11,10 @@
 #include "kernel/tty.h"
 #include "kernel/vmm.h"
 #include "kernel/vfs.h"
+#include "kernel/network_service.h"
+#include "kernel/udp_socket.h"
+#include "kernel/icmp_echo.h"
+#include "kernel/timer.h"
 
 #define SYSCALL_VECTOR 128U
 #define SYSCALL_MAX_IO 4096U
@@ -18,6 +22,8 @@
 #define SYSCALL_MAX_IOV_BYTES (64U * 1024U)
 #define SYSCALL_IOV_CHUNK 512U
 #define TIOCGWINSZ_REQUEST 0x5413U
+#define TIOCSRAW_REQUEST 0x4f530001U
+#define TIOCCANON_REQUEST 0x4f530002U
 #define ERRNO_EFAULT 14U
 #define ERRNO_EINVAL 22U
 #define ERRNO_E2BIG 7U
@@ -309,6 +315,9 @@ syscall_interrupt(struct interrupt_frame *frame)
 	struct fd_table *table;
 	size_t amount;
 
+	/* Generic syscall safe point: network progress is not tied to UDP calls. */
+	(void)network_service_request(NETWORK_SERVICE_POLL_RX);
+	(void)network_service_run(NETWORK_SERVICE_MAX_EVENTS, NULL);
 	process_syscall_retry_begin();
 	frame->rflags &= ~1ULL;
 	switch (number) {
@@ -365,6 +374,33 @@ syscall_interrupt(struct interrupt_frame *frame)
 		break;
 	case SYSCALL_GETPID:
 		frame->rax = process_current_pid();
+		break;
+	case SYSCALL_PROCESS_SNAPSHOT:
+		{
+			struct process_snapshot_entry entries[PROCESS_SNAPSHOT_MAX];
+			uint64_t capacity = frame->rsi;
+			int count;
+			if (capacity == 0 || capacity > PROCESS_SNAPSHOT_MAX) {
+				syscall_error(frame, ERRNO_EINVAL);
+				break;
+			}
+			if (!vmm_validate_user_write(vmm_active_address_space(),
+			    frame->rdi, (size_t)capacity * sizeof(entries[0]))) {
+				syscall_error(frame, ERRNO_EFAULT);
+				break;
+			}
+			count = process_snapshot(entries, (size_t)capacity);
+			if (count < 0) {
+				syscall_error(frame, (uint64_t)(-count));
+				break;
+			}
+			if (!vmm_copy_to_user(vmm_active_address_space(), frame->rdi,
+			    entries, (size_t)count * sizeof(entries[0]))) {
+				syscall_error(frame, ERRNO_EFAULT);
+				break;
+			}
+			frame->rax = (uint64_t)count;
+		}
 		break;
 	case SYSCALL_FORK:
 		frame = process_fork(frame, &error);
@@ -588,11 +624,19 @@ syscall_interrupt(struct interrupt_frame *frame)
 				syscall_error(frame, 9);
 				break;
 			}
-			if (frame->rsi != TIOCGWINSZ_REQUEST) {
+			if (!fd_object_is_terminal(object)) {
 				syscall_error(frame, ERRNO_ENOTTY);
 				break;
 			}
-			if (!fd_object_is_terminal(object)) {
+			if (frame->rsi == TIOCSRAW_REQUEST ||
+			    frame->rsi == TIOCCANON_REQUEST) {
+				if (!tty_set_raw_mode(frame->rsi == TIOCSRAW_REQUEST))
+					syscall_error(frame, ERRNO_ENOTTY);
+				else
+					frame->rax = 0;
+				break;
+			}
+			if (frame->rsi != TIOCGWINSZ_REQUEST) {
 				syscall_error(frame, ERRNO_ENOTTY);
 				break;
 			}
@@ -605,6 +649,178 @@ syscall_interrupt(struct interrupt_frame *frame)
 			    !vmm_copy_to_user(vmm_active_address_space(), frame->rdx,
 			    &window, sizeof(window))) {
 				syscall_error(frame, ERRNO_EFAULT);
+				break;
+			}
+			frame->rax = 0;
+		}
+		break;
+	case SYSCALL_UDP_SOCKET:
+		{
+			int result = udp_socket_create_fd(current_fd_table(),
+			    frame->rdi, frame->rsi, frame->rdx);
+			if (result < 0)
+				syscall_error(frame, errno_from_kernel(result));
+			else
+				frame->rax = (uint64_t)result;
+		}
+		break;
+	case SYSCALL_UDP_BIND:
+		{
+			struct udp_socket_endpoint endpoint;
+			struct fd_object *object = fd_object_for_descriptor(
+			    current_fd_table(), frame->rdi);
+			int result;
+			if (object == NULL) {
+				syscall_error(frame, EBADF);
+				break;
+			}
+			if (frame->rdx != sizeof(endpoint)) {
+				syscall_error(frame, EINVAL);
+				break;
+			}
+			if (!vmm_copy_from_user(vmm_active_address_space(), &endpoint,
+			    frame->rsi, sizeof(endpoint))) {
+				syscall_error(frame, EFAULT);
+				break;
+			}
+			result = udp_socket_bind(object, &endpoint);
+			if (result != 0)
+				syscall_error(frame, errno_from_kernel(result));
+			else
+				frame->rax = 0;
+		}
+		break;
+	case SYSCALL_UDP_SENDTO:
+		{
+			struct udp_socket_endpoint endpoint;
+			uint8_t payload[UDP_SOCKET_PAYLOAD_LIMIT];
+			struct fd_object *object = fd_object_for_descriptor(
+			    current_fd_table(), frame->rdi);
+			int result;
+			if (object == NULL) {
+				syscall_error(frame, EBADF);
+				break;
+			}
+			if (!udp_socket_is_object(object)) {
+				syscall_error(frame, ENOTSOCK);
+				break;
+			}
+			if (frame->rdx > sizeof(payload) || frame->r10 == 0) {
+				syscall_error(frame, frame->rdx > sizeof(payload) ?
+				    EMSGSIZE : EFAULT);
+				break;
+			}
+			if (!vmm_copy_from_user(vmm_active_address_space(), &endpoint,
+			    frame->r10, sizeof(endpoint)) ||
+			    (frame->rdx != 0 && !vmm_copy_from_user(
+			    vmm_active_address_space(), payload, frame->rsi,
+			    (size_t)frame->rdx))) {
+				syscall_error(frame, EFAULT);
+				break;
+			}
+			result = udp_socket_sendto(object, &endpoint, payload,
+			    (size_t)frame->rdx);
+			if (result < 0)
+				syscall_error(frame, errno_from_kernel(result));
+			else
+				frame->rax = (uint64_t)result;
+		}
+		break;
+	case SYSCALL_UDP_RECVFROM:
+		{
+			struct udp_socket_datagram datagram;
+			struct fd_object *object = fd_object_for_descriptor(
+			    current_fd_table(), frame->rdi);
+			uint64_t start;
+			int result;
+			if (object == NULL) {
+				syscall_error(frame, EBADF);
+				break;
+			}
+			if (!udp_socket_is_object(object)) {
+				syscall_error(frame, ENOTSOCK);
+				break;
+			}
+			if (frame->rdx > UDP_SOCKET_PAYLOAD_LIMIT || frame->r10 == 0) {
+				syscall_error(frame, frame->rdx > UDP_SOCKET_PAYLOAD_LIMIT ?
+				    EMSGSIZE : EFAULT);
+				break;
+			}
+			if ((frame->rdx != 0 && !vmm_validate_user_write(
+			    vmm_active_address_space(), frame->rsi,
+			    (size_t)frame->rdx)) || !vmm_validate_user_write(
+			    vmm_active_address_space(), frame->r10,
+			    sizeof(struct udp_socket_endpoint))) {
+				syscall_error(frame, EFAULT);
+				break;
+			}
+			start = timer_ticks();
+			for (;;) {
+				result = udp_socket_peek(object, &datagram);
+				if (result == 0)
+					break;
+				if (result != -EAGAIN) {
+					syscall_error(frame, errno_from_kernel(result));
+					return frame;
+				}
+				result = udp_socket_poll();
+				if (result < 0) {
+					syscall_error(frame, errno_from_kernel(result));
+					return frame;
+				}
+				if (timer_ticks() - start >= UDP_SOCKET_POLL_TIMEOUT_TICKS) {
+					syscall_error(frame, ETIMEDOUT);
+					return frame;
+				}
+				__asm__ volatile ("pause" : : : "memory");
+			}
+			if (datagram.length > frame->rdx) {
+				syscall_error(frame, EMSGSIZE);
+				break;
+			}
+			if ((datagram.length != 0 && !vmm_copy_to_user(
+			    vmm_active_address_space(), frame->rsi, datagram.payload,
+			    datagram.length)) || !vmm_copy_to_user(
+			    vmm_active_address_space(), frame->r10, &datagram.source,
+			    sizeof(datagram.source))) {
+				syscall_error(frame, EFAULT);
+				break;
+			}
+			result = udp_socket_consume(object);
+			if (result != 0)
+				syscall_error(frame, errno_from_kernel(result));
+			else
+				frame->rax = datagram.length;
+		}
+		break;
+	case SYSCALL_ICMP_ECHO:
+		{
+			struct icmp_echo_request request;
+			struct address_space *space = vmm_active_address_space();
+			int result;
+			if (frame->rdx != sizeof(request)) {
+				syscall_error(frame, EINVAL);
+				break;
+			}
+			if (frame->rdi == 0 ||
+			    !vmm_validate_user_write(space, frame->rdi,
+			    sizeof(request)) ||
+			    !vmm_copy_from_user(space, &request, frame->rdi,
+			    sizeof(request))) {
+				syscall_error(frame, EFAULT);
+				break;
+			}
+			for (size_t i = 0; i < sizeof(request.reply_source); i++)
+				request.reply_source[i] = 0;
+			request.elapsed_ticks = 0;
+			result = network_icmp_echo(&request);
+			if (result != 0) {
+				syscall_error(frame, errno_from_kernel(result));
+				break;
+			}
+			if (!vmm_copy_to_user(space, frame->rdi, &request,
+			    sizeof(request))) {
+				syscall_error(frame, EFAULT);
 				break;
 			}
 			frame->rax = 0;

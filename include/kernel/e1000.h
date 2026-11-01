@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "arch/x86_64/pci.h"
+#include "kernel/netdev.h"
 
 enum e1000_lifecycle_state {
 	E1000_STATE_ABSENT = 0,
@@ -13,6 +14,8 @@ enum e1000_lifecycle_state {
 	E1000_STATE_MAPPED,
 	E1000_STATE_RESET_IN_PROGRESS,
 	E1000_STATE_INITIALIZED,
+	E1000_STATE_DMA_ACTIVE,
+	E1000_STATE_STOPPING,
 	E1000_STATE_FAILED,
 	E1000_STATE_STOPPED
 };
@@ -26,14 +29,17 @@ enum e1000_failure {
 	E1000_FAILURE_MAP,
 	E1000_FAILURE_REGISTER,
 	E1000_FAILURE_RESET_TIMEOUT,
-	E1000_FAILURE_POST_RESET
+	E1000_FAILURE_POST_RESET,
+	E1000_FAILURE_DMA_ALLOC
 };
 
-/* Singleton for the explicitly supported QEMU 82540EM profile. This stage
- * only identifies, maps, resets, and validates registers; no DMA or I/O path
- * is configured. */
+/* Singleton for the explicitly supported QEMU 82540EM profile. */
 bool e1000_discover(const struct pci_device_info *device);
 bool e1000_initialize(void);
+struct net_device *e1000_network_device(void);
+bool e1000_wait_transmit(struct netbuf_ref packet, uint32_t poll_limit);
+bool e1000_shutdown(void);
+bool e1000_run_qemu_smoke_test(void);
 enum e1000_lifecycle_state e1000_state(void);
 enum e1000_failure e1000_last_failure(void);
 

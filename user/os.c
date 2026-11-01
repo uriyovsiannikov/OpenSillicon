@@ -15,6 +15,21 @@ syscall3(uint64_t number, uint64_t first, uint64_t second, uint64_t third)
 	return failed ? -(long)result : (long)result;
 }
 
+static long
+syscall4(uint64_t number, uint64_t first, uint64_t second, uint64_t third,
+	uint64_t fourth)
+{
+	uint64_t result = number;
+	register uint64_t r10 __asm__("r10") = fourth;
+	unsigned char failed;
+	if (runtime_marker != 1)
+		return -22;
+	__asm__ volatile ("int $128; setc %1" : "+a" (result), "=qm" (failed) :
+	    "D" (first), "S" (second), "d" (third), "r" (r10) :
+	    "rcx", "r11", "memory");
+	return failed ? -(long)result : (long)result;
+}
+
 long u_write(uint64_t fd, const void *buffer, size_t length)
 { return syscall3(2, fd, (uintptr_t)buffer, length); }
 long u_read(uint64_t fd, void *buffer, size_t length)
@@ -26,6 +41,20 @@ long u_stat_path(const char *path, struct u_stat *status)
 { return syscall3(10, (uintptr_t)path, (uintptr_t)status, 0); }
 long u_readdir(uint64_t fd, struct u_dirent *entry)
 { return syscall3(11, fd, (uintptr_t)entry, 0); }
+long u_ioctl(uint64_t fd, uint64_t request, void *argument)
+{ return syscall3(26, fd, request, (uintptr_t)argument); }
+long u_udp_socket(uint64_t family, uint64_t type, uint64_t protocol)
+{ return syscall3(28, family, type, protocol); }
+long u_udp_bind(uint64_t fd, const struct u_udp_endpoint *endpoint)
+{ return syscall3(29, fd, (uintptr_t)endpoint, sizeof(*endpoint)); }
+long u_udp_sendto(uint64_t fd, const void *data, size_t length,
+	const struct u_udp_endpoint *destination)
+{ return syscall4(30, fd, (uintptr_t)data, length, (uintptr_t)destination); }
+long u_udp_recvfrom(uint64_t fd, void *data, size_t capacity,
+	struct u_udp_endpoint *source)
+{ return syscall4(31, fd, (uintptr_t)data, capacity, (uintptr_t)source); }
+long u_icmp_echo(struct u_icmp_echo_request *request)
+{ return syscall3(33, (uintptr_t)request, 0, sizeof(*request)); }
 long u_fork(void) { return syscall3(4, 0, 0, 0); }
 long u_exec_path(const char *path) { return syscall3(12, (uintptr_t)path, 0, 0); }
 long u_exec_path_argv(const char *path, size_t argc,
@@ -37,6 +66,8 @@ long u_sleep_ticks(uint64_t ticks) { return syscall3(13, ticks, 0, 0); }
 long u_pipe(uint32_t descriptors[2])
 { return syscall3(14, (uintptr_t)descriptors, 0, 0); }
 long u_getpid(void) { return syscall3(3, 0, 0, 0); }
+long u_process_snapshot(struct u_process_info *entries, size_t capacity)
+{ return syscall3(32, (uintptr_t)entries, capacity, 0); }
 long u_kill(uint64_t pid, uint64_t signo)
 { return syscall3(15, pid, signo, 0); }
 long u_sigaction(uint64_t signo, const struct u_sigaction *new_action,

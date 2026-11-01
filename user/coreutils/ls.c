@@ -10,6 +10,7 @@ list_path(const char *argument)
 	struct u_dirent entry;
 	long descriptor;
 	long result;
+	long close_result;
 
 	if (!u_normalize_path("/", argument, path, sizeof(path))) {
 		u_puts("ls: path too long: ");
@@ -41,9 +42,15 @@ list_path(const char *argument)
 		u_puts(entry.name);
 		u_puts("\n");
 	}
-	(void)u_close((uint64_t)descriptor);
+	close_result = u_close((uint64_t)descriptor);
 	if (result < 0) {
 		u_puts("ls: directory read failed: ");
+		u_puts(argument);
+		u_puts("\n");
+		return 1;
+	}
+	if (close_result < 0) {
+		u_puts("ls: close failed: ");
 		u_puts(argument);
 		u_puts("\n");
 		return 1;

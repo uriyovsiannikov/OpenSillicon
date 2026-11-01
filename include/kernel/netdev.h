@@ -38,6 +38,8 @@ struct net_device_ops {
 	void (*shutdown)(struct net_device *device);
 	bool (*link_up)(const struct net_device *device);
 	int (*transmit)(struct net_device *device, struct netbuf_ref packet);
+	int (*wait_transmit)(struct net_device *device,
+	    struct netbuf_ref packet, size_t poll_limit);
 	int (*receive)(struct net_device *device, size_t budget,
 	    struct netbuf_ref *packets, size_t capacity, size_t *count);
 };
@@ -55,6 +57,8 @@ int net_device_start(struct net_device *device);
 void net_device_stop(struct net_device *device);
 bool net_device_link_up(const struct net_device *device);
 int net_device_transmit(struct net_device *device, struct netbuf_ref packet);
+int net_device_wait_transmit(struct net_device *device,
+	struct netbuf_ref packet, size_t poll_limit);
 int net_device_receive(struct net_device *device, size_t budget,
 	struct netbuf_ref *packets, size_t capacity, size_t *count);
 

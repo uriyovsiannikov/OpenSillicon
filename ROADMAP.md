@@ -449,9 +449,12 @@ Tasks
   IPC/POSIX work.
 
 Current command model: `help`, `cd`, and `exit` remain shell built-ins.
-`ls`, `cat`, `echo`, `pwd`, `true`, `false`, `clear`, `uname`, and `fetch`
+`ls`, `cat`, `echo`, `pwd`, `true`, `false`, `clear`, `uname`, `fetch`,
+`head`, `wc`, `stat`, `basename`, `dirname`, `kill`, `sleep`, `which`, and `ps`
 are standalone `/bin` ELF programs. `fetch` displays the supplied logo and
-available system details. Shell tokenization splits on spaces, tabs, CR, and
+available system details. `kill`, `sleep`, and `which` use the existing signal,
+timer, and VFS interfaces. `ps` remains unavailable because no process listing
+API exists. Shell tokenization splits on spaces, tabs, CR, and
 LF, with no quote or escape syntax; the 256-byte line permits at most 16
 arguments. Syscall 27 accepts 1–16 arguments and at most 2048 total string
 bytes including NULs. argv[0] is the command token as typed; envp is empty.
@@ -462,8 +465,8 @@ or stdin when no file is named, `echo` prints all operands, and `uname` accepts
 `-s`, `-m`, and `-a`. Relative `ls`/`cat` paths are rooted at `/`, as the
 process model has no cwd syscall. `pwd` reports `/`. File mutation
 utilities are omitted because userspace has no create/unlink/rename syscall.
-`head`, `tail`, and `wc` remain deferred as utilities not yet implemented;
-`yes` is omitted because its unbounded output is not useful without shell
+`tail` remains deferred because no seek operation exists; `yes` is omitted
+because its unbounded output is not useful without shell
 redirection or pipes. `date` has no clock
 query syscall, and `whoami` has no kernel credential interface.
 The framebuffer console supports bounded ANSI CSI plus SGR reset, 8 standard
@@ -702,8 +705,11 @@ Tasks
 - Stage 15E: integrated packet, socket, process, and regression suite; record
   supported behavior and exclusions before marking Phase 15 complete.
 
-Architecture is recorded in ADR-036. These are proposed implementation
-stages; none of the networking components is implemented yet.
+Architecture is recorded in ADR-036. The network foundation and bounded
+QEMU-only e1000 frame path are implemented as described below. Ethernet,
+ARP, IPv4, ICMP, and UDP have bounded QEMU-tested implementations. TCP has
+only the isolated wire/state-machine core in milestone 15.4B; live TCP and a
+TCP socket API remain unimplemented.
 
 Done criteria
 
@@ -731,8 +737,9 @@ exhaustion/stale handles, lifecycle, and packet ownership.
 Stage 15.1B implements contiguous bounded PMM runs, generation-tagged DMA
 allocation handles, CPU/device ownership transfer with x86 ordering fences,
 and releasable uncached MMIO leases inside a dedicated vmalloc window. MMIO
-accepts validated apertures and ranges residing in Limine base revision 4
-RESERVED memory, rejecting HHDM RAM/cache aliases. The kernel requests Limine
+accepts validated ranges fully covered by RESERVED memory or wholly absent
+from the Limine memory map, rejecting described RAM/boot ranges and HHDM
+RAM/cache aliases. The kernel requests Limine
 base revision 5; base revision 4 remains the minimum for its ACPI/HHDM boot
 contracts.
 
@@ -773,6 +780,609 @@ This milestone does not configure DMA rings, enable interrupts, or transmit or
 receive packets. QEMU guest logs prove discovery, BAR mapping, reset completion,
 and register reads only. Generic PCI BAR sizing remains unresolved; the 128
 KiB BAR0 aperture is accepted only as the explicit QEMU profile. See ADR-038.
+
+### Milestone 15.2B — Bounded e1000 DMA rings and Ethernet smoke
+
+Status: implemented and guest-tested for QEMU 10.2.2's explicit Intel
+82540EM profile (`8086:100e`), using the Limine Base Revision 5 identity-DMA
+contract. The driver configures eight legacy 16-byte TX descriptors and eight
+legacy 16-byte RX descriptors in separate 128-byte, 128-byte-aligned DMA ring
+allocations. Each ring slot has explicit CPU/device ownership; TX and RX use
+separate contiguous 2048-byte DMA buffers. Packet length is bounded to 1518
+bytes and completed RX frames require DD, EOP, no descriptor error, and a
+valid Ethernet frame length. Polling is bounded, interrupts remain masked,
+and no higher-level protocol is parsed.
+
+PCI Bus Mastering is enabled only after the validated DMA contract, successful
+ring and buffer allocations, descriptor publication, and ring register
+programming. TX completion is reclaimed only after DD. RX data is copied into
+the bounded core packet pool before its DMA buffer is rearmed. Shutdown disables
+engines, performs bounded reset and PCI command readback, and releases DMA only
+after the driver confirms stop. If stop cannot be confirmed, DMA allocations
+are retained rather than freed while hardware access may remain possible.
+
+The dedicated QEMU test uses q35, `-nodefaults -nic none`, explicit
+`-netdev socket` to a loopback host peer, and `-device e1000` with an explicit
+MAC. The peer observed the exact 60-byte TX frame and injected a deterministic
+60-byte RX frame. Guest serial output confirmed TX descriptor 0 DD, RX
+descriptor 0 DD/EOP, exact frame acceptance, and clean DMA shutdown. This is
+QEMU profile evidence only; physical NICs, IOMMU translation, non-coherent DMA,
+interrupts, and protocol/network-stack behavior remain unsupported or
+unverified. See ADR-039. Phase 15 is not complete.
+
+### Milestone 15.3A — Bounded ARP, IPv4, and ICMP Echo
+
+Status: implemented for the static test profile over the QEMU 82540EM DMA
+driver. The stack accepts bounded untagged Ethernet II frames, Ethernet/IPv4
+ARP, IPv4 without options or fragmentation, and ICMP Echo Request/Reply only.
+It uses MTU 1500, accepts at most 1518-byte Ethernet frames, and keeps an
+eight-entry ARP cache expiring after 6000 timer ticks with deterministic
+round-robin replacement. The QEMU peer uses guest `10.15.3.1/24`, MAC
+`52:54:00:15:03:01`, and peer `10.15.3.2`, MAC `52:54:00:15:03:02`.
+
+Host tests cover wire builders, checksums, ARP cache expiry/replacement,
+malformed and unsupported frames, IPv4 bounds/fragment policy, and Echo
+handling. A test-only guest poller resolves the peer with ARP, transmits an
+ICMP Echo Request, verifies the matching Echo Reply, then safely shuts down
+the e1000. See ADR-040.
+
+### Milestone 15.3B — Bounded UDP and project-native socket descriptors
+
+Status: implemented and QEMU guest-tested for the static `10.15.3.1/24`
+profile and explicit `8086:100e` e1000. IPv4 UDP validates the exact UDP
+length and packet bounds; nonzero checksums are validated over the IPv4
+pseudoheader, while zero checksums are accepted as allowed for IPv4. Outbound
+datagrams include a valid checksum. The fixed profile limits payloads to 512
+bytes, active sockets to eight, and queued datagrams to four per socket.
+Sockets are reference-counted file descriptors; this is a project-native
+datagram interface, not POSIX/BSD or Linux socket ABI compatibility.
+
+Syscalls 28–31 create, bind, sendto, and receive-from. Receive uses bounded
+polling with a five-second deadline; queue overflow drops the newest packet,
+and an undersized destination returns `EMSGSIZE` without dequeuing. Binding
+supports wildcard and the configured local address, fixed ports, and
+deterministic ephemeral ports for unbound senders. TCP, DHCP, IPv6, routing,
+forwarding, and background network processing remain deferred. ADR-041 records
+the ABI and current limitations. Phase 15 remains incomplete.
+
+### Milestone 15.4B — TCP wire and deterministic state-machine core
+
+Status: implemented as an isolated, host-tested core. `kernel/net/tcp_core.c`
+parses and builds bounded IPv4 TCP segments, validates pseudoheader checksums,
+and supports only MSS, NOP, and EOL options. Its generation-tagged table has
+eight entries, at most four SYN children per listener, a 2048-byte receive
+queue per connection, a 1480-byte segment bound, five modeled control retries,
+and a 12000-tick TIME-WAIT interval. The model covers all listed TCP states,
+active/passive handshake events, ACK and receive-sequence checks, in-order
+data, duplicate ACK actions, FIN/RST, and deterministic cleanup. Host tests
+exercise checksums, malformed input, sequence wrap/bounds, close paths,
+backlog and table exhaustion, retained handles, and slot reuse.
+
+This milestone does not connect TCP to netstack, e1000, the runtime timer
+interrupt, descriptors, or syscalls. It does not expose a TCP socket API or
+enable live connection establishment. Listener and active-open event variants,
+including the explicit deterministic sequence field, are enabled only in the
+host test build with `TCP_CORE_TESTING`; they are absent from the production
+kernel object. No kernel random source is connected to production ISN
+generation. TCP data transmission/retransmission, live IPv4
+integration, socket ABI, and QEMU peer testing remain future work. This is an
+experimental bounded model, not POSIX/BSD or standards-complete TCP.
+
+### Milestone 15.4C — Bounded TCP timer service and entropy audit
+
+Status: implemented as an isolated primitive, not wired into the runtime.
+`tcp_core_service()` examines the fixed eight-entry table and processes at
+most four due control-retransmission or TIME-WAIT events per call. It returns
+actions and generation-tagged handles with temporary external references;
+the caller must release each returned handle. `more_due` reports remaining
+work. A future deferred service loop can call it outside interrupt context,
+then translate the returned actions into packets. No such general network
+service hook exists yet; the timer interrupt only advances the 100 Hz tick,
+wakes processes, and schedules preemption, while current UDP polling occurs
+in the socket/test polling path.
+
+Control timers start at 100 ticks (1 second), double to a cap of 800 ticks (8
+seconds), and abort after five retries. ACK of the outstanding SYN/FIN cancels
+that timer. TIME-WAIT lasts 12000 ticks (120 seconds). Deadline comparisons
+use unsigned half-range subtraction and are wrap-safe for these bounded
+intervals. Host tests inject ticks and cover early/due events, backoff,
+retry exhaustion, cancellation, TIME-WAIT and retransmit deadline wrap,
+service budget exhaustion, and handle release during pending timers. Only
+SYN/FIN control retransmission is modeled; TCP data retransmission is absent.
+
+At the time of this audit, there was no kernel CSPRNG, CPU RNG use, or boot
+entropy request. The bundled Limine header defines an entropy response,
+but the kernel does not request it. Limine specifies those values as best
+effort and permits fallback to a timing-seeded PRNG, so they are not accepted
+as a trusted ISN source under this policy. `tcp_core_live_isn_available()`
+remains false; there is no live ISN generation or connection-establishment
+path. A trusted, conditioned entropy source, seeding/failure policy, and
+reviewed CSPRNG are prerequisites before live TCP.
+
+### Milestone 15.4E — Trusted entropy and kernel CSPRNG readiness
+
+At the time of this audit, no accepted entropy source or random-byte API was
+present. The bundled Limine protocol defines an entropy response, but the
+kernel does not request it and the values are best-effort: the bootloader may
+fall back to a timing-seeded PRNG. That response is not accepted as a
+production ISN source. The audit's fail-closed conclusion was retained until
+the follow-up 15.4I capability implementation described below.
+
+### Milestone 15.4F — Bounded deferred network service
+
+Status: implemented with two safe points and no timer-ISR protocol work. A
+fixed eight-event queue accepts RX-poll requests; one call processes at most
+four queued events, and each event polls at most one frame. Every syscall
+dispatch requests and drains bounded RX work, so service is not limited to
+network syscalls. When all user processes are blocked, `schedule_from()` also
+requests and drains work after `sti; hlt; cli` returns to the scheduler idle
+loop. The LAPIC handler remains limited to tick advancement, wakeups, and
+preemption.
+
+The existing UDP receive polling remains available and shares an explicit
+single-owner/reentrancy guard with deferred polling. On this single-CPU kernel,
+short state guards mask local interrupts; this is not SMP synchronization.
+Requests beyond queue capacity are rejected, and the service reports bounded
+progress and pending work. e1000 shutdown is refused while service work is
+running or queued. UDP QEMU regression verifies a queued poll is drained before
+safe device shutdown. A syscall-free, continuously runnable user process does
+not get network service on timer preemption; no dedicated kernel worker or
+generic background poll loop exists. Kernel threads are cooperatively
+scheduled and there is no network event-wait primitive, so a worker would
+require scheduler/blocking changes outside this milestone. Events are not
+coalesced: a full queue rejects the newest request while retaining queued
+requests, and each runtime safe point drains up to four even if enqueue fails.
+Progress therefore depends on future syscall or blocked-idle safe points.
+
+The isolated `tcp_core_service()` timer model is not integrated: the runtime
+has no owned TCP table/lifecycle. The conditional random-byte API is not
+integrated with TCP; `tcp_core_live_isn_available()` remains false and no TCP
+packet or syscall path is enabled. This milestone does not claim live TCP or
+asynchronous service while arbitrary user code runs without kernel entry.
+
+### Milestone 15.4I — Kernel RDRAND API foundation
+
+Status: implemented and host-tested. `kernel_random_init()` checks CPUID
+leaf 1 ECX.RDRAND, performs a bounded validity-checked RDRAND probe, and
+reports unavailable if the feature is absent or ten attempts fail. The
+kernel API returns at most 256 bytes per request, checks the RDRAND carry
+flag, and fails the whole request without modifying the caller's output if
+the source fails. Such failure permanently marks the source unavailable for
+this boot. There is no deterministic production fallback. Host-only tests
+can inject a marked deterministic source; those hooks are excluded from the
+kernel build.
+
+RDRAND output is generated by the processor DRBG (Intel documents CTR_DRBG
+with AES); this wrapper does not implement a separate software DRBG, entropy
+pool, or reseed schedule. Trust depends on the CPU implementation and the
+platform or hypervisor exposing it faithfully. The current QEMU regression
+uses its default x86 CPU profile without `-cpu`; on QEMU 10.2.2 the guest
+reported the source unavailable, as intended, while continuing boot and UDP
+traffic. A separate TCG boot using `-cpu max` reported random-source
+initialization success, which verifies instruction execution in that
+emulated profile, not physical hardware entropy quality. Limine entropy
+remains unrequested because its protocol is
+best-effort and permits timing-seeded fallback. No TCP code consumes this
+API: `tcp_core_live_isn_available()` remains false, and live TCP and
+production ISNs remain disabled. Local interrupt masking protects calls only
+against timer preemption on this single-CPU kernel, not SMP concurrency.
+
+### Milestone 15.4J — Software CSPRNG design review
+
+Decision: defer a software DRBG. The kernel contains no reviewed ChaCha20,
+AES, or hash implementation suitable for reuse. Introducing one would also
+require an independently reviewed seed-conditioning, reseed, state-update,
+and zeroization design; mixing RDRAND with RDSEED without that design is not
+an acceptable shortcut. Intel documents RDRAND support at CPUID.1:ECX[30]
+and RDSEED support at CPUID.7:EBX[18]. OpenSillicon checks only RDRAND and
+does not execute RDSEED. These instructions are not treated as
+interchangeable. The direct RDRAND API remains optional and fails closed when
+the feature or instruction output is unavailable. There is no software
+generator state, seed size, or reseed schedule. The default QEMU profile
+remains unavailable; `-cpu max` was separately boot-tested and returned
+successful RDRAND initialization, which is not evidence of physical
+platform/hypervisor trust. Production random requests are therefore
+platform-conditional, while production ISNs and live TCP remain disabled.
+
+Phase 15.4K audit: the implementation queries only CPUID leaf 1 for RDRAND;
+it does not query leaf 7 or execute RDSEED. Intel documents RDRAND as its
+CTR_DRBG output and RDSEED as seed material, but those implementation details
+are vendor-specific. AMD's architecture manual provides its instruction
+interface, and AMD advisory SB-7055 documents an RDSEED success-reporting
+defect on affected Zen 5 systems. Feature bits and CF therefore indicate the
+advertised/architectural operation, not trustworthiness of the source. QEMU
+exposes, suppresses, or emulates CPU features under hypervisor control, and
+the guest cannot distinguish that from bare metal using this code. The host
+does not provide a supported external RNG device, and Limine entropy remains
+unrequested and untrusted under its best-effort contract.
+
+QEMU 10.2.2 guest boot observations: default CPU (no `-cpu`) => unavailable;
+`-cpu max` => initialization succeeds; `-cpu max,-rdrand` => unavailable;
+`-cpu max,-rdseed` => initialization succeeds; `-cpu max,-rdrand,+rdseed` =>
+unavailable. The final profile explicitly configures RDSEED while disabling
+RDRAND, but the guest does not query RDSEED CPUID state. The kernel does not
+fall back from missing RDRAND to RDSEED. No project QEMU invocation uses
+`-cpu host`. These are instruction-path checks, not entropy-quality tests.
+Recommendation: defer production security-sensitive
+random use until an explicit platform trust policy and reviewed software DRBG
+seed/reseed policy exist. This applies to TCP ISNs, cryptographic keys,
+security tokens, and any future userspace random API. Live TCP remains
+disabled.
+
+### Phase 15.4L — TCP core runtime integration readiness
+
+The isolated core now supports bounded tuple lookup without enabling runtime
+dispatch. Active tuples match all four fields (local/remote IPv4 addresses
+and ports); duplicate active tuples are rejected. Listener tuples use remote
+port zero and a zero remote address, and can bind either one local address or
+wildcard `0.0.0.0`. Overlapping listeners on the same port are rejected.
+Lookup prefers one exact active tuple over a listener, returns an explicit
+ambiguity status rather than making an arbitrary choice, and gives the caller
+a retained generation-tagged handle to release. A tuple snapshot accessor
+is valid only while the supplied handle remains valid.
+
+The core remains externally serialized and has no runtime-owned table. Parsed
+payload is borrowed only during `tcp_core_step()`; accepted bytes are copied
+into the bounded per-connection receive queue. Actions describe future packet
+work but own no frame or payload storage. Timer-service outputs also carry
+temporary references that the caller must release. Current netstack ignores
+IPv4 protocol 6 and the e1000 TX path is not connected to TCP actions.
+Before runtime integration, OpenSillicon still needs an approved trusted
+entropy policy and reviewed production ISN source, one serialized runtime
+table/service owner, TCP IPv4 dispatch, action-to-frame construction, bounded
+TX ownership, and lifecycle/shutdown handling. `tcp_core_live_isn_available()`
+remains false; live TCP, production ISNs, TCP syscalls, and runtime packet or
+timer dispatch remain disabled.
+
+---
+
+### Phase 15.4N — TCP runtime ownership and RX classification scaffolding
+
+Implemented: one private, statically allocated eight-slot TCP core table is
+initialized once after the existing UDP stack and cooperative network service.
+Duplicate initialization is rejected. Shutdown enters a sticky stopping state
+and refuses to complete while any table entry or external handle remains; it
+does not force-release references. Reinitialization after stopping or
+successful shutdown is unsupported so generations cannot be reset under stale
+handles. The host lifecycle test fills the table, verifies the ninth
+allocation fails without changing its output handle, frees/reuses a slot with
+a new generation, tests stale-handle rejection and retained references, and
+closes a modeled active entry before successful one-shot shutdown. There is no
+production connection/listener creation path, so the runtime table remains
+empty and no TCP service or timer call runs. Runtime lifecycle entry points
+require external serialization; they do not claim SMP safety.
+
+The shared netstack path now has bounded IPv4 protocol classification after
+header, checksum, and packet-length validation. It recognizes ICMP, TCP, UDP,
+and unsupported protocol values. Protocol 6 is returned as
+`NETSTACK_TCP_DISABLED` only after IPv4 destination, fragment, TTL, and link
+checks plus bounded TCP header/options/pseudoheader-checksum validation. A
+truncated or malformed TCP segment is ignored. No TCP parse view, tuple
+lookup, core step, connection allocation, response, or extra service event is
+produced. UDP parsing and RX ownership remain on the existing
+`udp_socket_poll()` path; payload is copied to a bounded four-datagram socket
+queue before the RX netbuf is released, and no second e1000 poller was added.
+
+Future TCP dispatch belongs at the validated protocol-6 branch in
+`process_ipv4()`: parse/checksum the segment while the existing RX owner holds
+the CORE-owned frame, look up the four-field tuple, step the core, create an
+owned output frame, and hand it to the bounded e1000 TX path. Steps after
+classification remain disabled. Timer work must be bounded and serialized in
+the cooperative service outside the LAPIC ISR, with budget reserved even
+under RX backlog and all returned timer handles released. Cooperative progress
+still depends on syscall/idle safe points; a continuously runnable userspace
+task without kernel entry can delay service. Live TCP remains blocked by the
+fail-closed production ISN/entropy policy. No TCP syscalls, packet TX, runtime
+dispatch, or timer integration are enabled.
+
+The host-only synthetic checksum-valid SYN/SYN-ACK/ACK fixtures now exercise
+the parser and deterministic core state transitions; they do not exercise
+runtime dispatch or packet transmission. The RDRAND wrapper remains
+fail-closed on unavailable/failing hardware; deterministic entropy injection
+remains host-test-only, and neither RDRAND availability nor QEMU CPU profiles
+enable production ISNs.
+
+---
+
+### Phase 15.4P — Isolated TCP handshake control plane
+
+Implemented and host-tested only. The deterministic core supports active
+SYN-SENT to ESTABLISHED from a valid SYN-ACK, passive LISTEN to
+SYN-RECEIVED child to ESTABLISHED from a valid final ACK, and simultaneous
+open through an active-origin SYN-RECEIVED transition. It checks the exact
+four-field tuple and handshake sequence/acknowledgment values, permits
+32-bit sequence wraparound, rejects payload before establishment, and limits
+handshake flags to the modeled combinations. The listener stays available;
+an exact duplicate SYN reissues the SYN-ACK action without allocating another
+child. The four-child backlog and eight-slot table remain fixed.
+
+Invalid SYN-ACK acknowledgments, unexpected flags, out-of-window RSTs,
+checksum-invalid packets, stale handles, and tuple mismatches do not advance
+the handshake. SYN control retransmission retains the existing 100-tick
+initial RTO, exponential backoff capped at 800 ticks, five retransmission
+actions, and bounded abort on exhaustion. Timer-service references remain
+caller-owned and tests release them. Host-generated IPv4/TCP packet fixtures
+validate IPv4 lengths/checksum and TCP pseudoheader checksums before testing
+core transitions.
+
+All initial sequence values are explicit host-test inputs. Test-only runtime
+hooks remain excluded from production objects. `tcp_core_live_isn_available()`
+is false; kernel RDRAND is not used as an ISN source. No live TCP packet
+dispatch, TCP syscalls, TCP TX, runtime timer integration, or e1000 handshake
+test is enabled. This is an experimental bounded control-plane model, not a
+complete RFC TCP implementation. Trusted production entropy and a separately
+reviewed ISN policy remain prerequisites.
+
+### Phase 15.4Q — RFC 9293 state-machine audit
+
+The source and host tests were compared with RFC 9293 Sections 3.3, 3.3.2,
+3.4, 3.5.2–3.5.4, 3.9, and 3.10.7. The audit added wrap-safe serial
+comparisons for established ACK processing, ignores stale ACKs without
+blocking in-order receive data, requests an ACK for future ACKs, emits the
+modeled reset action for unacceptable handshake ACKs, ignores unknown
+well-formed TCP options, exercises simultaneous open, and restarts the
+TIME-WAIT deadline on a duplicate FIN. Focused host tests cover wraparound,
+ACK/sequence boundaries, duplicate handshake packets, options, reset behavior,
+and TIME-WAIT restart.
+
+This is not RFC 9293 conformance. The model does not trim overlapping data,
+queue out-of-order segments, accept data on SYN, process the full flag/state
+matrix, generate wire reset sequence/acknowledgment fields, emit RFC 5961
+challenge ACKs, or provide full FIN/queue/application-notification semantics.
+RST validation is stricter than the base receive-window rule in handshake
+states; synchronized states accept any sequence inside the bounded window.
+MSS/NOP/EOL are interpreted, unknown length-delimited options are skipped,
+and other header features such as ECN/URG are unsupported. The timer is a
+fixed bounded SYN/FIN control retry model, not an RTT estimator or general
+retransmission engine. See the Phase 15.4Q matrix in DESIGN.md and
+[RFC 9293](https://www.rfc-editor.org/rfc/rfc9293.html). Live TCP, production
+ISNs, TCP syscalls, TCP TX, and runtime dispatch remain disabled.
+
+### Phase 15.4R — Bounded TCP wire parser and serializer
+
+Implemented as a standalone, host-tested wire module. `tcp_wire_parse()`
+validates a raw IPv4 TCP payload against an explicit IPv4 pseudo-header and
+returns borrowed header/option/payload views only after all bounds, option,
+reserved-bit, and checksum checks pass. `tcp_wire_build()` serializes into
+caller-owned output storage, validates options and capacity, writes a zeroed
+reserved field and data offset, and computes the TCP checksum. The supported
+segment bound is 1480 bytes (IPv4 MTU 1500 less the minimum IPv4 header).
+
+MSS, Window Scale, SACK-Permitted, SACK block layout, and Timestamp layouts
+are parsed with fixed length checks; unknown well-formed options are skipped.
+Option metadata does not activate window scaling, SACK recovery, timestamp
+RTT measurement, or ECN. Tests include independently calculated even/odd
+checksum vectors, SYN/SYN-ACK and payload round trips, every truncation length
+below the base header, malformed options, reserved bits, checksum corruption,
+maximum length, and deterministic byte mutations. The prior core parser and
+builder now delegate to the wire module. Production IPv4 still only validates
+TCP and returns the disabled result; no TCP connection lookup, state step,
+response, TX path, syscall, timer integration, DMA, or production ISN is
+enabled. This module is packet-format infrastructure, not TCP support.
+
+### Phase 15.4S — TCP IPv4 receive validation only
+
+The shared IPv4 receive path now invokes `tcp_wire_parse()` only after the
+existing IPv4 and Ethernet/source/destination checks. It passes the exact TCP
+payload slice selected by IPv4 total length, excluding the IPv4 header and any
+Ethernet padding. Results distinguish valid-but-disabled TCP from malformed
+header, checksum, and option input. Parsed pointers are borrowed for the
+synchronous call only; the existing single RX owner releases the packet after
+classification. Host netstack tests cover valid SYN/ACK/data/options, unknown
+well-formed options, malformed headers/options/checksums, IPv4 validation
+gates, and the maximum segment bound. A host-only linker wrapper asserts that
+IPv4 checksum/MTU failures do not invoke the TCP parser. The UDP receive-owner
+test injects valid, malformed, and unsupported-protocol frames, confirms their
+netbufs return to the pool, and verifies they never enter UDP queues or add
+network-service work.
+
+This remains validation and discard only: no tuple lookup, TCP core call,
+connection, response, transmission, TCP timer, syscall, or live networking
+is enabled. Production ISNs remain unavailable and no RFC 9293 conformance is
+claimed.
+
+### Phase 15.4T — TCP runtime connection ownership scaffold
+
+The runtime owns a private fixed table with the existing capacity of eight;
+listeners and modeled connections share those slots. Listener registration
+accepts a specific local IPv4 address or wildcard address, rejects port zero
+and conflicting same-port listeners, and transitions a new core entry to
+LISTEN without generating an ISN or packet. Lookup gives an exact four-field
+connection tuple precedence over a listener, applies specific/wildcard
+listener rules, and returns explicit no-match, ambiguity, disabled, stopping,
+invalid, or reference-exhaustion outcomes. A successful result owns one
+generation-tagged handle reference, released explicitly by the caller.
+
+Runtime operations use local interrupt masking for serialization on the
+single-CPU kernel; this is not SMP-safe and is not an interrupt-context API.
+Initialization is one-shot. Shutdown is sticky: it rejects new routing and
+listener creation, refuses completion while entries/references remain, and
+does not invalidate handles. Reinitialization after shutdown is unsupported.
+
+The optional `OPEN_SILLICON_ENABLE_TCP_ROUTING` compile gate is not present in
+the normal kernel build. A separate host build tests routing and the netstack
+boundary. Normal production IPv4 processing still validates TCP wire format
+and discards it without tuple lookup, listener lookup, connection creation,
+core events, payload retention, queueing, timers, or response. The gated
+boundary also only looks up and retains a handle; payload remains unsupported
+and no core event is submitted. There is no TCP service integration, TX path,
+syscall, or production ISN source. This is ownership and routing scaffolding,
+not working TCP connections or RFC 9293 conformance.
+
+### Phase 15.4U — Isolated passive-open runtime/core integration
+
+Host-test-only ingress connects runtime tuple routing to the core's existing
+passive listener `TCP_EVENT_SEGMENT` behavior. A valid SYN creates one
+SYN-RECEIVED child with the exact local/remote IPv4 and port tuple; the core
+records the listener generation and a fixed runtime sidecar tracks the child
+by slot and generation. Listeners and children share the existing eight
+table slots, and the four-child SYN backlog is enforced. Backlog or table
+exhaustion returns a bounded resource result without registering a partial
+child.
+
+Duplicate SYNs route to the same child and return abstract retransmit actions
+without resetting its timer. A final ACK is routed to that exact child and
+only the core validates its sequence and acknowledgment before entering
+ESTABLISHED. Unsupported flags and payload are rejected. RST cleanup removes
+the runtime mapping and drops its owned reference; caller references keep a
+closed slot alive, and stale generation handles cannot access reused slots.
+Listener close is refused while child mappings remain. The reference created
+by the core is runtime-owned; returned handles are independent caller refs.
+
+This ingress and deterministic ISN injection are compiled only for host tests
+with `TCP_RUNTIME_TESTING`/`TCP_CORE_TESTING`; no production API accepts an
+ISN seed. Normal kernel IPv4 continues to validate TCP and discard it, with
+the optional routing gate absent from normal flags. Core timer state may be
+armed. Abstract SYN/ACK actions are never built or transmitted. Production
+ISNs, TCP TX, TCP syscalls, and production TCP dispatch remain disabled; this
+is not live TCP or RFC 9293 conformance.
+
+### Phase 15.4V — TCP runtime timer ownership
+
+Implemented as a bounded runtime API, not a runtime hook. It delegates to
+`tcp_core_service()` with the existing 100 Hz `timer_ticks()` time domain and
+accepts budgets of zero through four events. Results expose scalar state and
+actions only. The runtime validates each returned generation-tagged handle
+and releases the core service reference exactly once before returning. Core
+`more_due` is propagated so a future safe caller can schedule another bounded
+pass; no unbounded timer drain or allocation is performed.
+
+Timer expiration is not automatically treated as closure: retry events may
+re-arm their timer, while retry exhaustion or TIME-WAIT expiry may close table
+ownership. The temporary service reference protects a closed connection while
+the runtime copies its result. External references remain valid. In the
+host-only passive-child model, a closed child's runtime-owned link reference
+is dropped before clearing its parent relationship; listener close remains
+refused while that link exists. Failed validation/release returns an error
+without force-destroying handles. STOPPING and STOPPED reject timer service;
+shutdown refuses while service is marked active. Local interrupt masking
+serializes runtime operations only on the current single CPU and is not SMP
+safety.
+
+Host tests use explicit ticks to cover no-due, bounded batches, `more_due`,
+no duplicate processing, retry exhaustion with a retained external handle,
+child timeout/link cleanup, busy/shutdown behavior, and calls before/after the
+runtime lifecycle. Timer service remains unwired from LAPIC interrupts,
+`network_service_run()`, and production boot. No production TCP routing,
+packet TX, syscall, or ISN generation is enabled; future integration still
+requires an approved entropy policy and a safe deferred caller.
+
+### Phase 15.4W — TCP Runtime active-open lifecycle
+
+Implemented in host tests only. Runtime test API creates a bounded active
+tuple entry with an explicitly supplied deterministic ISN, submits Core's
+active-open event, and returns the retained handle only after Core confirms
+SYN-SENT and SEND_SYN. Duplicate tuples and full-table requests fail without
+leaking a handle. A second host-only operation parses raw TCP payload bytes,
+validates the pseudoheader checksum, checks the exact four-field tuple, and
+submits the segment to Core. The final ACK is reported as a scalar abstract
+action and is never sent.
+
+Core remains the only owner of handshake validation and state transitions.
+Bad ACKs, unsupported flags, malformed/checksum-invalid packets, stale
+handles, and any address/port mismatch do not establish a connection. An
+arbitrary first peer SYN-ACK sequence is valid as the peer's initial sequence;
+there is no prior peer sequence against which to call it unexpected. A valid
+RST follows the existing Core ACK rules and can close table ownership without
+invalidating a caller-held handle. Runtime timer service observes SYN-SENT,
+releases its own returned reference, and bounded retry exhaustion closes the
+connection; externally retained references prevent slot reuse until released.
+
+The deterministic sequence argument and both active-open operations exist
+only in host builds with `TCP_RUNTIME_TESTING` and `TCP_CORE_TESTING`. The
+normal kernel still excludes `OPEN_SILLICON_ENABLE_TCP_ROUTING` and both test
+macros, validates/discards incoming TCP, and does not create active entries,
+transmit TCP, add syscalls, generate production ISNs, or schedule TCP timers.
+This milestone is a lifecycle test harness, not live TCP or a claim of RFC
+9293 conformance. Entropy trust, runtime RX dispatch, packet serialization,
+and owned TX handoff remain future prerequisites.
+
+---
+
+### Phase 15.4X — TCP Runtime lifecycle unification
+
+Active and passive connections use the same eight Core table slots and the
+same terminal rule: Core state `CLOSED` drops table ownership; Runtime then
+performs idempotent passive relationship cleanup. Active caller handles,
+passive caller handles, child-link references, parent-listener references, and
+bounded timer-service references have explicit independent owners. A slot is
+reusable only after all references are released, and reuse advances its
+generation. Listener close is refused while any child link remains. Backlog
+counts linked SYN-RECEIVED children, while established children continue to
+occupy table capacity until terminal cleanup.
+
+Host lifecycle coverage exercises both connection types, shared capacity and
+exhaustion, supported FIN/close transitions, RST and retry/TIME-WAIT cleanup,
+duplicate FIN, retained handles, parent unlinking, and stale-handle rejection
+after reuse. This does not add a data plane: production TCP routing,
+transmission, syscalls, ISN generation, and timer-service hooks remain
+disabled. Runtime/Core serialization is single-CPU local-interrupt masking,
+not SMP synchronization.
+
+---
+
+### Phase 15.4Y — Host-only TCP Runtime local close
+
+`tcp_runtime_test_local_close()` validates a generation-tagged handle and
+submits the existing Core application-close event under Runtime serialization.
+It returns scalar state/actions/sequence/timer observations only. From
+ESTABLISHED it reports FIN-WAIT-1; from CLOSE-WAIT it reports LAST-ACK. Both
+paths emit abstract SEND_FIN|SEND_ACK, consume one sequence number, and arm
+the existing bounded retransmission timer. A caller may release its handle
+only when finished; close does not invalidate it.
+
+Core's existing SYN-SENT and SYN-RECEIVED close behavior is preserved as an
+abort that reports SEND_RST|ABORT and reaches CLOSED; a passive child is
+unlinked through the unified cleanup path. LISTEN remains on its dedicated
+child-aware close API. Repeated close in FIN-WAIT-1/2, CLOSING, LAST-ACK,
+TIME-WAIT, or CLOSED returns unsupported without changing state or repeating
+FIN. Core alone validates FIN acknowledgments and performs FIN-WAIT,
+CLOSE-WAIT, LAST-ACK, CLOSING, TIME-WAIT, retry, and terminal transitions.
+The test API can drain handles while Runtime is STOPPING, but returns disabled
+before initialization and after completed shutdown. It reports BUSY during
+timer service. This API is compiled only for host tests; production TCP
+routing, packets, syscalls, ISNs, and timer hooks remain disabled.
+
+### Phase 15.4Z — TCP Core/Runtime close-state audit
+
+The close-event audit confirms Core's behavior by state: LISTEN closes without
+an action; SYN-SENT and SYN-RECEIVED abort with abstract RST and ABORT;
+ESTABLISHED enters FIN-WAIT-1; CLOSE-WAIT enters LAST-ACK; FIN-WAIT-1/2,
+CLOSING, and LAST-ACK treat repeated close as a no-op; TIME-WAIT and CLOSED
+also remain unchanged. The two graceful paths emit FIN and ACK, advance
+`snd_nxt` once, and arm the bounded control timer. The host Runtime close
+wrapper rejects repeated/unsupported states without calling Core. Core remains
+the authority for ACK, FIN, RST, retry-exhaustion, and TIME-WAIT transitions.
+
+Runtime test results expose a scalar projection of Core outcomes rather than
+embedding Core results with internal child handles. Passive event results
+preserve Core actions and state even when Runtime reports a non-establishing
+outcome. Terminal cleanup is keyed only to Core CLOSED: Core drops table
+ownership, Runtime unlinks a matching passive child relationship once, timer
+service releases its retained result reference once, and external handles
+remain valid until explicitly released. The shared capacity stays eight;
+generation checks prevent stale handles or links from referring to reused
+slots. Repeated-close tests assert unchanged actions, sequence values, and
+timer state across supported no-op states. These are isolated host tests only;
+production TCP dispatch, TX, ISNs, syscalls, and timer hooks remain disabled.
+
+### Phase 15.4AB — TCP Runtime API ownership contract
+
+The Runtime header now documents preconditions, lifecycle availability, output
+ownership, and release duties for each entry point. Runtime handles are
+slot/generation tokens with Runtime ownership semantics, even though their
+representation is shared with Core. Core table ownership, caller references,
+passive child-link and parent references, and Runtime-consumed timer-service
+references are distinct; references survive CLOSED until released, and a slot
+cannot be reused before reclamation. Timer results are scalar snapshots and
+never transfer a handle to the caller.
+
+Passive result status classifies Runtime handling separately from the scalar
+Core outcome. On initial SYN, Core outcome describes the listener while the
+Runtime handle identifies the child. Test-only active/passive/close APIs and
+deterministic ISNs remain host-only. Production has no TCP event dispatch,
+transmission, syscalls, ISN generation, or timer hook. Runtime serialization
+uses local interrupt masking on one CPU and is not SMP synchronization.
 
 ---
 
@@ -878,3 +1488,101 @@ private mapping/protection, and shared-memory regression targets passed.
 The detached source signature check was skipped because no signature/key
 pair was supplied. Full termios, PTYs, terminal job control, and arbitrary
 ioctl requests remain deferred.
+
+### Phase 15.5A — Preparation for a future official package repository client
+
+This phase audits the existing network and user-space boundaries; it does
+not implement a downloader or package manager. The only demonstrated
+guest-facing transport is bounded project-native IPv4 UDP over the explicit
+QEMU `8086:100e` e1000 profile. The current static guest/peer test uses
+`10.15.3.1/24` and `10.15.3.2`. UDP payloads are limited to 512 bytes, with
+eight socket slots and four queued datagrams per socket. Syscalls 28–31
+provide socket creation, bind, sendto, and recvfrom through reference-counted
+FD objects; calls copy user buffers and endpoint values. Receive and ARP
+resolution poll for at most 500 ticks (five seconds at 100 Hz), and receive
+returns a whole datagram or an error. These semantics are neither a stream
+transport nor a POSIX/BSD socket ABI.
+
+The cooperative service is bounded (eight queued poll events, four events per
+call, at most one RX frame for each poll request) and runs at syscall and
+blocked-process idle safe points, not in the LAPIC ISR. A process that stays
+in userspace without syscalls can delay network service indefinitely. Static
+IPv4 is configured; DHCP, DNS, gateway routing, HTTP, HTTPS/TLS, and production
+TCP are absent. TCP wire/Core/Runtime code is not connected as a reliable
+production transport. Existing UDP must not be repurposed as an unreliable
+package-download substitute.
+
+Future boundary: a user-space network client obtains bytes through a future
+bounded reliable transport API. A separate repository verifier authenticates
+signed metadata using a trust root provisioned independently of network data,
+checks freshness/version policy, and verifies package hashes and authenticity
+before a separate privileged installer writes system files. The kernel
+remains responsible only for packet transport, bounded resources, user-memory
+validation/copying, and transport errors; it must not parse package metadata,
+make authenticity decisions, or install packages. The initial repository
+policy is official OpenSillicon only, with no third-party repositories.
+Metadata signatures remain mandatory even if future HTTPS is added. Key
+rotation, revocation, and rollback prevention need a reviewed design.
+
+Prerequisites before a usable package downloader include production reliable
+transport with bounded connect/read/write timeouts, retry and cancellation,
+partial stream I/O, backpressure, close/reset/EOF reporting, bounded buffers,
+and process-exit cleanup; bounded DNS and HTTP framing; reviewed TLS if HTTPS
+is selected; reviewed signature/hash primitives and independent trust-root
+provisioning; freshness and key lifecycle rules; and a kernel privilege model
+for system-wide installation. Current VFS mode metadata is not enforced as an
+authorization boundary, and current RDRAND availability is not an approved
+signature, key, token, or ISN policy. No `.ospkg` format, package parser,
+repository client, cryptographic verifier, installer, or package-specific
+kernel API was added in this phase. Validation reuses the existing network,
+process, kernel, and ELF tests; no package-download behavior is claimed.
+
+### Phase 15.5B — Userspace network diagnostics
+
+`/bin/netdiag` is built and installed through the existing coreutils list and
+SilliconFS root-population path; the shell launches it as an ordinary external
+program. The supported forms are `netdiag help`, `netdiag capabilities`, and
+`netdiag udp <IPv4> <port>`. Parsing rejects malformed/non-unicast IPv4
+destinations, non-decimal or out-of-range ports, and malformed argument
+counts before any syscall. `capabilities` does not pretend to query the
+kernel: it labels `10.15.3.1/24` and peer `10.15.3.2` as the documented QEMU
+test profile because no userspace configuration-query API exists.
+
+`udp` creates and binds a UDP FD to wildcard local port 45000, sends
+`OS-UDP-REQ-15.3B`, then verifies the single received datagram's source
+address/port and exact `OS-UDP-REPLY-15.3B` payload. It closes the FD on every
+post-creation path and reports operation-specific failures. recvfrom already
+enforces a bounded 500-tick (five second at 100 Hz) timeout. The utility does
+not add a receive loop, but the existing syscall implements that deadline by
+bounded polling rather than an event wait; no cancellation API is available.
+The host argument test covers IPv4, port, and command forms. The dedicated
+`e1000-netdiag-qemu-test` runs the diagnostic as a guest Ring 3 program through
+the existing syscalls and peer harness, while the unchanged
+`e1000-udp-qemu-test` remains the socket regression baseline. Successful
+diagnostics verify one UDP exchange only; they do not validate TCP, DNS,
+HTTP(S), TLS, Internet connectivity, or package downloads. No production TCP,
+new syscall, package-manager code, or network configuration API was added.
+
+### Phase 15.5C — Userspace ICMP Echo (`ping`)
+
+ICMP Echo was kernel-only before this phase: the stack could form Echo Replies
+and validate Echo Replies, but had no userspace request/reply interface. The
+new syscall 33 accepts one fixed-size, copied request with a numeric on-link
+IPv4 destination and up to 32 payload bytes. It is Echo-specific; it does not
+expose raw packets, DMA buffers, or arbitrary IPv4 protocols. It has no FD or
+persistent handle, allows one outstanding Echo transaction, and returns
+`EAGAIN` for a second concurrent request. It uses the existing ARP and unique
+`udp_socket_poll()` RX ownership path. Kernel validation matches reply source,
+type/code, identifier, sequence, exact payload, and checksums before returning
+the source and elapsed ticks. A matching ICMP Destination Unreachable quotation
+returns `EHOSTUNREACH`; malformed or unrelated packets are ignored until the
+500-tick deadline returns `ETIMEDOUT`. The cooperative single-CPU model remains
+in effect.
+
+`/bin/ping` is installed with coreutils and supports `ping help`,
+`ping <IPv4>`, and `ping <IPv4> <count>` with count 1–4. It uses numeric IPv4
+only. The QEMU peer test validates request checksums and fields, sends an actual
+Echo Reply, and checks the Ring 3 command's result. Success demonstrates only
+an on-link ICMP Echo exchange in that QEMU profile; it does not imply Internet
+reachability or any TCP/DNS/HTTP/TLS support. No TCP routing, TCP TX, TCP
+syscall, production ISN, or package-manager feature is enabled.

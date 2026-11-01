@@ -6,6 +6,7 @@
 #include "kernel/elf.h"
 #include "kernel/heap.h"
 #include "kernel/log.h"
+#include "kernel/network_service.h"
 #include "kernel/pmm.h"
 #include "kernel/timer.h"
 #include "kernel/process.h"
@@ -30,6 +31,7 @@
 #define PROCESS_ERROR_EAGAIN 11U
 #define PROCESS_ERROR_ENOMEM 12U
 #define PROCESS_ERROR_EINVAL 22U
+#define PROCESS_ERROR_E2BIG 7U
 #define PROCESS_ERROR_EBUSY 16U
 #define PROCESS_ERROR_ESRCH 3U
 #define PROCESS_ERROR_EINTR 4U
@@ -97,6 +99,9 @@ struct process {
 	uint64_t test_private_mapping_physical;
 #endif
 };
+
+_Static_assert(sizeof(struct process_snapshot_entry) == 24,
+	"process snapshot ABI size mismatch");
 
 _Static_assert(_Alignof(struct process) >= 16,
 	"process FXSAVE state must be 16-byte aligned");
@@ -366,6 +371,10 @@ schedule_from(struct process *after)
 			if (blocked_exists) {
 				arch_fpu_restore_kernel_state();
 				__asm__ volatile ("sti; hlt; cli" : : : "memory");
+				/* The timer ISR only wakes/schedules; deferred work runs here,
+				 * after it has returned to this blocked-syscall idle path. */
+				(void)network_service_request(NETWORK_SERVICE_POLL_RX);
+				(void)network_service_run(NETWORK_SERVICE_MAX_EVENTS, NULL);
 				continue;
 			}
 		}
@@ -545,6 +554,33 @@ uint64_t
 process_current_pid(void)
 {
 	return current_process == NULL ? 1 : current_process->id;
+}
+
+int
+process_snapshot(struct process_snapshot_entry *entries, size_t capacity)
+{
+	struct process *process;
+	size_t count = 0;
+	if (entries == NULL || capacity == 0 || capacity > PROCESS_SNAPSHOT_MAX)
+		return -(int)PROCESS_ERROR_EINVAL;
+	if (process_head == NULL)
+		return 0;
+	process = process_head;
+	do {
+		if (count == capacity)
+			return -(int)PROCESS_ERROR_E2BIG;
+		entries[count].pid = process->id;
+		entries[count].parent_pid = process->parent == NULL ? 0 :
+		    process->parent->id;
+		entries[count].state = (uint32_t)process->state;
+		entries[count].exit_status = process->exit_status;
+		entries[count].reserved[0] = 0;
+		entries[count].reserved[1] = 0;
+		entries[count].reserved[2] = 0;
+		count++;
+		process = process->next;
+	} while (process != process_head);
+	return (int)count;
 }
 
 uint64_t

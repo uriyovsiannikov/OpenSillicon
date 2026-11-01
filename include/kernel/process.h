@@ -11,6 +11,15 @@
 
 #define PROCESS_EXEC_ARG_MAX 16U
 #define PROCESS_EXEC_ARG_BYTES_MAX 2048U
+#define PROCESS_SNAPSHOT_MAX 128U
+
+struct process_snapshot_entry {
+	uint64_t pid;
+	uint64_t parent_pid;
+	uint32_t state;
+	uint8_t exit_status;
+	uint8_t reserved[3];
+};
 
 void process_system_init(void);
 uint64_t process_run_elf(const void *image, size_t image_size);
@@ -25,6 +34,7 @@ bool process_test_user_fault_capture(uint64_t *vector, uint64_t *error_code);
 uint64_t process_run_path(const char *path, bool startup_stack);
 struct fd_table *process_current_fd_table(void);
 uint64_t process_current_pid(void);
+int process_snapshot(struct process_snapshot_entry *entries, size_t capacity);
 void process_syscall_retry_begin(void);
 void process_capture_user_fs_base(uint64_t base);
 void process_restore_user_fs_base(void);

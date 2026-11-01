@@ -37,7 +37,18 @@ CPU. Syscall 27 (`exec_path_argv`) appends an argument-capable path launch:
 `RDI` is the executable path, `RSI` is argc (1–16), and `RDX` points to argc
 user pointers followed by NULL. The aggregate NUL-terminated strings are
 limited to 2048 bytes. The kernel copies them before replacing the image;
-syscall 12 retains its path-only, argc-zero behavior.
+syscall 12 retains its path-only, argc-zero behavior. Syscall 32
+(`process_snapshot`) copies up to 128 fixed-size process records to a caller
+buffer and returns the record count; it reports `E2BIG` if the process table
+does not fit. Each record contains PID, parent PID, process state, and exit
+status. It does not expose command names or credentials. Because networking
+uses syscall numbers 28–31, process snapshots use syscall 32.
+For syscall 32, RDI is the writable record array and RSI is capacity (1–128);
+success returns the number of records. Each 24-byte record contains two
+64-bit IDs, a 32-bit state (`0` ready, `1` running, `2` blocked, `3` zombie),
+an 8-bit exit status, and three reserved bytes. Zombies remain visible until
+reaped. Invalid capacity returns `EINVAL`, an invalid output range returns
+`EFAULT`, and insufficient capacity returns `E2BIG` without a partial list.
 CPU while blocked and the timer interrupt makes them runnable. Requests that
 would cross the tick counter's `uint64_t` maximum are rejected. This is the
 only time-related syscall added in Phase 12; there is no clock query or
@@ -4092,3 +4103,314 @@ This milestone prepares the first QEMU device but does not complete Phase 15.2
 or remove the need for a separately reviewed TX/RX implementation. Descriptor
 rings remain unused. Generic BAR sizing, device reset on physical hardware,
 IOMMU translation, and non-coherent DMA remain unsupported.
+
+## ADR-039 — Bounded e1000 DMA Rings and Ethernet Smoke Path
+
+Status: accepted and implemented for the QEMU 82540EM profile; this is a raw
+Ethernet driver proof, not a network protocol implementation.
+
+### Context
+
+ADR-037 establishes the fail-closed Limine Base Revision 5+ identity-DMA
+policy, and ADR-038 establishes guest discovery, the bounded `8086:100e`
+profile, BAR0 mapping, and reset. This milestone proves that the guest can use
+that profile for bounded descriptor DMA and exchange frames with a test peer.
+The driver remains polling-only and does not parse higher-level protocols.
+
+### Decision
+
+The supported profile uses the legacy 82540EM descriptors. TX and RX each
+have eight 16-byte descriptors in their own 128-byte DMA allocation. Ring
+bases must be 128-byte aligned; the ring length is exactly 128 bytes. The host
+side validates descriptor size, count, base alignment, completion bits,
+descriptor errors, and received frame bounds. Per-descriptor software owner
+states complement the device's descriptor status fields. A CPU-published
+descriptor is ordered before the tail-register doorbell with the DMA layer's
+coherent-x86 ordering fence. Completion is fenced before descriptor or packet
+memory is read by the CPU.
+
+Each slot owns a separate contiguous 2048-byte DMA data buffer. The current
+DMA address is the PMM physical address only when the validated Limine
+Base-Revision-5-or-newer identity-DMA capability is available and
+Keep-IOMMU was not requested. The driver verifies the queried device address
+matches that address and requests 64-bit device addressability, supported by
+this selected e1000 profile. No IOMMU translation or non-coherent cache
+maintenance is provided. Descriptor and buffer allocations stay pinned or
+device-owned while hardware can access them.
+
+Initialization order is: discover exact device/profile; validate identity-DMA
+capability; enable PCI memory decode while clearing bus mastering; acquire the
+uncached BAR0 mapping; reset and validate CTRL/STATUS; allocate and zero DMA
+rings and buffers; pin ring backing; publish initialized RX descriptors; mask
+interrupts and program T/R ring bases, lengths, head/tail, and TIPG with both
+engines disabled; set and read back PCI Bus Mastering; enable TX/RX engines.
+Bus mastering is never enabled on the reset-only or failed-allocation paths.
+
+TX accepts Ethernet frames from 14 through 1518 bytes, copies them into a
+driver-owned DMA slot, publishes one descriptor, and advances TDT. It retains
+the packet reference until TX DD is observed, then returns ownership to the
+caller. The bounded smoke test waits for completion. RX polls the next ring
+slot, observes DD after a completion fence, and accepts only descriptors with
+DD and EOP, no descriptor errors, and lengths from 14 through 1518 bytes. It
+copies accepted bytes into the fixed core packet pool, then rearms the DMA
+buffer and returns RDT ownership. Invalid frames are dropped and safely
+rearmed. There is no protocol parsing, software receive queue, or IRQ path.
+
+Shutdown disables RCTL/TCTL, performs a bounded reset and validates reset
+completion, then disables and reads back PCI memory decode and bus mastering.
+Only after this stop condition does it return/release in-flight packet state,
+quiesce and unpin rings, free the DMA allocations, and release BAR0. A polling
+timeout alone does not prove hardware stop. If reset or PCI readback cannot
+establish quiescence, the driver retains device-visible allocations and the
+MMIO lease rather than risking DMA use-after-free.
+
+### QEMU test profile and evidence
+
+`make e1000-dma-qemu-test` builds an isolated test kernel with
+`KERNEL_TEST_E1000_SMOKE` and launches QEMU 10.2.2 with q35, 256 MiB, OVMF,
+`-nodefaults -nic none`, an explicit `e1000` device with ID `8086:100e`, and
+`-netdev socket` connected to a loopback host-side peer. QEMU's socket backend
+uses a four-byte big-endian frame length followed by the frame bytes. The host
+peer requires the exact 60-byte guest TX frame before injecting a deterministic
+60-byte RX frame. It then requires guest serial markers for TX descriptor 0
+DD, RX descriptor 0 DD/EOP, successful byte comparison, and clean shutdown.
+
+Verified output:
+
+```text
+host peer observed guest Ethernet TX: 60 bytes, exact frame match
+host peer injected deterministic Ethernet RX: 60 bytes
+guest confirmed TX/RX descriptor completion and safe DMA shutdown
+QEMU e1000 DMA Ethernet smoke passed
+```
+
+Guest serial also reported eight descriptors per direction, link up, TX
+descriptor 0 completion at length 60, RX descriptor 0 completion at length
+60, Bus Mastering disabled, and rings released. QEMU is actual guest-side DMA
+evidence for this profile; it is not evidence for physical 82540EM devices,
+other BAR layouts, IOMMU translation, non-coherent DMA, or arbitrary hardware.
+
+Host checks passed for TX ring slot availability/full-ring rejection and
+reuse, TX descriptor initialization/address/length validation and DD
+completion, 128-byte ring-base geometry, and RX DD/EOP/error/length validation.
+The existing DMA ring host tests pass owner transition, duplicate publication,
+completion gating, quiesce gating, and pinned-allocation behavior. The guest
+smoke test verifies the successful hardware path and clean shutdown. The
+injected TX/RX timeout and PCI-reset failure branches have not been exercised
+against a hardware device; the existing isolated reset helper covers bounded
+reset timeout behavior, but that is not equivalent to proving a stuck device
+has stopped DMA. On any such failure, the driver retains DMA memory and its
+MMIO lease.
+
+The kernel/ELF, PCI/resource, DMA, PMM-contiguous, and network-foundation host
+tests passed. Process/VFS, FPU/SSE, FS-base, private mapping/protection, shared
+memory, and pinned native-musl regression targets also passed. The aggregate
+`phase12-test` and `phase13b-test` stop at the existing host `acpi-test` link
+failure (`vmm_vmalloc_device_start` is undefined in that test link). The
+separate `phase12-qemu-test` was attempted but the installed QEMU rejected its
+QMP key event for underscore (`Parameter 'data' does not accept value
+'underscore'`); this is a harness/key-code limitation, not a passing test.
+
+### Consequences and exclusions
+
+The milestone establishes bounded raw-frame TX/RX only. Interrupts are masked;
+all completion handling is bounded polling. ARP, IPv4, ICMP, UDP, TCP,
+routing, sockets, user access to DMA buffers, generic NIC profiles, IOMMU
+support, non-coherent cache synchronization, and SMP synchronization remain
+out of scope. Phase 15 remains incomplete.
+
+## ADR-040 — Bounded Ethernet, ARP, IPv4, and ICMP Echo
+
+Status: accepted and implemented as a bounded protocol smoke stack over the
+QEMU e1000 profile; not a general-purpose network service.
+
+### Context
+
+ADR-036 defines protocol boundaries, and ADR-039 provides the polled e1000
+Ethernet device and packet ownership contract. This milestone validates a
+real guest IPv4 exchange without introducing routing, transports, sockets,
+or an unbounded receive worker.
+
+### Decision
+
+The protocol module lives in `kernel/net/netstack.c`. It consumes borrowed
+bytes from a CORE-owned packet for the duration of one call, returns a
+bounded event and optionally writes a response into caller-owned storage.
+It retains no packet references. The caller remains responsible for releasing
+received pool references and for allocating/transmitting any generated reply.
+The test poller copies generated bytes into a pool packet, calls the existing
+device TX operation, waits for descriptor completion, then releases the
+returned CORE reference.
+
+The supported profile is untagged Ethernet II only. Frames shorter than the
+14-byte header or larger than 1518 bytes are ignored; only EtherTypes ARP
+`0x0806` and IPv4 `0x0800` are dispatched. VLAN and other EtherTypes are
+ignored. The IPv4 MTU is 1500 bytes. IPv4 requires version 4, IHL 5, a valid
+20-byte header checksum, a total length from 20 through 1500 fully contained
+in the received Ethernet payload, nonzero TTL, on-link unicast source,
+configured local destination, and no reserved/MF/fragment-offset bits. DF is
+allowed. IP options, fragmentation/reassembly, forwarding, and protocols
+other than ICMP are unsupported. Outbound IPv4 uses TTL 64, a valid header
+checksum, and no fragmentation.
+
+ARP accepts only Ethernet/IPv4 packets with hardware type 1, protocol type
+`0x0800`, address lengths 6 and 4, request/reply operation, consistent source
+Ethernet and ARP MAC addresses, on-link unicast sender IP, and target protocol
+address equal to the configured local IPv4 address. Replies must target the
+local MAC. Valid requests receive a padded 60-byte ARP reply; valid replies
+update the cache. The cache holds eight entries, expires entries after 6000
+timer ticks, reuses expired/free entries first, then replaces entries in
+round-robin order. No automatic retransmission worker is implemented. The
+QEMU resolution test sends one request and has a five-second bounded polling
+deadline.
+
+ICMP supports only code-zero Echo Request and Echo Reply with valid checksum
+and at least the eight-byte ICMP header. Echo replies to local Echo Requests
+preserve identifier, sequence, and payload while changing type to zero and
+recomputing the checksum and IPv4 header. Echo Replies are reported as an
+event; matching identifier/payload policy is checked by the test caller.
+Other ICMP types and codes are ignored. Output is bounded by the 1500-byte IP
+MTU and the 1518-byte frame limit.
+
+The explicit test addresses are guest `10.15.3.1/24`, MAC
+`52:54:00:15:03:01`, and peer `10.15.3.2/24`, MAC
+`52:54:00:15:03:02`. QEMU uses q35, `-nodefaults -nic none`, an explicit e1000
+`8086:100e`, and a loopback socket backend. The peer validates the guest's
+ARP request, IPv4 and ICMP checksums, Echo identifier `0x153a`, sequence 1 and
+payload `OS-PHASE15.3A-ECHO`, then injects an ARP reply and matching Echo
+Reply. Guest serial confirms descriptor TX/RX completion, ARP resolution,
+Echo transmission/reception, and safe e1000 shutdown. No Ethernet/IP bytes
+are delivered to userspace.
+
+### Verification and consequences
+
+`make netstack-test` passes host tests for ARP request/reply construction,
+cache expiry and replacement, malformed ARP, IPv4 checksum and length
+validation, unsupported options/protocols/fragments, Echo reply construction,
+Echo Reply recognition, and bounded outbound builders. `make kernel` passes.
+`make e1000-icmp-qemu-test` passes with host peer evidence for both guest
+transmit frames and injected responses. This is QEMU-only proof of the bounded
+profile, not physical NIC support or a continuously serviced network stack.
+
+UDP, TCP, sockets, route selection, gateways, DHCP, IPv6, VLAN, IP
+fragmentation/reassembly, IP forwarding, asynchronous retries, interrupt
+processing, SMP synchronization, and broad RFC/POSIX compatibility remain
+deferred. IOMMU translation and non-coherent DMA remain unsupported under
+ADR-037. Phase 15 is incomplete.
+
+## ADR-041 — Bounded UDP and Project-Native Socket Descriptors
+
+Status: accepted and implemented for the current static QEMU e1000 profile;
+not a general-purpose or POSIX-compatible socket service.
+
+### Context
+
+ADR-040 supplies bounded Ethernet II, ARP, IPv4 and ICMP processing over the
+polled e1000 device. Native UDP userspace needs datagram boundaries and
+endpoint metadata, while the kernel already routes file I/O through
+reference-counted `fd_object` instances. This decision reuses those objects
+and keeps packet processing out of interrupt context.
+
+### Protocol profile
+
+The existing netstack owns UDP parsing and construction. Incoming IPv4 still
+requires version 4, IHL 5, valid IPv4 header checksum, no fragments, nonzero
+TTL, an on-link unicast source and the configured local destination. UDP must
+have at least its eight-byte header, a length of at least eight exactly equal
+to the remaining IPv4 payload, and nonzero source and destination ports.
+Malformed, truncated, oversized and unmatched datagrams are dropped. A
+nonzero UDP checksum is validated over the IPv4 pseudoheader and complete UDP
+datagram. A zero checksum is accepted for IPv4. Outbound UDP checksums are
+computed; a computed zero is serialized as `0xffff`.
+
+The current bounded profile is MTU 1500, Ethernet frame maximum 1518 and UDP
+payload maximum 512 bytes. The QEMU guest configuration is `10.15.3.1/24` at
+the explicitly configured e1000 MAC `52:54:00:15:03:01`; the deterministic test peer is
+`10.15.3.2`, MAC `52:54:00:15:03:02`. The only currently supported NIC is the
+explicit QEMU 82540EM profile `8086:100e`; DMA still requires the validated
+Limine Base Revision 5 identity-DMA capability in ADR-037.
+
+### Socket and endpoint model
+
+UDP sockets are ordinary reference-counted `fd_object`s. Fork copies FD
+references to the same socket endpoint and receive queue; closing a descriptor
+drops one reference, and the final close clears the socket and queued data.
+Process exit uses the existing FD-table destruction path. Exec follows the
+existing process descriptor inheritance policy. This API is a project-native
+datagram facility and does not claim Linux or BSD socket compatibility.
+
+Limits are eight allocated socket objects, four queued datagrams per socket,
+512 payload bytes per datagram, and one synchronous send operation per socket
+on the single-CPU path. Queues contain kernel copies; DMA pool buffers are
+released after parsing and never escape to userspace. Queue overflow drops the
+newest packet. Receive returns `EMSGSIZE` without dequeuing when the caller's
+buffer is too small. There is no background receive worker: `recvfrom` polls
+the device in bounded syscall context for at most 500 timer ticks (five
+seconds), then returns `ETIMEDOUT`. There is no signal interruption or
+nonblocking flag. It validates all user output ranges before polling and
+consumes a queued datagram only after copying payload and source endpoint.
+
+Endpoints are exactly six bytes: four IPv4 octets followed by a host-order
+`uint16_t` port. `0.0.0.0` is the wildcard local address; only wildcard or the
+configured local address can be bound. Wildcard conflicts with any binding on
+the same port; explicit local bindings conflict with the same explicit
+address/port. Binding port zero chooses a deterministic ephemeral port from
+49152 through 65535. No `getsockname` operation exists, so callers requiring a
+known reply port should bind a nonzero port. Unbound senders are assigned an
+ephemeral wildcard endpoint; the current API does not report that assignment.
+
+### Syscall ABI
+
+Syscalls 0–27 are unchanged. New calls use `int 0x80`, with the existing
+success convention (RAX result, CF clear) and error convention (positive
+errno in RAX, CF set):
+
+| Number | Operation | Arguments |
+| --- | --- | --- |
+| 28 | `udp_socket` | RDI family (`2` IPv4), RSI type (`2` datagram), RDX protocol (`0` or `17`) |
+| 29 | `udp_bind` | RDI descriptor, RSI user endpoint pointer, RDX exact endpoint size (`6`) |
+| 30 | `udp_sendto` | RDI descriptor, RSI payload pointer, RDX payload length, R10 destination endpoint pointer |
+| 31 | `udp_recvfrom` | RDI descriptor, RSI writable payload buffer, RDX capacity, R10 writable source endpoint pointer |
+
+The native user adapter translates CF plus positive errno into a negative
+return. Invalid descriptor numbers return `EBADF`; non-socket descriptors
+return `ENOTSOCK`. Unsupported family returns `EAFNOSUPPORT`, unsupported
+type/protocol returns `EPROTONOSUPPORT`, duplicate bindings return
+`EADDRINUSE`, nonlocal bind addresses return `EADDRNOTAVAIL`, oversize data
+returns `EMSGSIZE`, and unavailable link/device returns `ENETDOWN`. The
+remaining errors use the kernel's existing errno numbers (`EFAULT`, `EINVAL`,
+`ENOMEM`, `EMFILE`, `ENOBUFS`, `EHOSTUNREACH`, `ETIMEDOUT`, and `EIO`).
+Arguments are copied or validated using the current VMM user-memory helpers
+before protocol side effects. There are no flags, connected state, socket
+options, ancillary data or stream operations.
+
+### QEMU verification
+
+`make e1000-udp-qemu-test` runs a dedicated QEMU q35 guest with 256 MiB, OVMF,
+`-nodefaults -nic none`, an explicit socket Ethernet backend, and
+`-device e1000` with MAC `52:54:00:15:03:01`. The host peer validates the guest
+ARP request, responds for `10.15.3.2`, verifies a UDP frame from port 45000 to
+45001 containing `OS-UDP-REQ-15.3B` with valid IPv4 and UDP checksums, then
+sends `OS-UDP-REPLY-15.3B` from 45001 to 45000 with a valid checksum. Guest
+serial confirms the user process verified source IP/port and payload, closed
+the socket, exited with status zero, and the e1000 stopped with bus mastering
+disabled. Host netstack tests cover UDP frame construction, checksum
+validation, IPv4 checksum omission rules, payload boundaries, and malformed
+UDP lengths/checksums.
+
+### Consequences and limitations
+
+The initial service is initialized with the static `10.15.3.1/24` profile
+whenever the supported e1000 device starts. It polls receive only while a
+send resolves ARP or a process calls `recvfrom`; there is no asynchronous
+worker, so unsolicited packets are not serviced until a poll occurs. A
+`recvfrom` poll runs synchronously in the current syscall for up to five
+seconds and can occupy the single CPU. Short shared socket-table and netstack
+state transitions mask local interrupts so timer preemption cannot interleave
+those updates; this does not provide SMP locking. The fixed ephemeral
+assignment is not queryable. Binding and queue behavior are exercised by the QEMU user fixture;
+comprehensive socket-table exhaustion, queue-overflow, fork-sharing, and
+timeout tests remain to be added. TCP, DHCP, IPv6, VLAN, IP forwarding,
+fragmentation, routing/gateways, retransmission policy, socket options,
+multithreading, SMP synchronization, and broad POSIX/BSD/Linux compatibility
+remain out of scope. Phase 15 is incomplete.

@@ -11,6 +11,12 @@
 #define KEY_TAB 0x0fU
 #define KEY_ENTER 0x1cU
 #define KEY_SPACE 0x39U
+#define KEY_ARROW_UP 0x48U
+#define KEY_ARROW_LEFT 0x4bU
+#define KEY_ARROW_RIGHT 0x4dU
+#define KEY_ARROW_DOWN 0x50U
+#define KEY_HOME 0x47U
+#define KEY_END 0x4fU
 #define EOF_TOKEN 256U
 
 enum parser_state {
@@ -24,6 +30,7 @@ struct terminal_state {
 	unsigned int column;
 	unsigned int row;
 	bool wrap_pending;
+	bool raw_mode;
 	uint8_t foreground;
 	uint8_t background;
 	enum parser_state parser;
@@ -214,6 +221,19 @@ apply_csi(struct terminal_state *terminal, uint8_t final)
 			clear_row(terminal, terminal->row, terminal->column);
 		}
 		break;
+	case 'C':
+		terminal->wrap_pending = false;
+		terminal->column += parameter(terminal, 0, 1);
+		if (terminal->column >= terminal_columns)
+			terminal->column = terminal_columns - 1;
+		break;
+	case 'D':
+		terminal->wrap_pending = false;
+		if (terminal->column > parameter(terminal, 0, 1))
+			terminal->column -= parameter(terminal, 0, 1);
+		else
+			terminal->column = 0;
+		break;
 	case 'm':
 		for (i = 0; i < terminal->parameter_count; i++) {
 			unsigned int value = terminal->parameter_present[i] ?
@@ -368,6 +388,38 @@ terminal_read(char *buffer, size_t length, size_t *read_length)
 	return 0;
 }
 
+void
+terminal_set_raw_mode(bool enabled)
+{
+	struct terminal_state *terminal = active_state();
+	terminal->raw_mode = enabled;
+	terminal->line_length = 0;
+	terminal->input_head = 0;
+	terminal->input_count = 0;
+}
+
+bool
+terminal_raw_mode(void)
+{
+	return active_state()->raw_mode;
+}
+
+static void
+queue_escape_sequence(struct terminal_state *terminal, char final)
+{
+	size_t tail;
+
+	if (TERMINAL_INPUT_CAPACITY - terminal->input_count < 3)
+		return;
+	tail = (terminal->input_head + terminal->input_count) %
+	    TERMINAL_INPUT_CAPACITY;
+	terminal->input[tail] = 0x1bU;
+	terminal->input[(tail + 1) % TERMINAL_INPUT_CAPACITY] = '[';
+	terminal->input[(tail + 2) % TERMINAL_INPUT_CAPACITY] =
+	    (uint8_t)final;
+	terminal->input_count += 3;
+}
+
 static uint8_t
 translate_key(uint8_t code, bool shifted, bool caps)
 {
@@ -480,8 +532,20 @@ terminal_key_event(struct terminal_key_event event)
 		(void)terminal_switch(code - KEY_F1);
 		return;
 	}
-	if (event.extended)
+	if (event.extended) {
+		if (terminal->raw_mode) {
+			switch (code) {
+			case KEY_ARROW_UP: queue_escape_sequence(terminal, 'A'); break;
+			case KEY_ARROW_DOWN: queue_escape_sequence(terminal, 'B'); break;
+			case KEY_ARROW_RIGHT: queue_escape_sequence(terminal, 'C'); break;
+			case KEY_ARROW_LEFT: queue_escape_sequence(terminal, 'D'); break;
+			case KEY_HOME: queue_escape_sequence(terminal, 'H'); break;
+			case KEY_END: queue_escape_sequence(terminal, 'F'); break;
+			default: break;
+			}
+		}
 		return;
+	}
 	shifted = shift_left || shift_right;
 	character = translate_key(code, shifted, caps_lock);
 	if (character == 0)
@@ -490,6 +554,10 @@ terminal_key_event(struct terminal_key_event event)
 		character = (uint8_t)(character - 'a' + 1);
 	else if (control_down && character >= 'A' && character <= 'Z')
 		character = (uint8_t)(character - 'A' + 1);
+	if (terminal->raw_mode) {
+		(void)queue_token(terminal, character);
+		return;
+	}
 	if (character == 4) {
 		if (terminal->line_length == 0) {
 			(void)queue_token(terminal, EOF_TOKEN);

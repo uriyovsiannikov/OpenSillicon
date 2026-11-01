@@ -7,6 +7,13 @@
 #include "kernel/dma.h"
 #include "kernel/e1000.h"
 #include "kernel/e1000_profile.h"
+#include "kernel/netbuf.h"
+#include "kernel/netdev.h"
+#include "kernel/netstack.h"
+#include "kernel/network_service.h"
+#include "kernel/random.h"
+#include "kernel/tcp_runtime.h"
+#include "kernel/udp_socket.h"
 #include "kernel/vmm.h"
 #include "kernel/heap.h"
 #include "kernel/timer.h"
@@ -62,6 +69,176 @@ static struct fd_table user_descriptors;
 static struct pci_device_info ahci_device;
 static struct block_device ahci_block_device;
 static struct block_silliconfs_adapter root_adapter;
+
+#ifdef KERNEL_TEST_UDP_SOCKET
+extern const uint8_t _binary_udp_socket_test_bin_start[];
+extern const uint8_t _binary_udp_socket_test_bin_end[];
+
+static void
+run_udp_socket_test(void)
+{
+	uint64_t image_size = (uintptr_t)_binary_udp_socket_test_bin_end -
+	    (uintptr_t)_binary_udp_socket_test_bin_start;
+	uint64_t status;
+	struct network_service_result service_result;
+
+	status = process_run_elf(_binary_udp_socket_test_bin_start,
+	    (size_t)image_size);
+	if (!tcp_runtime_shutdown() ||
+	    !network_service_request(NETWORK_SERVICE_POLL_RX) ||
+	    udp_socket_system_shutdown() ||
+	    !network_service_run(1, &service_result) ||
+	    service_result.events_processed != 1 ||
+	    !udp_socket_system_shutdown() || e1000_state() != E1000_STATE_STOPPED) {
+		klog("OpenSillicon: UDP test could not confirm safe e1000 shutdown\n");
+		kernel_halt();
+	}
+	if (status != 0) {
+		klog("OpenSillicon: user UDP socket test failed, status ");
+		klog_u64(status);
+		klog("\n");
+		kernel_halt();
+	}
+#ifdef KERNEL_TEST_ICMP_PING
+	klog("OpenSillicon: userspace ICMP ping passed; e1000 stopped\n");
+#else
+	klog("OpenSillicon: user UDP socket send/receive/close passed; e1000 stopped\n");
+#endif
+}
+#endif
+
+#ifdef KERNEL_TEST_E1000_ICMP_SMOKE
+#define NETSTACK_TEST_POLLS 10000000U
+#define NETSTACK_TEST_TX_POLLS 1000000U
+#define NETSTACK_TEST_TIMEOUT_TICKS 500U
+
+static bool
+netstack_test_transmit(const uint8_t *frame, size_t length)
+{
+	struct net_device *device = e1000_network_device();
+	struct netbuf_ref packet;
+	uint8_t *buffer;
+	bool sent;
+
+	if (device == NULL || length > NETSTACK_MAX_FRAME ||
+	    !netbuf_alloc(NETBUF_OWNER_CORE, &packet))
+		return false;
+	buffer = netbuf_data(packet, NETBUF_OWNER_CORE);
+	if (buffer == NULL || length > netbuf_capacity(packet, NETBUF_OWNER_CORE)) {
+		(void)netbuf_release(packet, NETBUF_OWNER_CORE);
+		return false;
+	}
+	for (size_t i = 0; i < length; i++)
+		buffer[i] = frame[i];
+	if (!netbuf_set_length(packet, NETBUF_OWNER_CORE, length) ||
+	    net_device_transmit(device, packet) != NET_DEVICE_OK) {
+		if (netbuf_data(packet, NETBUF_OWNER_CORE) != NULL)
+			(void)netbuf_release(packet, NETBUF_OWNER_CORE);
+		return false;
+	}
+	sent = e1000_wait_transmit(packet, NETSTACK_TEST_TX_POLLS);
+	if (sent)
+		(void)netbuf_release(packet, NETBUF_OWNER_CORE);
+	return sent;
+}
+
+static bool
+netstack_test_receive(struct netstack *stack, enum netstack_event wanted,
+	const uint8_t *expected_payload, size_t expected_payload_length)
+{
+	struct net_device *device = e1000_network_device();
+	struct netbuf_ref packet[1];
+	uint64_t start_tick = timer_ticks();
+
+	for (uint32_t poll = 0; poll < NETSTACK_TEST_POLLS; poll++) {
+		size_t count = 0;
+		if (net_device_receive(device, 1, packet, 1, &count) != NET_DEVICE_OK)
+			return false;
+		if (count != 0) {
+			uint8_t response[NETSTACK_MAX_FRAME];
+			uint8_t *data = netbuf_data(packet[0], NETBUF_OWNER_CORE);
+			size_t length = netbuf_length(packet[0], NETBUF_OWNER_CORE);
+			size_t response_length = 0;
+			enum netstack_event event = data == NULL ? NETSTACK_IGNORED :
+			    netstack_process_frame(stack, data, length, timer_ticks(),
+			    response, sizeof(response), &response_length, NULL);
+			bool payload_matches = true;
+			if (event == NETSTACK_ECHO_REPLY) {
+				if (length < 42 + expected_payload_length || data[34] != 0 ||
+				    data[38] != 0x15 || data[39] != 0x3a ||
+			    data[40] != 0 || data[41] != 1 ||
+			    data[6] != 0x52 || data[7] != 0x54 ||
+			    data[8] != 0 || data[9] != 0x15 ||
+			    data[10] != 3 || data[11] != 2 ||
+			    data[26] != 10 || data[27] != 15 ||
+			    data[28] != 3 || data[29] != 2 ||
+			    data[30] != 10 || data[31] != 15 ||
+			    data[32] != 3 || data[33] != 1)
+					payload_matches = false;
+				for (size_t i = 0; payload_matches &&
+				    i < expected_payload_length; i++)
+					if (data[42 + i] != expected_payload[i])
+						payload_matches = false;
+			}
+			(void)netbuf_release(packet[0], NETBUF_OWNER_CORE);
+			if (response_length != 0 &&
+			    !netstack_test_transmit(response, response_length))
+				return false;
+			if (event == wanted && payload_matches) {
+				return true;
+			}
+		}
+		if (timer_ticks() - start_tick >= NETSTACK_TEST_TIMEOUT_TICKS)
+			return false;
+		__asm__ volatile ("pause" : : : "memory");
+	}
+	return false;
+}
+
+static bool
+run_e1000_icmp_smoke_test(void)
+{
+	static const struct netstack_config config = {
+		.mac = {0x52, 0x54, 0x00, 0x15, 0x03, 0x01},
+		.address = {10, 15, 3, 1},
+		.netmask = {255, 255, 255, 0}
+	};
+	static const uint8_t peer_ip[4] = {10, 15, 3, 2};
+	static const uint8_t payload[] = "OS-PHASE15.3A-ECHO";
+	struct netstack stack;
+	uint8_t frame[NETSTACK_MAX_FRAME];
+	uint8_t peer_mac[6];
+	size_t length;
+	bool resolved = false;
+
+	if (!netstack_init(&stack, &config) ||
+	    !netstack_build_arp_request(&stack, peer_ip, frame, sizeof(frame),
+	    &length) || !netstack_test_transmit(frame, length))
+		return false;
+	klog("OpenSillicon: ARP request transmitted for 10.15.3.2\n");
+	(void)netstack_test_receive(&stack, NETSTACK_ARP_RESOLVED, NULL, 0);
+	resolved = netstack_arp_lookup(&stack, peer_ip, timer_ticks(), peer_mac);
+	if (!resolved) {
+		klog("OpenSillicon: ARP resolution timed out\n");
+		return false;
+	}
+	klog("OpenSillicon: ARP peer resolved 10.15.3.2\n");
+	if (!netstack_build_echo_request(&stack, peer_mac, peer_ip, 0x153a, 1,
+	    payload, sizeof(payload) - 1, frame, sizeof(frame), &length) ||
+	    !netstack_test_transmit(frame, length))
+		return false;
+	klog("OpenSillicon: ICMP Echo Request transmitted\n");
+	if (!netstack_test_receive(&stack, NETSTACK_ECHO_REPLY, payload,
+	    sizeof(payload) - 1)) {
+		klog("OpenSillicon: ICMP Echo Reply timed out or mismatched\n");
+		return false;
+	}
+	if (!e1000_shutdown())
+		return false;
+	klog("OpenSillicon: guest ARP/IPv4/ICMP smoke passed\n");
+	return true;
+}
+#endif
 #ifdef KERNEL_TEST_PRIVATE_MAPPING_LIFECYCLE
 extern uint8_t _binary_private_mapping_lifecycle_test_elf_start[];
 extern uint8_t _binary_private_mapping_lifecycle_test_elf_end[];
@@ -1169,6 +1346,12 @@ _start(void)
 		klog("OpenSillicon: CPU lacks required FXSAVE/SSE/SSE2 support\n");
 		kernel_halt();
 	}
+	if (kernel_random_init())
+		klog_status("kernel random source", true,
+		    "CPUID RDRAND hardware DRBG available");
+	else
+		klog_status("kernel random source", false,
+		    "unavailable; secure random requests fail closed");
 #ifdef KERNEL_TEST_INTERRUPT
 	__asm__ volatile ("int $128");
 #endif
@@ -1304,9 +1487,44 @@ _start(void)
 	klog(" AHCI ");
 	klog(ahci_controller_found ? "found\n" : "not found\n");
 	if (e1000_device_found) {
-		if (e1000_initialize() && e1000_initialize()) {
+		struct net_device *network_device = e1000_network_device();
+		bool network_started = netbuf_pool_init() && network_device != NULL &&
+		    net_device_start(network_device) == NET_DEVICE_OK;
+
+		if (network_started && e1000_initialize()) {
 			klog_status("QEMU e1000 82540EM", true,
-			    "8086:100e discovered; BAR0 mapped; reset/CTRL/STATUS validated; duplicate init idempotent; bus mastering and interrupts disabled");
+			    "8086:100e rings initialized; identity DMA; bus mastering enabled; interrupts disabled");
+			{
+				struct netstack_config network_config = {
+					.mac = {0x52, 0x54, 0x00, 0x15, 0x03, 0x01},
+					.address = {10, 15, 3, 1},
+					.netmask = {255, 255, 255, 0}
+				};
+				if (udp_socket_system_init(network_device,
+				    &network_config) != 0)
+					klog("OpenSillicon: static UDP service unavailable; socket creation returns ENETDOWN\n");
+				else if (!network_service_init())
+					klog("OpenSillicon: deferred network service unavailable; syscall polling remains enabled\n");
+				else {
+					klog("OpenSillicon: static IPv4 UDP profile 10.15.3.1/24 initialized; bounded deferred polling enabled\n");
+					if (!tcp_runtime_init())
+						klog("OpenSillicon: TCP core runtime owner unavailable; TCP remains disabled\n");
+					else
+						klog("OpenSillicon: inert TCP core table owner initialized; dispatch disabled\n");
+				}
+			}
+			#ifdef KERNEL_TEST_E1000_SMOKE
+			if (!e1000_run_qemu_smoke_test()) {
+				klog("OpenSillicon: guest e1000 TX/RX smoke failed\n");
+				kernel_halt();
+			}
+			#endif
+			#ifdef KERNEL_TEST_E1000_ICMP_SMOKE
+			if (!run_e1000_icmp_smoke_test()) {
+				klog("OpenSillicon: guest ARP/IPv4/ICMP smoke failed\n");
+				kernel_halt();
+			}
+			#endif
 		} else {
 			klog("OpenSillicon: e1000 initialization failed, state ");
 			klog_u64(e1000_state());
@@ -1406,6 +1624,9 @@ _start(void)
 #endif
 #ifdef KERNEL_TEST_NATIVE_MUSL_STDIO
 	run_native_musl_stdio_test();
+#endif
+#ifdef KERNEL_TEST_UDP_SOCKET
+	run_udp_socket_test();
 #endif
 	if (!scheduler_init()) {
 		klog_status("scheduler", false, "initialization failed");

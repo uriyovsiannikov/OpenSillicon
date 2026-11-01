@@ -122,24 +122,16 @@ main(int argc, char **argv)
 	int coreutils_start = 0;
 	int coreutils_count = 0;
 
-	if (argc >= 6 && strcmp(argv[5], "--coreutils") == 0 && argc == 15) {
+	if (argc >= 6 && strcmp(argv[5], "--coreutils") == 0)
 		coreutils_start = 6;
-		coreutils_count = 9;
-	} else if (argc >= 9 && strcmp(argv[8], "--coreutils") == 0 && argc == 18) {
+	else if (argc >= 7 && strcmp(argv[6], "--coreutils") == 0)
+		coreutils_start = 7;
+	else if (argc >= 9 && strcmp(argv[8], "--coreutils") == 0)
 		coreutils_start = 9;
-		coreutils_count = 9;
-	} else if (argc >= 6 && strcmp(argv[5], "--coreutils") == 0 && argc == 12) {
-		coreutils_start = 6;
-		coreutils_count = 6;
-	} else if (argc >= 9 && strcmp(argv[8], "--coreutils") == 0 && argc == 17) {
-		coreutils_start = 9;
-		coreutils_count = 8;
-	} else if (argc >= 6 && strcmp(argv[5], "--coreutils") == 0 && argc == 14) {
-		coreutils_start = 6;
-		coreutils_count = 8;
-	}
+	if (coreutils_start != 0)
+		coreutils_count = argc - coreutils_start;
 	if (argc < 5 || (argc > 8 && coreutils_start == 0)) {
-		fprintf(stderr, "usage: %s image init-elf shell-elf probe-elf [musl-hello-elf [musl-alloc-elf [musl-stdio-elf]]] [--coreutils ls cat echo pwd true false clear uname fetch]\n",
+		fprintf(stderr, "usage: %s image init-elf shell-elf probe-elf [musl-hello-elf [musl-alloc-elf [musl-stdio-elf]]] [--coreutils coreutils... ]\n",
 		    argv[0]);
 		return 2;
 	}
@@ -182,6 +174,7 @@ main(int argc, char **argv)
 		return 1;
 	}
 	if (argc >= 7 && strcmp(argv[5], "--coreutils") != 0 &&
+	    strcmp(argv[6], "--coreutils") != 0 &&
 	    (error = add_file("/bin/musl_alloc", argv[6], 0755)) != 0) {
 		fprintf(stderr, "SilliconFS musl allocation test population failed: %d\n",
 		    error);
@@ -189,6 +182,7 @@ main(int argc, char **argv)
 		return 1;
 	}
 	if (argc >= 8 && strcmp(argv[5], "--coreutils") != 0 &&
+	    strcmp(argv[6], "--coreutils") != 0 &&
 	    (error = add_file("/bin/musl_stdio", argv[7], 0755)) != 0) {
 		fprintf(stderr, "SilliconFS musl stdio test population failed: %d\n",
 		    error);
@@ -198,9 +192,17 @@ main(int argc, char **argv)
 	if (coreutils_start != 0) {
 		static const char *names[] = {
 			"ls", "cat", "echo", "pwd", "true", "false", "clear", "uname",
-			"fetch"
+			"fetch", "head", "wc", "stat", "basename", "dirname",
+			"kill", "sleep", "which", "ps", "netdiag", "ping"
 		};
 		int index;
+		if (coreutils_count !=
+		    (int)(sizeof(names) / sizeof(names[0]))) {
+			fprintf(stderr, "expected %zu coreutils ELF files, got %d\n",
+			    sizeof(names) / sizeof(names[0]), coreutils_count);
+			fclose(image);
+			return 1;
+		}
 		for (index = 0; index < coreutils_count; index++) {
 			char destination[32] = "/bin/";
 			size_t position = 5;

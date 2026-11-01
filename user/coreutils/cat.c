@@ -33,6 +33,13 @@ user_main(uint64_t argc, char **argv)
 	for (index = 1; index < argc; index++) {
 		char path[PATH_SIZE];
 		long descriptor;
+		if (u_streq(argv[index], "-")) {
+			if (!copy_descriptor(0)) {
+				u_puts("cat: stdin read or output failed\n");
+				failed = 1;
+			}
+			continue;
+		}
 		if (!u_normalize_path("/", argv[index], path, sizeof(path))) {
 			u_puts("cat: path too long: ");
 			u_puts(argv[index]);
@@ -54,7 +61,12 @@ user_main(uint64_t argc, char **argv)
 			u_puts("\n");
 			failed = 1;
 		}
-		(void)u_close((uint64_t)descriptor);
+		if (u_close((uint64_t)descriptor) < 0) {
+			u_puts("cat: close failed: ");
+			u_puts(argv[index]);
+			u_puts("\n");
+			failed = 1;
+		}
 	}
 	return failed;
 }

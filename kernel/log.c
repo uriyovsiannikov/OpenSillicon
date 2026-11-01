@@ -101,7 +101,7 @@ klog_status(const char *component, bool success, const char *detail)
 	while (component[component_length] != '\0')
 		component_length++;
 	APPEND_STATUS(" ...");
-	while (component_length + 20 < 44) {
+	while (component_length + 20 < 46) {
 		APPEND_STATUS(" ");
 		component_length++;
 	}

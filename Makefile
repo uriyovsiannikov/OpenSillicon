@@ -27,7 +27,7 @@ USER_CFLAGS := -std=c11 -O2 -ffreestanding -fno-builtin -fno-stack-protector \
 	-fno-pic -fno-pie -m64 -mno-red-zone -mcmodel=small \
 	-Wall -Wextra -Werror -Iuser
 
-COREUTILS := ls cat echo pwd true false clear uname fetch
+COREUTILS := ls cat echo pwd true false clear uname fetch head wc stat basename dirname kill sleep which ps netdiag ping
 COREUTILS_ELFS := $(addprefix $(BUILD_DIR)/coreutils/,$(addsuffix .elf,$(COREUTILS)))
 
 ACPICA_ROOT := third_party/acpica/source
@@ -50,11 +50,20 @@ ifneq (,$(findstring KERNEL_TEST_PRIVATE_MAPPING_LIFECYCLE,$(KERNEL_CFLAGS)))
 PRIVATE_MAPPING_TEST_OBJECTS := $(BUILD_DIR)/private_mapping_lifecycle_blob.o
 endif
 
+UDP_SOCKET_TEST_OBJECTS :=
+ifneq (,$(findstring KERNEL_TEST_UDP_SOCKET,$(KERNEL_CFLAGS)))
+UDP_SOCKET_TEST_OBJECTS := $(BUILD_DIR)/udp_socket_test_blob.o
+endif
+
 .PHONY: all kernel iso run run-gui test elf-test process-test vfs-test vfs-smoke-test \
+	kernel-random-test \
 	silliconfs-test silliconfs-image fault-test \
 	interrupt-test vmm-protection-test timer-test clean acpica-check acpi-test \
 	pci-test pci-resource-test dma-test pmm-contiguous-test network-foundation-test block-test phase10-test phase11-test terminal-test \
-	dma-ring-test e1000-profile-test e1000-init-qemu-test \
+	dma-ring-test e1000-profile-test e1000-ring-test e1000-init-qemu-test \
+	e1000-dma-qemu-test e1000-icmp-qemu-test e1000-udp-qemu-test \
+	netstack-test udp-socket-test tcp-wire-test tcp-core-test tcp-runtime-test network-service-test \
+	netdiag-args-test e1000-netdiag-qemu-test e1000-icmp-ping-qemu-test \
 	terminal-qemu-test user-path-test phase12-qemu-test phase12-test \
 	pipe-test phase13a-test signal-state-test phase13b-test refresh-test-root \
 	shm-test shm-failure-qemu-test shm-lifecycle-qemu-test \
@@ -81,6 +90,10 @@ $(BUILD_DIR)/main.o: kernel/main.c include/kernel/boot.h include/kernel/log.h \
 		include/arch/x86_64/pci.h \
 		include/kernel/dma.h \
 		include/kernel/e1000.h include/kernel/e1000_profile.h \
+		include/kernel/netstack.h include/kernel/udp_socket.h \
+		include/kernel/network_service.h \
+		include/kernel/tcp_runtime.h \
+		include/kernel/random.h \
 		include/arch/x86_64/ahci.h include/kernel/block.h \
 		include/kernel/block_silliconfs.h include/kernel/silliconfs.h \
 		include/arch/x86_64/fpu.h \
@@ -174,7 +187,9 @@ $(BUILD_DIR)/silliconfs.o: kernel/vfs/silliconfs.c \
 
 $(BUILD_DIR)/syscall.o: kernel/syscall.c include/kernel/syscall.h \
 		include/kernel/fd.h include/kernel/vmm.h include/kernel/log.h \
-		include/kernel/process.h include/kernel/vfs.h \
+		include/kernel/process.h include/kernel/vfs.h include/kernel/udp_socket.h \
+		include/kernel/icmp_echo.h \
+		include/kernel/network_service.h \
 		include/arch/x86_64/user.h include/arch/x86_64/interrupts.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
@@ -185,6 +200,7 @@ $(BUILD_DIR)/elf.o: kernel/elf.c include/kernel/elf.h include/kernel/vmm.h \
 $(BUILD_DIR)/process.o: kernel/proc/process.c include/kernel/process.h \
 		include/kernel/signal_state.h include/kernel/elf.h include/kernel/vmm.h include/kernel/heap.h \
 		include/kernel/pmm.h include/kernel/fd.h include/kernel/timer.h \
+		include/kernel/network_service.h \
 		include/arch/x86_64/gdt.h include/arch/x86_64/fpu.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
@@ -202,6 +218,9 @@ $(BUILD_DIR)/gdt.o: kernel/arch/x86_64/gdt.c include/arch/x86_64/gdt.h | $(BUILD
 
 $(BUILD_DIR)/fpu.o: kernel/arch/x86_64/fpu.c \
 		include/arch/x86_64/fpu.h include/kernel/log.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/random.o: kernel/random.c include/kernel/random.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/lapic.o: kernel/arch/x86_64/lapic.c \
@@ -230,13 +249,47 @@ $(BUILD_DIR)/netdev.o: kernel/net/netdev.c include/kernel/netdev.h \
 		include/kernel/netbuf.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
+$(BUILD_DIR)/netstack.o: kernel/net/netstack.c include/kernel/netstack.h \
+		include/kernel/tcp_wire.h include/kernel/tcp_runtime.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/udp_socket.o: kernel/net/udp_socket.c \
+		include/kernel/udp_socket.h include/kernel/netstack.h \
+		include/kernel/netdev.h include/kernel/netbuf.h \
+		include/kernel/fd.h include/kernel/timer.h include/kernel/errno.h \
+		include/kernel/network_service.h include/kernel/icmp_echo.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/network_service.o: kernel/net/network_service.c \
+		include/kernel/network_service.h include/kernel/udp_socket.h \
+		include/kernel/errno.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -DOPEN_SILLICON_KERNEL -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/tcp_core.o: kernel/net/tcp_core.c include/kernel/tcp_core.h \
+		include/kernel/tcp_wire.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/tcp_wire.o: kernel/net/tcp_wire.c include/kernel/tcp_wire.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/tcp_runtime.o: kernel/net/tcp_runtime.c \
+		include/kernel/tcp_runtime.h include/kernel/tcp_core.h \
+		include/kernel/tcp_wire.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
 $(BUILD_DIR)/e1000_profile.o: kernel/net/e1000_profile.c \
 		include/kernel/e1000_profile.h include/arch/x86_64/pci.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
+$(BUILD_DIR)/e1000_ring.o: kernel/net/e1000_ring.c \
+		include/kernel/e1000_ring.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
 $(BUILD_DIR)/e1000.o: kernel/net/e1000.c include/kernel/e1000.h \
 		include/kernel/e1000_profile.h include/arch/x86_64/pci_resource.h \
-		include/kernel/dma.h include/kernel/log.h | $(BUILD_DIR)
+		include/kernel/e1000_ring.h include/kernel/dma.h \
+		include/kernel/dma_ring.h include/kernel/netdev.h \
+		include/kernel/netbuf.h include/kernel/log.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/e1000_reset.o: kernel/net/e1000_reset.c include/kernel/e1000.h | $(BUILD_DIR)
@@ -297,6 +350,29 @@ $(BUILD_DIR)/user_start.o: user/start.S user/include/os.h | $(BUILD_DIR)
 $(BUILD_DIR)/user_os.o: user/os.c user/include/os.h | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
+UDP_SOCKET_TEST_SOURCE ?= user/udp_socket_test.c
+UDP_SOCKET_TEST_CFLAGS ?=
+$(BUILD_DIR)/udp_socket_test.o: $(UDP_SOCKET_TEST_SOURCE) user/include/os.h | $(BUILD_DIR)
+	$(CC) $(USER_CFLAGS) $(UDP_SOCKET_TEST_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/udp_socket_start.o: user/udp_socket_start.S | $(BUILD_DIR)
+	$(CC) $(USER_ASFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/udp_socket_test.elf: $(BUILD_DIR)/udp_socket_start.o \
+		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
+		$(BUILD_DIR)/netdiag_args.o $(BUILD_DIR)/udp_socket_test.o \
+		user/c_linker.ld
+	$(LD) $(USER_C_LDFLAGS) $(BUILD_DIR)/udp_socket_start.o \
+		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
+		$(BUILD_DIR)/netdiag_args.o $(BUILD_DIR)/udp_socket_test.o -o $@
+
+$(BUILD_DIR)/udp_socket_test_blob.o: $(BUILD_DIR)/udp_socket_test.elf
+	cd $(BUILD_DIR) && objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
+		--rename-section .data=.rodata,alloc,load,readonly,data,contents \
+		--redefine-sym _binary_udp_socket_test_elf_start=_binary_udp_socket_test_bin_start \
+		--redefine-sym _binary_udp_socket_test_elf_end=_binary_udp_socket_test_bin_end \
+		udp_socket_test.elf udp_socket_test_blob.o
+
 $(BUILD_DIR)/user_path.o: user/path.c user/include/os.h | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -320,6 +396,44 @@ $(BUILD_DIR)/coreutils/%.elf: $(BUILD_DIR)/user_start.o \
 	$(LD) $(USER_C_LDFLAGS) $(BUILD_DIR)/user_start.o \
 		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
 		$(BUILD_DIR)/coreutils/$*.o -o $@
+
+$(BUILD_DIR)/coreutils/netdiag.elf: $(BUILD_DIR)/user_start.o \
+		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
+		$(BUILD_DIR)/netdiag_args.o $(BUILD_DIR)/coreutils/netdiag.o \
+		user/c_linker.ld
+	$(LD) $(USER_C_LDFLAGS) $(BUILD_DIR)/user_start.o \
+		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
+		$(BUILD_DIR)/netdiag_args.o $(BUILD_DIR)/coreutils/netdiag.o -o $@
+
+$(BUILD_DIR)/coreutils/netdiag.o: user/coreutils/netdiag.c \
+		user/coreutils/netdiag_args.h user/include/os.h | $(BUILD_DIR)
+	mkdir -p $(@D)
+	$(CC) $(USER_CFLAGS) -Iuser -c $< -o $@
+
+$(BUILD_DIR)/coreutils/ping.elf: $(BUILD_DIR)/user_start.o \
+		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
+		$(BUILD_DIR)/netdiag_args.o $(BUILD_DIR)/coreutils/ping.o \
+		user/c_linker.ld
+	$(LD) $(USER_C_LDFLAGS) $(BUILD_DIR)/user_start.o \
+		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
+		$(BUILD_DIR)/netdiag_args.o $(BUILD_DIR)/coreutils/ping.o -o $@
+
+$(BUILD_DIR)/coreutils/ping.o: user/coreutils/ping.c \
+		user/coreutils/netdiag_args.h user/include/os.h | $(BUILD_DIR)
+	mkdir -p $(@D)
+	$(CC) $(USER_CFLAGS) -Iuser -c $< -o $@
+
+$(BUILD_DIR)/netdiag_args.o: user/netdiag_args.c \
+		user/coreutils/netdiag_args.h | $(BUILD_DIR)
+	$(CC) $(USER_CFLAGS) -Iuser -c $< -o $@
+
+$(BUILD_DIR)/netdiag_args_test: user/netdiag_args.c \
+		tests/netdiag_args_test.c user/coreutils/netdiag_args.h | $(BUILD_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iuser \
+		user/netdiag_args.c tests/netdiag_args_test.c -o $@
+
+netdiag-args-test: $(BUILD_DIR)/netdiag_args_test
+	$(BUILD_DIR)/netdiag_args_test
 
 $(BUILD_DIR)/user_probe.o: user/probe.c user/include/os.h | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) -c $< -o $@
@@ -468,9 +582,18 @@ $(BUILD_DIR)/populate_root: tools/populate_root.c kernel/vfs/vfs.c \
 native-musl-verify:
 	python3 third_party/musl/scripts/verify.py --output build/musl-bootstrap
 
-native-musl-build:
+$(MUSL_BUILD_DIR)/.native-musl-ready: third_party/musl/scripts/build_native.py \
+		third_party/musl/scripts/common.py \
+		third_party/musl/manifest/source.json \
+		third_party/musl/manifest/patches.json \
+		$(wildcard third_party/musl/opensillicon/*)
 	python3 third_party/musl/scripts/build_native.py \
 		--output $(MUSL_BUILD_DIR) --bootstrap build/musl-bootstrap --jobs 4
+	touch $@
+
+native-musl-build: $(MUSL_BUILD_DIR)/.native-musl-ready
+
+$(MUSL_SYSROOT)/usr/lib/libc.a: $(MUSL_BUILD_DIR)/.native-musl-ready
 
 $(MUSL_HELLO): tests/musl_hello.c user/c_linker.ld \
 		$(MUSL_SYSROOT)/usr/lib/libc.a
@@ -678,6 +801,22 @@ e1000-profile-test: $(BUILD_DIR)/e1000_profile_test $(BUILD_DIR)/e1000_reset_tes
 	$(BUILD_DIR)/e1000_profile_test
 	$(BUILD_DIR)/e1000_reset_test
 
+$(BUILD_DIR)/e1000_ring_test: kernel/net/e1000_ring.c \
+		tests/e1000_ring_test.c include/kernel/e1000_ring.h | $(BUILD_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude \
+		kernel/net/e1000_ring.c tests/e1000_ring_test.c -o $@
+
+e1000-ring-test: $(BUILD_DIR)/e1000_ring_test
+	$(BUILD_DIR)/e1000_ring_test
+
+$(BUILD_DIR)/random_test: kernel/random.c tests/random_test.c \
+		include/kernel/random.h | $(BUILD_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -DKERNEL_RANDOM_TEST \
+		-Iinclude kernel/random.c tests/random_test.c -o $@
+
+kernel-random-test: $(BUILD_DIR)/random_test
+	$(BUILD_DIR)/random_test
+
 e1000-init-qemu-test: iso $(BUILD_DIR)/phase12-root.img
 	@set +e; timeout 18s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \
 		-cdrom $(BUILD_DIR)/opensillicon.iso \
@@ -687,10 +826,142 @@ e1000-init-qemu-test: iso $(BUILD_DIR)/phase12-root.img
 		-serial file:$(BUILD_DIR)/e1000-init.log -display none \
 		-no-reboot -no-shutdown; status=$$?; set -e; \
 	test $$status -eq 124; \
-	grep -F 'reset complete; bus mastering remains disabled' \
+	grep -F 'e1000 DMA rings ready TX/RX 8 descriptors each' \
 		$(BUILD_DIR)/e1000-init.log; \
 	grep -F 'Initializing QEMU e1000 82540EM ...' \
 		$(BUILD_DIR)/e1000-init.log
+
+e1000-dma-qemu-test:
+	$(MAKE) BUILD_DIR=build/e1000-smoke \
+		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DKERNEL_TEST_E1000_SMOKE' \
+		iso build/e1000-smoke/test-root.img
+	python3 tests/e1000_qemu_smoke.py $(QEMU) $(OVMF_CODE) \
+		build/e1000-smoke/opensillicon.iso \
+		build/e1000-smoke/test-root.img \
+		build/e1000-smoke/e1000-smoke.log
+
+
+$(BUILD_DIR)/netstack_test: kernel/net/netstack.c kernel/net/tcp_wire.c \
+		tests/netstack_test.c include/kernel/netstack.h \
+		include/kernel/tcp_wire.h | $(BUILD_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude \
+		kernel/net/netstack.c kernel/net/tcp_wire.c \
+		tests/netstack_test.c -Wl,--wrap=tcp_wire_parse -o $@
+
+$(BUILD_DIR)/netstack_runtime_gate_test: kernel/net/netstack.c \
+		kernel/net/tcp_wire.c kernel/net/tcp_core.c \
+		kernel/net/tcp_runtime.c tests/netstack_runtime_gate_test.c \
+		include/kernel/netstack.h include/kernel/tcp_runtime.h | $(BUILD_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -DOPEN_SILLICON_ENABLE_TCP_ROUTING \
+		-Iinclude kernel/net/netstack.c kernel/net/tcp_wire.c \
+		kernel/net/tcp_core.c kernel/net/tcp_runtime.c \
+		tests/netstack_runtime_gate_test.c -o $@
+
+netstack-test: $(BUILD_DIR)/netstack_test \
+		$(BUILD_DIR)/netstack_runtime_gate_test
+	$(BUILD_DIR)/netstack_test
+	$(BUILD_DIR)/netstack_runtime_gate_test
+
+$(BUILD_DIR)/udp_socket_test: kernel/net/udp_socket.c \
+		kernel/net/netstack.c kernel/net/tcp_wire.c \
+		kernel/net/netdev.c kernel/net/netbuf.c \
+		kernel/net/network_service.c kernel/fd.c tests/udp_socket_test.c
+	$(CC) -std=c11 -Wall -Wextra -Werror -ffunction-sections \
+		-fdata-sections -Iinclude -Ilimine kernel/net/udp_socket.c \
+		kernel/net/netstack.c kernel/net/tcp_wire.c \
+		kernel/net/netdev.c kernel/net/netbuf.c \
+		kernel/net/network_service.c kernel/fd.c tests/udp_socket_test.c \
+		-Wl,--gc-sections -o $@
+
+udp-socket-test: $(BUILD_DIR)/udp_socket_test
+	$(BUILD_DIR)/udp_socket_test
+
+$(BUILD_DIR)/network_service_test: kernel/net/network_service.c \
+		tests/network_service_test.c include/kernel/network_service.h \
+		include/kernel/udp_socket.h include/kernel/errno.h | $(BUILD_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude \
+		kernel/net/network_service.c tests/network_service_test.c -o $@
+
+network-service-test: $(BUILD_DIR)/network_service_test
+	$(BUILD_DIR)/network_service_test
+
+$(BUILD_DIR)/tcp_core_test: kernel/net/tcp_core.c kernel/net/tcp_wire.c \
+		tests/tcp_core_test.c include/kernel/tcp_core.h \
+		include/kernel/tcp_wire.h | $(BUILD_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude \
+		-DTCP_CORE_TESTING kernel/net/tcp_core.c kernel/net/tcp_wire.c \
+		tests/tcp_core_test.c -o $@
+
+$(BUILD_DIR)/tcp_wire_test: kernel/net/tcp_wire.c tests/tcp_wire_test.c \
+		include/kernel/tcp_wire.h | $(BUILD_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude \
+		kernel/net/tcp_wire.c tests/tcp_wire_test.c -o $@
+
+tcp-wire-test: $(BUILD_DIR)/tcp_wire_test
+	$(BUILD_DIR)/tcp_wire_test
+
+tcp-core-test: $(BUILD_DIR)/tcp_core_test
+	$(BUILD_DIR)/tcp_core_test
+
+$(BUILD_DIR)/tcp_runtime_test: kernel/net/tcp_core.c kernel/net/tcp_runtime.c \
+		kernel/net/tcp_wire.c tests/tcp_runtime_test.c include/kernel/tcp_core.h \
+		include/kernel/tcp_wire.h \
+		include/kernel/tcp_runtime.h | $(BUILD_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -DOPEN_SILLICON_ENABLE_TCP_ROUTING \
+		-DTCP_CORE_TESTING -DTCP_RUNTIME_TESTING \
+		-Iinclude kernel/net/tcp_core.c kernel/net/tcp_wire.c \
+		kernel/net/tcp_runtime.c \
+		tests/tcp_runtime_test.c -o $@
+
+$(BUILD_DIR)/tcp_runtime_disabled_test: kernel/net/tcp_core.c \
+		kernel/net/tcp_runtime.c kernel/net/tcp_wire.c \
+		tests/tcp_runtime_disabled_test.c include/kernel/tcp_runtime.h | $(BUILD_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude \
+		kernel/net/tcp_core.c kernel/net/tcp_wire.c \
+		kernel/net/tcp_runtime.c tests/tcp_runtime_disabled_test.c -o $@
+
+tcp-runtime-test: $(BUILD_DIR)/tcp_runtime_test \
+		$(BUILD_DIR)/tcp_runtime_disabled_test
+	$(BUILD_DIR)/tcp_runtime_test
+	$(BUILD_DIR)/tcp_runtime_disabled_test
+
+e1000-icmp-qemu-test:
+	$(MAKE) BUILD_DIR=build/e1000-icmp \
+		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DKERNEL_TEST_E1000_ICMP_SMOKE' \
+		iso build/e1000-icmp/test-root.img
+	python3 tests/e1000_icmp_qemu_test.py $(QEMU) $(OVMF_CODE) \
+		build/e1000-icmp/opensillicon.iso \
+		build/e1000-icmp/test-root.img build/e1000-icmp/e1000-icmp.log
+
+e1000-udp-qemu-test:
+	$(MAKE) BUILD_DIR=build/e1000-udp \
+		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DKERNEL_TEST_UDP_SOCKET' \
+		iso build/e1000-udp/phase12-root.img
+	python3 tests/e1000_udp_qemu_test.py $(QEMU) $(OVMF_CODE) \
+		build/e1000-udp/opensillicon.iso \
+		build/e1000-udp/phase12-root.img build/e1000-udp/e1000-udp.log
+
+e1000-netdiag-qemu-test:
+	$(MAKE) BUILD_DIR=build/e1000-netdiag \
+		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DKERNEL_TEST_UDP_SOCKET' \
+		UDP_SOCKET_TEST_SOURCE=user/coreutils/netdiag.c \
+		UDP_SOCKET_TEST_CFLAGS=-DNETDIAG_QEMU_TEST \
+		iso build/e1000-netdiag/phase12-root.img
+	python3 tests/e1000_udp_qemu_test.py $(QEMU) $(OVMF_CODE) \
+		build/e1000-netdiag/opensillicon.iso \
+		build/e1000-netdiag/phase12-root.img \
+		build/e1000-netdiag/e1000-netdiag.log --netdiag
+
+e1000-icmp-ping-qemu-test:
+	$(MAKE) BUILD_DIR=build/e1000-icmp-ping \
+		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DKERNEL_TEST_UDP_SOCKET -DKERNEL_TEST_ICMP_PING' \
+		UDP_SOCKET_TEST_SOURCE=user/coreutils/ping.c \
+		UDP_SOCKET_TEST_CFLAGS=-DPING_QEMU_TEST \
+		iso build/e1000-icmp-ping/phase12-root.img
+	python3 tests/e1000_icmp_qemu_test.py $(QEMU) $(OVMF_CODE) \
+		build/e1000-icmp-ping/opensillicon.iso \
+		build/e1000-icmp-ping/phase12-root.img \
+		build/e1000-icmp-ping/e1000-icmp-ping.log --userspace-ping
 
 $(BUILD_DIR)/e1000_reset_test: kernel/net/e1000_reset.c \
 		tests/e1000_reset_test.c include/kernel/e1000.h | $(BUILD_DIR)
@@ -806,14 +1077,18 @@ $(BUILD_DIR)/initramfs.cpio: $(shell find initramfs -type f -o -type d) \
 		--file bin/argv_probe=$(BUILD_DIR)/argv_probe.elf \
 		--file bin/argv_limit_test=$(BUILD_DIR)/argv_limit_test.elf
 
-KERNEL_OBJECTS := $(BUILD_DIR)/main.o $(BUILD_DIR)/boot.o $(BUILD_DIR)/pmm.o \
+KERNEL_OBJECTS := $(BUILD_DIR)/main.o $(BUILD_DIR)/boot.o $(BUILD_DIR)/random.o $(BUILD_DIR)/pmm.o \
 	$(BUILD_DIR)/vmm.o $(BUILD_DIR)/shm.o $(BUILD_DIR)/heap.o $(BUILD_DIR)/log.o \
 	$(BUILD_DIR)/gdt.o $(BUILD_DIR)/fpu.o $(BUILD_DIR)/lapic.o $(BUILD_DIR)/acpi.o \
 	$(BUILD_DIR)/ioapic.o $(BUILD_DIR)/ahci.o $(BUILD_DIR)/block.o \
 	$(BUILD_DIR)/block_silliconfs.o \
 	$(BUILD_DIR)/pci.o $(BUILD_DIR)/pci_resource.o $(BUILD_DIR)/dma.o \
 	$(BUILD_DIR)/dma_ring.o $(BUILD_DIR)/netbuf.o $(BUILD_DIR)/netdev.o \
+	$(BUILD_DIR)/netstack.o \
+	$(BUILD_DIR)/tcp_core.o $(BUILD_DIR)/tcp_wire.o $(BUILD_DIR)/tcp_runtime.o \
+	$(BUILD_DIR)/udp_socket.o $(BUILD_DIR)/network_service.o \
 	$(BUILD_DIR)/e1000_profile.o $(BUILD_DIR)/e1000.o \
+	$(BUILD_DIR)/e1000_ring.o \
 	$(BUILD_DIR)/e1000_reset.o \
 	$(BUILD_DIR)/timer.o \
 	$(BUILD_DIR)/scheduler.o $(BUILD_DIR)/interrupts.o $(BUILD_DIR)/gdt_asm.o \
@@ -829,7 +1104,7 @@ KERNEL_OBJECTS := $(BUILD_DIR)/main.o $(BUILD_DIR)/boot.o $(BUILD_DIR)/pmm.o \
 	$(BUILD_DIR)/signal_state.o \
 	$(BUILD_DIR)/string.o $(BUILD_DIR)/vfs.o $(BUILD_DIR)/ramfs.o \
 	$(BUILD_DIR)/initramfs.o $(BUILD_DIR)/silliconfs.o \
-	$(BUILD_DIR)/vfs_test_blob.o $(ACPICA_OBJECTS)
+	$(BUILD_DIR)/vfs_test_blob.o $(UDP_SOCKET_TEST_OBJECTS) $(ACPICA_OBJECTS)
 
 $(BUILD_DIR)/kernel.elf: $(KERNEL_OBJECTS) kernel/linker.ld
 	$(LD) $(KERNEL_LDFLAGS) $(KERNEL_OBJECTS) -o $@
@@ -841,16 +1116,22 @@ iso: $(BUILD_DIR)/opensillicon.iso
 
 $(BUILD_DIR)/root.img: $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.elf \
 		$(BUILD_DIR)/probe.elf $(BUILD_DIR)/populate_root \
-		$(COREUTILS_ELFS) \
+		$(COREUTILS_ELFS) $(MUSL_HELLO) \
 		tools/mksilliconfs.py | $(BUILD_DIR)
 	python3 tools/mksilliconfs.py $@ --blocks 32768 --inodes 1024
 	$(BUILD_DIR)/populate_root $@ $(BUILD_DIR)/init.elf \
-		$(BUILD_DIR)/shell.elf $(BUILD_DIR)/probe.elf --coreutils \
+		$(BUILD_DIR)/shell.elf $(BUILD_DIR)/probe.elf $(MUSL_HELLO) --coreutils \
 		$(BUILD_DIR)/coreutils/ls.elf $(BUILD_DIR)/coreutils/cat.elf \
 		$(BUILD_DIR)/coreutils/echo.elf $(BUILD_DIR)/coreutils/pwd.elf \
 		$(BUILD_DIR)/coreutils/true.elf $(BUILD_DIR)/coreutils/false.elf \
 		$(BUILD_DIR)/coreutils/clear.elf $(BUILD_DIR)/coreutils/uname.elf \
-		$(BUILD_DIR)/coreutils/fetch.elf
+		$(BUILD_DIR)/coreutils/fetch.elf $(BUILD_DIR)/coreutils/head.elf \
+		$(BUILD_DIR)/coreutils/wc.elf $(BUILD_DIR)/coreutils/stat.elf \
+		$(BUILD_DIR)/coreutils/basename.elf \
+		$(BUILD_DIR)/coreutils/dirname.elf $(BUILD_DIR)/coreutils/kill.elf \
+		$(BUILD_DIR)/coreutils/sleep.elf $(BUILD_DIR)/coreutils/which.elf \
+		$(BUILD_DIR)/coreutils/ps.elf $(BUILD_DIR)/coreutils/netdiag.elf \
+		$(BUILD_DIR)/coreutils/ping.elf
 
 refresh-test-root: $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.elf \
 		$(BUILD_DIR)/probe.elf $(BUILD_DIR)/populate_root \
@@ -864,7 +1145,13 @@ refresh-test-root: $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.elf \
 		$(BUILD_DIR)/coreutils/echo.elf $(BUILD_DIR)/coreutils/pwd.elf \
 		$(BUILD_DIR)/coreutils/true.elf $(BUILD_DIR)/coreutils/false.elf \
 		$(BUILD_DIR)/coreutils/clear.elf $(BUILD_DIR)/coreutils/uname.elf \
-		$(BUILD_DIR)/coreutils/fetch.elf
+		$(BUILD_DIR)/coreutils/fetch.elf $(BUILD_DIR)/coreutils/head.elf \
+		$(BUILD_DIR)/coreutils/wc.elf $(BUILD_DIR)/coreutils/stat.elf \
+		$(BUILD_DIR)/coreutils/basename.elf \
+		$(BUILD_DIR)/coreutils/dirname.elf $(BUILD_DIR)/coreutils/kill.elf \
+		$(BUILD_DIR)/coreutils/sleep.elf $(BUILD_DIR)/coreutils/which.elf \
+		$(BUILD_DIR)/coreutils/ps.elf $(BUILD_DIR)/coreutils/netdiag.elf \
+		$(BUILD_DIR)/coreutils/ping.elf
 
 $(BUILD_DIR)/test-root.img: refresh-test-root
 	@test -f $@
@@ -880,7 +1167,13 @@ $(BUILD_DIR)/phase12-root.img: $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.elf \
 		$(BUILD_DIR)/coreutils/echo.elf $(BUILD_DIR)/coreutils/pwd.elf \
 		$(BUILD_DIR)/coreutils/true.elf $(BUILD_DIR)/coreutils/false.elf \
 		$(BUILD_DIR)/coreutils/clear.elf $(BUILD_DIR)/coreutils/uname.elf \
-		$(BUILD_DIR)/coreutils/fetch.elf
+		$(BUILD_DIR)/coreutils/fetch.elf $(BUILD_DIR)/coreutils/head.elf \
+		$(BUILD_DIR)/coreutils/wc.elf $(BUILD_DIR)/coreutils/stat.elf \
+		$(BUILD_DIR)/coreutils/basename.elf \
+		$(BUILD_DIR)/coreutils/dirname.elf $(BUILD_DIR)/coreutils/kill.elf \
+		$(BUILD_DIR)/coreutils/sleep.elf $(BUILD_DIR)/coreutils/which.elf \
+		$(BUILD_DIR)/coreutils/ps.elf $(BUILD_DIR)/coreutils/netdiag.elf \
+		$(BUILD_DIR)/coreutils/ping.elf
 
 $(BUILD_DIR)/blank-root.img: tools/mksilliconfs.py | $(BUILD_DIR)
 	python3 tools/mksilliconfs.py $@ --blocks 32768 --inodes 1024
@@ -919,7 +1212,9 @@ run: iso $(BUILD_DIR)/root.img
 run-gui: iso $(BUILD_DIR)/root.img
 	$(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) -cdrom $(BUILD_DIR)/opensillicon.iso \
 		-drive file=$(BUILD_DIR)/root.img,if=none,id=rootdisk,format=raw \
-		-device ide-hd,drive=rootdisk,bus=ide.0 -serial stdio -display gtk -no-reboot
+		-device ide-hd,drive=rootdisk,bus=ide.0 -nic none \
+		-netdev user,id=net0 -device e1000,netdev=net0,id=e1000,mac=52:54:00:15:03:01 \
+		-serial stdio -display gtk -no-reboot
 
 $(BUILD_DIR)/block_test: kernel/block.c kernel/block_silliconfs.c \
 		tests/block_test.c include/kernel/block.h include/kernel/errno.h \

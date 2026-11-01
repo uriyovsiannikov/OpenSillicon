@@ -17,19 +17,15 @@ static const char *const logo[] = {
 	"   (,-,)"
 };
 
-struct info_line {
-	const char *label;
-	const char *value;
+#define INFO_LINE_COUNT 8U
+
+static const char *const information_labels[INFO_LINE_COUNT] = {
+	"OS: ", "Kernel: ", "Architecture: ", "Shell: ",
+	"Root filesystem: ", "/bin entries: ", "Terminal: ", "PID: "
 };
 
-static const struct info_line information[] = {
-	{ "OS: ", "OpenSillicon" },
-	{ "Kernel: ", "x86_64" },
-	{ "Architecture: ", "x86_64" },
-	{ "Shell: ", "/bin/sh" },
-	{ "Userland: ", "C11" },
-	{ "VFS: ", "SilliconFS" },
-	{ "PID: ", NULL }
+static const char *const information_values[4] = {
+	"OpenSillicon", "OpenSillicon", "x86_64", "/bin/sh"
 };
 
 static const char *const logo_colors[] = {
@@ -78,11 +74,56 @@ write_palette(const char *const colors[8])
 	size_t index;
 
 	for (index = 0; index < 8; index++) {
-		if ((index != 0 && !write_all(" ", 1)) ||
-		    !write_string(colors[index]))
+		if (!write_string(colors[index]))
 			return 0;
 	}
 	return 1;
+}
+
+static int
+write_dynamic_information(size_t row)
+{
+	if (row < 4)
+		return write_string(information_values[row]);
+	if (row == 4) {
+		struct u_stat status;
+		return write_string(u_stat_path("/", &status) == 0 &&
+		    status.type == 2 ? "available" : "unavailable");
+	}
+	if (row == 5) {
+		struct u_dirent entry;
+		long descriptor = u_open("/bin", U_O_RDONLY | U_O_DIRECTORY);
+		long result;
+		uint64_t count = 0;
+		if (descriptor < 0)
+			return write_string("unavailable");
+		while ((result = u_readdir((uint64_t)descriptor, &entry)) > 0) {
+			if (!u_streq(entry.name, ".") && !u_streq(entry.name, ".."))
+				count++;
+		}
+		(void)u_close((uint64_t)descriptor);
+		if (result < 0)
+			return write_string("unavailable");
+		u_put_u64(count);
+		return 1;
+	}
+	if (row == 6) {
+		struct u_winsize size;
+		if (u_ioctl(1, 0x5413U, &size) != 0)
+			return write_string("unavailable");
+		u_put_u64(size.rows);
+		if (!write_all("x", 1))
+			return 0;
+		u_put_u64(size.columns);
+		return 1;
+	}
+	{
+		long pid = u_getpid();
+		if (pid < 0)
+			return write_string("unavailable");
+		u_put_u64((uint64_t)pid);
+		return 1;
+	}
 }
 
 int
@@ -106,28 +147,17 @@ user_main(uint64_t argc, char **argv)
 			if (!write_all(" ", 1))
 				return 1;
 		}
-		if (row < sizeof(information) / sizeof(information[0])) {
-			long pid = -1;
-
+		if (row < INFO_LINE_COUNT) {
 			if (!write_string("\033[96m") ||
-			    !write_string(information[row].label) ||
+			    !write_string(information_labels[row]) ||
 			    !write_string("\033[0m\033[97m"))
 				return 1;
-			if (information[row].value != NULL) {
-				if (!write_string(information[row].value))
-					return 1;
-			} else {
-				pid = u_getpid();
-				if (pid < 0)
-					return 1;
-				u_put_u64((uint64_t)pid);
-			}
-			if (!write_string("\033[0m"))
+			if (!write_dynamic_information(row) || !write_string("\033[0m"))
 				return 1;
-		} else if (row == sizeof(information) / sizeof(information[0])) {
+		} else if (row == INFO_LINE_COUNT + 1) {
 			if (!write_palette(normal_palette))
 				return 1;
-		} else if (row == sizeof(information) / sizeof(information[0]) + 1) {
+		} else if (row == INFO_LINE_COUNT + 2) {
 			if (!write_palette(bright_palette))
 				return 1;
 		}
