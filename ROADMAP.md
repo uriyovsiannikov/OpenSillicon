@@ -1762,3 +1762,16 @@ claim of RFC 9293 conformance. Build success alone is not a readiness gate.
 No production functionality was enabled in 15.5J. See the readiness assessment
 in `DESIGN.md` for the component diagram, capability matrix, ownership detail,
 and entropy/timer/RX/TX rationale.
+
+### Phase 15.6I — TPM2 ACPI table parser
+
+A pure host-tested parser for the TCG ACPI v1.50 TPM2 table is implemented in
+`kernel/tpm2_acpi.c`; it accepts revision 6 and only the PC Client CRB start
+method (method 7), with output unchanged on failure. It is not linked into the
+production kernel and performs no TPM or MMIO access. The focused test and
+Clang ASan/UBSan run pass. The broader Phase 15.6I regression gate remains
+open: the existing standalone `acpi-test` target currently fails to link
+because it omits the `vmm_vmalloc_device_start` dependency referenced by the
+ACPI implementation. That unrelated target was not changed. Do not mark this
+phase complete until the regression gate is resolved. TPM remains an
+unapproved entropy candidate with no entropy credit.

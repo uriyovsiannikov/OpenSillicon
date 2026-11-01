@@ -757,6 +757,15 @@ $(BUILD_DIR)/acpi_test: kernel/arch/x86_64/acpi.c tests/acpi_test.c \
 acpi-test: $(BUILD_DIR)/acpi_test
 	$(BUILD_DIR)/acpi_test
 
+.PHONY: tpm2-acpi-test
+$(BUILD_DIR)/tpm2_acpi_test: kernel/tpm2_acpi.c tests/tpm2_acpi_test.c \
+		include/kernel/tpm2_acpi.h | $(BUILD_DIR)
+	$(CC) -std=c11 -O1 -g -Wall -Wextra -Werror -Iinclude \
+		kernel/tpm2_acpi.c tests/tpm2_acpi_test.c -o $@
+
+tpm2-acpi-test: $(BUILD_DIR)/tpm2_acpi_test
+	$(BUILD_DIR)/tpm2_acpi_test
+
 $(BUILD_DIR)/pci_test: kernel/arch/x86_64/pci.c tests/pci_test.c \
 		include/arch/x86_64/pci.h include/arch/x86_64/acpi.h
 	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Ilimine \
