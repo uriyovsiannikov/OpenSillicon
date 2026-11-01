@@ -23,6 +23,9 @@ REPO = MUSL_ROOT.parents[1]
 BOOTSTRAP = REPO / "build" / "musl-bootstrap"
 OUTPUT_ID = "OpenSillicon musl native build output v1"
 TARGET = "x86_64-unknown-none-elf"
+SUPPORTED_LLVM_VERSION = "22.1.8"
+LLVM_TOOLS = ("clang", "ld.lld", "llvm-ar", "llvm-ranlib",
+              "llvm-objdump", "llvm-nm")
 FLAGS = [
     "-O2", "-pipe", "-ffreestanding", "-fno-builtin",
     "-fno-stack-protector", "-fno-pic", "-fno-pie", "-mno-red-zone",
@@ -56,7 +59,80 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def make_mallocng_fpu_independent(build_dir: Path, build_log: Path) -> None:
+def tool_version(path: Path, args: tuple[str, ...]) -> str:
+    output = subprocess.check_output([str(path), *args], text=True,
+                                     stderr=subprocess.STDOUT)
+    match = re.search(r"\b(\d+\.\d+\.\d+)\b", output)
+    if match is None:
+        raise ValueError(f"could not determine version for {path}: {output.splitlines()[0]}")
+    return match.group(1)
+
+
+def detect_toolchain() -> dict[str, dict[str, str]]:
+    """Resolve and validate the LLVM 22.1.8 tools before writing build output."""
+    tools: dict[str, dict[str, str]] = {}
+    requested_clang = shutil.which("clang")
+    if requested_clang is None:
+        raise ValueError("required tool 'clang' was not found on PATH")
+    requested_path = Path(requested_clang).absolute()
+    requested_version = tool_version(requested_path, ("--version",))
+
+    # Fedora places ccache wrappers before /usr/bin on PATH. Bypass that
+    # wrapper so configure cannot depend on a writable user cache.
+    resolved = requested_path.resolve()
+    if resolved.name == "ccache":
+        real_clang = shutil.which(f"clang-{requested_version.split('.')[0]}")
+        if real_clang is None:
+            raise ValueError(
+                f"'clang' resolves through ccache at {requested_path}, but the "
+                f"matching clang-{requested_version.split('.')[0]} binary was not found")
+        requested_path = Path(real_clang).absolute()
+
+    candidates = {"clang": requested_path}
+    for name in LLVM_TOOLS[1:]:
+        candidate = shutil.which(name)
+        if candidate is None:
+            raise ValueError(f"required tool '{name}' was not found on PATH")
+        candidates[name] = Path(candidate).absolute()
+
+    version_args = {"clang": ("--version",), "ld.lld": ("--version",),
+                    "llvm-ar": ("--version",), "llvm-ranlib": ("--version",),
+                    "llvm-objdump": ("--version",), "llvm-nm": ("--version",)}
+    for name, path in candidates.items():
+        version = tool_version(path, version_args[name])
+        if version != SUPPORTED_LLVM_VERSION:
+            raise ValueError(
+                f"unsupported {name} at {path}: found {version}; "
+                f"this build is validated with LLVM {SUPPORTED_LLVM_VERSION}")
+        tools[name] = {"path": str(path), "version": version}
+
+    # Ensure Clang resolves its -fuse-ld=lld request to the validated linker.
+    driver = subprocess.check_output(
+        [str(candidates["clang"]), f"--target={TARGET}", "-fuse-ld=lld",
+         f"-B{candidates['ld.lld'].parent}", "-###", "-nostdlib", "-static",
+         "-x", "c", "/dev/null", "-o", os.devnull],
+        text=True, stderr=subprocess.STDOUT)
+    link_driver_match = re.search(r'^\s*"([^"\n]*/gcc)"', driver, re.MULTILINE)
+    if link_driver_match is None:
+        raise ValueError("could not identify the host linker driver selected by Clang")
+    link_driver = Path(link_driver_match.group(1))
+    if not link_driver.is_file():
+        raise ValueError(f"Clang selected a missing host linker driver: {link_driver}")
+    link_driver_version = subprocess.check_output(
+        [str(link_driver), "--version"], text=True).splitlines()[0]
+
+    make_path = shutil.which("make")
+    if make_path is None:
+        raise ValueError("required tool 'make' was not found on PATH")
+    make = Path(make_path).absolute()
+    make_version = subprocess.check_output([str(make), "--version"], text=True).splitlines()[0]
+    tools["make"] = {"path": str(make), "version": make_version}
+    tools["link_driver"] = {"path": str(link_driver), "version": link_driver_version}
+    return tools
+
+
+def make_mallocng_fpu_independent(build_dir: Path, build_log: Path,
+                                  tools: dict[str, dict[str, str]]) -> None:
     """Build integer-only mallocng objects without using unavailable SSE state."""
     object_names = set(MALLOCNG_OBJECTS)
     compile_commands: dict[str, list[str]] = {}
@@ -74,8 +150,12 @@ def make_mallocng_fpu_independent(build_dir: Path, build_log: Path) -> None:
                 name = Path(output).name
                 if name in object_names and "src/malloc/mallocng/" in output:
                     compile_commands[name] = command
-        if line.startswith("llvm-ar rc lib/libc.a "):
+        try:
             command = shlex.split(line)
+        except ValueError:
+            command = []
+        if (len(command) >= 4 and Path(command[0]).name == "llvm-ar" and
+                command[1:3] == ["rc", "lib/libc.a"]):
             archive_objects = command[3:]
 
     if set(compile_commands) != object_names:
@@ -93,11 +173,11 @@ def make_mallocng_fpu_independent(build_dir: Path, build_log: Path) -> None:
     # members remain present and the selected mallocng members are replaced.
     archive = build_dir / "lib" / "libc.a"
     archive.unlink()
-    run(["llvm-ar", "rc", "lib/libc.a", *archive_objects], cwd=build_dir)
-    run(["llvm-ranlib", "lib/libc.a"], cwd=build_dir)
+    run([tools["llvm-ar"]["path"], "rc", "lib/libc.a", *archive_objects], cwd=build_dir)
+    run([tools["llvm-ranlib"]["path"], "lib/libc.a"], cwd=build_dir)
 
     disassembly = subprocess.check_output(
-        ["llvm-objdump", "-d", *[f"obj/src/malloc/mallocng/{name}" for name in sorted(object_names)]],
+        [tools["llvm-objdump"]["path"], "-d", *[f"obj/src/malloc/mallocng/{name}" for name in sorted(object_names)]],
         cwd=build_dir, text=True)
     if re.search(r"\b(?:xmm|ymm|zmm|mm)[0-9]+\b", disassembly):
         raise ValueError("mallocng objects still contain SIMD register instructions")
@@ -127,6 +207,10 @@ def main() -> int:
     args = parser.parse_args()
     if args.jobs < 1:
         raise ValueError("--jobs must be positive")
+    tools = detect_toolchain()
+    print("validated musl toolchain:")
+    for name, tool in tools.items():
+        print(f"  {name}: {tool['path']} ({tool['version']})")
     output_arg = args.output.expanduser()
     if not output_arg.is_absolute():
         output_arg = REPO / output_arg
@@ -135,14 +219,18 @@ def main() -> int:
     output = Path(os.path.abspath(output_arg))
     bootstrap = args.bootstrap.resolve()
     source_manifest, patch_manifest = load_manifests()
-    source = bootstrap / "source" / "patched" / source_manifest["top_level"]
     archive = bootstrap / "downloads" / source_manifest["archive_name"]
-    if not source.is_dir() or not archive.is_file():
-        raise ValueError("run the pinned musl bootstrap before native build")
+    if not archive.is_file():
+        raise ValueError(
+            f"pinned musl archive is missing: {archive}; "
+            "run native-musl-verify or provide it in the bootstrap downloads directory")
     run([sys.executable, str(MUSL_ROOT / "scripts" / "verify.py"),
          "--output", str(bootstrap)], cwd=REPO)
     run([sys.executable, str(MUSL_ROOT / "scripts" / "bootstrap.py"),
          "--archive", str(archive), "--output", str(bootstrap)], cwd=REPO)
+    source = bootstrap / "source" / "patched" / source_manifest["top_level"]
+    if not source.is_dir():
+        raise ValueError(f"musl bootstrap did not create patched source: {source}")
 
     prepare_output(output)
     source_copy = output / "source" / source_manifest["top_level"]
@@ -161,9 +249,15 @@ def main() -> int:
                  source_copy / "src" / "thread" / "x86_64" / "__set_thread_area.s")
 
     env = os.environ.copy()
-    env.update({"LC_ALL": "C", "AR": "llvm-ar", "RANLIB": "llvm-ranlib",
-                "CC": f"clang --target={TARGET}",
-                "LDFLAGS": "-fuse-ld=lld -nostdlib -static"})
+    linker_dir = str(Path(tools["ld.lld"]["path"]).parent)
+    # Clang delegates x86_64-unknown-none-elf linking through its configured
+    # GCC driver. Put the already-validated LLD directory first in that
+    # driver's PATH lookup so -fuse-ld=lld cannot select another installation.
+    env["PATH"] = linker_dir + os.pathsep + env.get("PATH", "")
+    env.update({"LC_ALL": "C", "AR": tools["llvm-ar"]["path"],
+                "RANLIB": tools["llvm-ranlib"]["path"],
+                "CC": f"{tools['clang']['path']} --target={TARGET}",
+                "LDFLAGS": f"-fuse-ld=lld -B{linker_dir} -nostdlib -static"})
     configure = [
         str(source_copy / "configure"), f"--srcdir={source_copy}",
         f"--target={TARGET}", "--build=x86_64-redhat-linux-gnu",
@@ -171,25 +265,25 @@ def main() -> int:
         "--disable-wrapper", "LIBCC= ", "CFLAGS=" + " ".join(FLAGS),
     ]
     run(configure, cwd=build_dir, env=env, log=output / "configure.log")
-    run(["make", f"-j{args.jobs}", "V=1"], cwd=build_dir, env=env,
+    run([tools["make"]["path"], f"-j{args.jobs}", "V=1"], cwd=build_dir, env=env,
         log=output / "build.log")
-    make_mallocng_fpu_independent(build_dir, output / "build.log")
-    run(["make", f"DESTDIR={sysroot}", "install"], cwd=build_dir, env=env,
+    make_mallocng_fpu_independent(build_dir, output / "build.log", tools)
+    run([tools["make"]["path"], f"DESTDIR={sysroot}", "install"], cwd=build_dir, env=env,
         log=output / "install.log")
 
     adapter_object = output / "native_syscall.o"
     run([
-        "clang", f"--target={TARGET}", "-std=c11", "-O2", "-Wall", "-Wextra",
+        tools["clang"]["path"], f"--target={TARGET}", "-std=c11", "-O2", "-Wall", "-Wextra",
         "-Werror", "-ffreestanding", "-fno-builtin", "-fno-stack-protector",
         "-fno-pic", "-fno-pie", "-mno-red-zone", "-nostdinc",
         "-isystem", str(sysroot / "usr" / "include"), "-c",
         str(overlays / "native_syscall.c"), "-o", str(adapter_object),
     ], cwd=REPO, env=env)
-    run(["llvm-ar", "r", str(sysroot / "usr" / "lib" / "libc.a"),
+    run([tools["llvm-ar"]["path"], "r", str(sysroot / "usr" / "lib" / "libc.a"),
          str(adapter_object)], cwd=REPO, env=env)
-    run(["llvm-ranlib", str(sysroot / "usr" / "lib" / "libc.a")],
+    run([tools["llvm-ranlib"]["path"], str(sysroot / "usr" / "lib" / "libc.a")],
         cwd=REPO, env=env)
-    run(["llvm-nm", "-u", str(adapter_object)], cwd=REPO, env=env,
+    run([tools["llvm-nm"]["path"], "-u", str(adapter_object)], cwd=REPO, env=env,
         log=output / "adapter-undefined.log")
     if (output / "adapter-undefined.log").read_text().strip():
         raise ValueError("native syscall adapter has unresolved symbols")
@@ -197,8 +291,6 @@ def main() -> int:
     license_dir = sysroot / "usr" / "share" / "licenses" / "musl"
     license_dir.mkdir(parents=True)
     shutil.copy2(source_copy / "COPYRIGHT", license_dir / "COPYRIGHT")
-    compiler_version = subprocess.check_output(
-        ["clang", "--version"], text=True).splitlines()[0]
     patch_records = patch_manifest["confirmed_upstream"]
     info = {
         "project": "OpenSillicon native musl sysroot",
@@ -214,10 +306,8 @@ def main() -> int:
             for path in sorted(overlays.iterdir()) if path.is_file()
         },
         "target": TARGET,
-        "compiler": compiler_version,
-        "linker": "LLD 22.1.8 via clang -fuse-ld=lld",
-        "ar": "LLVM ar",
-        "ranlib": "LLVM ranlib",
+        "toolchain": tools,
+        "linker_flags": env["LDFLAGS"],
         "cflags": FLAGS,
         "mallocng_objects": MALLOCNG_OBJECTS,
         "mallocng_cflags_extra": MALLOCNG_INTEGER_FLAGS,

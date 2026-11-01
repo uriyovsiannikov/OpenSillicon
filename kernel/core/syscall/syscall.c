@@ -35,6 +35,13 @@
 #define ERRNO_EPIPE 32U
 #define ERRNO_EMFILE 24U
 #define ERRNO_ENOTTY 25U
+#define CLOCK_MONOTONIC_ID 1U
+#define MONOTONIC_TICK_HZ 100U
+
+struct native_timespec {
+	int64_t tv_sec;
+	int64_t tv_nsec;
+};
 
 struct syscall_iovec {
 	uint64_t base;
@@ -485,6 +492,33 @@ syscall_interrupt(struct interrupt_frame *frame)
 		break;
 	case SYSCALL_SLEEP_TICKS:
 		frame = process_sleep_ticks(frame, frame->rdi, &error);
+		break;
+	case SYSCALL_CLOCK_GETTIME:
+		{
+			struct native_timespec value;
+			struct address_space *space = vmm_active_address_space();
+			uint64_t ticks;
+
+			if (frame->rdi != CLOCK_MONOTONIC_ID) {
+				syscall_error(frame, ERRNO_EINVAL);
+				break;
+			}
+			if (!vmm_validate_user_write(space, frame->rsi,
+			    sizeof(value))) {
+				syscall_error(frame, ERRNO_EFAULT);
+				break;
+			}
+			ticks = timer_ticks();
+			value.tv_sec = (int64_t)(ticks / MONOTONIC_TICK_HZ);
+			value.tv_nsec = (int64_t)(ticks % MONOTONIC_TICK_HZ) *
+			    (1000000000U / MONOTONIC_TICK_HZ);
+			if (!vmm_copy_to_user(space, frame->rsi, &value,
+			    sizeof(value))) {
+				syscall_error(frame, ERRNO_EFAULT);
+				break;
+			}
+			frame->rax = 0;
+		}
 		break;
 	case SYSCALL_PIPE:
 		{

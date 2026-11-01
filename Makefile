@@ -8,10 +8,18 @@ OVMF_CODE ?= /usr/share/OVMF/OVMF_CODE.fd
 BUILD_DIR := build
 ISO_ROOT := $(BUILD_DIR)/iso_root
 MUSL_BUILD_DIR ?= build/musl-port
+MUSL_BOOTSTRAP_DIR ?= build/musl-bootstrap
+MUSL_CLANG ?= $(shell python3 -c 'import json; print(json.load(open("$(MUSL_BUILD_DIR)/build-info.json"))["toolchain"]["clang"]["path"])')
+MUSL_LLD ?= $(shell python3 -c 'import json; print(json.load(open("$(MUSL_BUILD_DIR)/build-info.json"))["toolchain"]["ld.lld"]["path"])')
+MUSL_QEMU_BUILD_DIR ?= build/musl-qemu
+MUSL_ALLOC_QEMU_BUILD_DIR ?= build/musl-alloc-qemu
+MUSL_STDIO_QEMU_BUILD_DIR ?= build/musl-stdio-qemu
+MUSL_CLOCK_QEMU_BUILD_DIR ?= build/musl-clock-qemu
 MUSL_SYSROOT := $(MUSL_BUILD_DIR)/sysroot
 MUSL_HELLO := $(MUSL_BUILD_DIR)/musl_hello.elf
 MUSL_ALLOC := $(MUSL_BUILD_DIR)/musl_alloc.elf
 MUSL_STDIO := $(MUSL_BUILD_DIR)/musl_stdio.elf
+MUSL_CLOCK := $(MUSL_BUILD_DIR)/musl_clock.elf
 
 KERNEL_CFLAGS := -std=c11 -O2 -g -ffreestanding -fno-stack-protector \
 	-fno-pic -fno-pie -m64 -mno-red-zone -mcmodel=kernel \
@@ -77,7 +85,8 @@ endif
 	fpu-context-qemu-test \
 	native-musl-verify native-musl-build native-musl-hello \
 	native-musl-alloc native-musl-inspect native-musl-qemu-test \
-	native-musl-alloc-qemu-test native-musl-stdio native-musl-stdio-qemu-test
+	native-musl-alloc-qemu-test native-musl-stdio native-musl-stdio-qemu-test \
+	native-musl-clock native-musl-clock-qemu-test
 
 all: kernel
 
@@ -604,7 +613,7 @@ $(BUILD_DIR)/populate_root: tools/populate_root.c kernel/fs/vfs/vfs.c \
 		kernel/proc/fd.c -o $@
 
 native-musl-verify:
-	python3 user/musl/scripts/verify.py --output build/musl-bootstrap
+	python3 user/musl/scripts/verify.py --output $(MUSL_BOOTSTRAP_DIR)
 
 $(MUSL_BUILD_DIR)/.native-musl-ready: user/musl/scripts/build_native.py \
 		user/musl/scripts/common.py \
@@ -612,55 +621,55 @@ $(MUSL_BUILD_DIR)/.native-musl-ready: user/musl/scripts/build_native.py \
 		user/musl/manifest/patches.json \
 		$(wildcard user/musl/opensillicon/*)
 	python3 user/musl/scripts/build_native.py \
-		--output $(MUSL_BUILD_DIR) --bootstrap build/musl-bootstrap --jobs 4
+		--output $(MUSL_BUILD_DIR) --bootstrap $(MUSL_BOOTSTRAP_DIR) --jobs 4
 	touch $@
 
 native-musl-build: $(MUSL_BUILD_DIR)/.native-musl-ready
 
 $(MUSL_SYSROOT)/usr/lib/libc.a: $(MUSL_BUILD_DIR)/.native-musl-ready
 
-$(MUSL_HELLO): tests/musl_hello.c user/c_linker.ld \
-		$(MUSL_SYSROOT)/usr/lib/libc.a
-	clang --target=x86_64-unknown-none-elf -std=c11 -O2 -Wall -Wextra -Werror \
+$(MUSL_HELLO): tests/musl_hello.c user/c_linker.ld Makefile \
+		$(MUSL_BUILD_DIR)/build-info.json $(MUSL_SYSROOT)/usr/lib/libc.a
+	$(MUSL_CLANG) --target=x86_64-unknown-none-elf -std=c11 -O2 -Wall -Wextra -Werror \
 		-ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
 		-mno-red-zone -mno-mmx -mno-sse -mno-sse2 -msoft-float \
 		-ftls-model=local-exec -nostdinc \
 		-isystem $(MUSL_SYSROOT)/usr/include -c tests/musl_hello.c \
 		-o $(MUSL_BUILD_DIR)/musl_hello.o
-	clang --target=x86_64-unknown-none-elf -std=c11 -O2 -Wall -Wextra -Werror \
-		-nostdlib -static -fuse-ld=lld \
+	PATH="$(dir $(MUSL_LLD)):$$PATH" $(MUSL_CLANG) --target=x86_64-unknown-none-elf -std=c11 -O2 -Wall -Wextra -Werror \
+		-nostdlib -static -fuse-ld=lld -B$(dir $(MUSL_LLD)) \
 		-no-pie -Wl,-z,noexecstack -Wl,--build-id=none \
 		-Wl,-T,user/c_linker.ld $(MUSL_SYSROOT)/usr/lib/crt1.o \
 		$(MUSL_SYSROOT)/usr/lib/crti.o $(MUSL_BUILD_DIR)/musl_hello.o \
 		-L$(MUSL_SYSROOT)/usr/lib -lc $(MUSL_SYSROOT)/usr/lib/crtn.o \
 		-o $(MUSL_HELLO)
 
-$(MUSL_ALLOC): tests/musl_alloc.c user/c_linker.ld \
-		$(MUSL_SYSROOT)/usr/lib/libc.a
-	clang --target=x86_64-unknown-none-elf -std=c11 -O2 -Wall -Wextra -Werror \
+$(MUSL_ALLOC): tests/musl_alloc.c user/c_linker.ld Makefile \
+		$(MUSL_BUILD_DIR)/build-info.json $(MUSL_SYSROOT)/usr/lib/libc.a
+	$(MUSL_CLANG) --target=x86_64-unknown-none-elf -std=c11 -O2 -Wall -Wextra -Werror \
 		-ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
 		-mno-red-zone -mno-mmx -mno-sse -mno-sse2 -msoft-float \
 		-ftls-model=local-exec -nostdinc \
 		-isystem $(MUSL_SYSROOT)/usr/include -c tests/musl_alloc.c \
 		-o $(MUSL_BUILD_DIR)/musl_alloc.o
-	clang --target=x86_64-unknown-none-elf -std=c11 -O2 -Wall -Wextra -Werror \
-		-nostdlib -static -fuse-ld=lld \
+	PATH="$(dir $(MUSL_LLD)):$$PATH" $(MUSL_CLANG) --target=x86_64-unknown-none-elf -std=c11 -O2 -Wall -Wextra -Werror \
+		-nostdlib -static -fuse-ld=lld -B$(dir $(MUSL_LLD)) \
 		-no-pie -Wl,-z,noexecstack -Wl,--build-id=none \
 		-Wl,-T,user/c_linker.ld $(MUSL_SYSROOT)/usr/lib/crt1.o \
 		$(MUSL_SYSROOT)/usr/lib/crti.o $(MUSL_BUILD_DIR)/musl_alloc.o \
 		-L$(MUSL_SYSROOT)/usr/lib -lc $(MUSL_SYSROOT)/usr/lib/crtn.o \
 		-o $(MUSL_ALLOC)
 
-$(MUSL_STDIO): tests/musl_stdio.c user/c_linker.ld \
-		$(MUSL_SYSROOT)/usr/lib/libc.a
-	clang --target=x86_64-unknown-none-elf -std=c11 -O2 -Wall -Wextra -Werror \
+$(MUSL_STDIO): tests/musl_stdio.c user/c_linker.ld Makefile \
+		$(MUSL_BUILD_DIR)/build-info.json $(MUSL_SYSROOT)/usr/lib/libc.a
+	$(MUSL_CLANG) --target=x86_64-unknown-none-elf -std=c11 -O2 -Wall -Wextra -Werror \
 		-ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
 		-mno-red-zone -mno-mmx -mno-sse -mno-sse2 -msoft-float \
 		-ftls-model=local-exec -nostdinc \
 		-isystem $(MUSL_SYSROOT)/usr/include -c tests/musl_stdio.c \
 		-o $(MUSL_BUILD_DIR)/musl_stdio.o
-	clang --target=x86_64-unknown-none-elf -std=c11 -O2 -Wall -Wextra -Werror \
-		-nostdlib -static -fuse-ld=lld \
+	PATH="$(dir $(MUSL_LLD)):$$PATH" $(MUSL_CLANG) --target=x86_64-unknown-none-elf -std=c11 -O2 -Wall -Wextra -Werror \
+		-nostdlib -static -fuse-ld=lld -B$(dir $(MUSL_LLD)) \
 		-no-pie -Wl,-z,noexecstack -Wl,--build-id=none \
 		-Wl,-T,user/c_linker.ld $(MUSL_SYSROOT)/usr/lib/crt1.o \
 		$(MUSL_SYSROOT)/usr/lib/crti.o $(MUSL_BUILD_DIR)/musl_stdio.o \
@@ -679,10 +688,32 @@ native-musl-stdio:
 	$(MAKE) native-musl-build
 	$(MAKE) $(MUSL_STDIO)
 
-native-musl-inspect: native-musl-hello
-	readelf -h -l -S -r -d $(MUSL_HELLO)
-	! readelf -l $(MUSL_HELLO) | grep -E 'INTERP|DYNAMIC'
-	! nm -u $(MUSL_HELLO) | grep -v '_DYNAMIC'
+$(MUSL_CLOCK): tests/musl_clock.c user/c_linker.ld Makefile \
+		$(MUSL_BUILD_DIR)/build-info.json $(MUSL_SYSROOT)/usr/lib/libc.a
+	$(MUSL_CLANG) --target=x86_64-unknown-none-elf -std=c11 -O2 -Wall -Wextra -Werror \
+		-ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
+		-mno-red-zone -mno-mmx -mno-sse -mno-sse2 -msoft-float \
+		-ftls-model=local-exec -nostdinc \
+		-isystem $(MUSL_SYSROOT)/usr/include -c tests/musl_clock.c \
+		-o $(MUSL_BUILD_DIR)/musl_clock.o
+	PATH="$(dir $(MUSL_LLD)):$$PATH" $(MUSL_CLANG) --target=x86_64-unknown-none-elf -std=c11 -O2 -Wall -Wextra -Werror \
+		-nostdlib -static -fuse-ld=lld -B$(dir $(MUSL_LLD)) \
+		-no-pie -Wl,-z,noexecstack -Wl,--build-id=none \
+		-Wl,-T,user/c_linker.ld $(MUSL_SYSROOT)/usr/lib/crt1.o \
+		$(MUSL_SYSROOT)/usr/lib/crti.o $(MUSL_BUILD_DIR)/musl_clock.o \
+		-L$(MUSL_SYSROOT)/usr/lib -lc $(MUSL_SYSROOT)/usr/lib/crtn.o \
+		-o $(MUSL_CLOCK)
+
+native-musl-clock: native-musl-build
+	$(MAKE) $(MUSL_CLOCK)
+
+native-musl-inspect: native-musl-hello native-musl-alloc native-musl-stdio native-musl-clock
+	@set -e; for elf in $(MUSL_HELLO) $(MUSL_ALLOC) $(MUSL_STDIO) $(MUSL_CLOCK); do \
+		echo "Inspecting $$elf"; \
+		readelf -h -l -S -r -d $$elf; \
+		! readelf -l $$elf | grep -E 'INTERP|DYNAMIC'; \
+		! nm -u $$elf | grep -v '_DYNAMIC'; \
+	done
 
 $(BUILD_DIR)/musl-root.img: $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.elf \
 		$(BUILD_DIR)/probe.elf $(BUILD_DIR)/populate_root $(MUSL_HELLO) \
@@ -693,19 +724,19 @@ $(BUILD_DIR)/musl-root.img: $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.elf \
 
 native-musl-qemu-test:
 	$(MAKE) native-musl-hello
-	$(MAKE) BUILD_DIR=build/musl-qemu \
+	CCACHE_DISABLE=1 $(MAKE) BUILD_DIR=$(MUSL_QEMU_BUILD_DIR) \
 		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DKERNEL_TEST_NATIVE_MUSL' \
-		iso build/musl-qemu/musl-root.img
+		iso $(MUSL_QEMU_BUILD_DIR)/musl-root.img
 	@set +e; timeout 35s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \
-		-cdrom build/musl-qemu/opensillicon.iso \
-		-drive file=build/musl-qemu/musl-root.img,if=none,id=rootdisk,format=raw \
+		-cdrom $(MUSL_QEMU_BUILD_DIR)/opensillicon.iso \
+		-drive file=$(MUSL_QEMU_BUILD_DIR)/musl-root.img,if=none,id=rootdisk,format=raw \
 		-device ide-hd,drive=rootdisk,bus=ide.0 \
-		-serial file:build/musl-qemu/serial.log -display none \
+		-serial file:$(MUSL_QEMU_BUILD_DIR)/serial.log -display none \
 		-no-reboot -no-shutdown; status=$$?; test $$status -eq 124
 	grep -F 'OpenSillicon: native musl write, errno, and TLS passed' \
-		build/musl-qemu/serial.log
+		$(MUSL_QEMU_BUILD_DIR)/serial.log
 	grep -F 'OpenSillicon: native musl 1.2.6 CRT, TLS, errno, write, and exit passed' \
-		build/musl-qemu/serial.log
+		$(MUSL_QEMU_BUILD_DIR)/serial.log
 
 $(BUILD_DIR)/musl-alloc-root.img: $(BUILD_DIR)/init.elf \
 		$(BUILD_DIR)/shell.elf $(BUILD_DIR)/probe.elf \
@@ -717,19 +748,19 @@ $(BUILD_DIR)/musl-alloc-root.img: $(BUILD_DIR)/init.elf \
 
 native-musl-alloc-qemu-test:
 	$(MAKE) native-musl-alloc
-	$(MAKE) BUILD_DIR=build/musl-alloc-qemu \
+	CCACHE_DISABLE=1 $(MAKE) BUILD_DIR=$(MUSL_ALLOC_QEMU_BUILD_DIR) \
 		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DKERNEL_TEST_NATIVE_MUSL_ALLOC -DKERNEL_TEST_PRIVATE_MAPPING_FAILURE' \
-		iso build/musl-alloc-qemu/musl-alloc-root.img
+		iso $(MUSL_ALLOC_QEMU_BUILD_DIR)/musl-alloc-root.img
 	@set +e; timeout 45s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \
-		-cdrom build/musl-alloc-qemu/opensillicon.iso \
-		-drive file=build/musl-alloc-qemu/musl-alloc-root.img,if=none,id=rootdisk,format=raw \
+		-cdrom $(MUSL_ALLOC_QEMU_BUILD_DIR)/opensillicon.iso \
+		-drive file=$(MUSL_ALLOC_QEMU_BUILD_DIR)/musl-alloc-root.img,if=none,id=rootdisk,format=raw \
 		-device ide-hd,drive=rootdisk,bus=ide.0 \
-		-serial file:build/musl-alloc-qemu/serial.log -display none \
+		-serial file:$(MUSL_ALLOC_QEMU_BUILD_DIR)/serial.log -display none \
 		-no-reboot -no-shutdown; status=$$?; test $$status -eq 124
 	grep -F 'OpenSillicon: musl mallocng small/large allocations and mmap passed' \
-		build/musl-alloc-qemu/serial.log
+		$(MUSL_ALLOC_QEMU_BUILD_DIR)/serial.log
 	grep -F 'OpenSillicon: native musl malloc, mmap, mprotect, munmap, TLS, and exit passed' \
-		build/musl-alloc-qemu/serial.log
+		$(MUSL_ALLOC_QEMU_BUILD_DIR)/serial.log
 
 $(BUILD_DIR)/musl-stdio-root.img: $(BUILD_DIR)/init.elf \
 		$(BUILD_DIR)/shell.elf $(BUILD_DIR)/probe.elf \
@@ -742,25 +773,47 @@ $(BUILD_DIR)/musl-stdio-root.img: $(BUILD_DIR)/init.elf \
 native-musl-stdio-qemu-test:
 	$(MAKE) native-musl-build
 	$(MAKE) $(MUSL_HELLO) $(MUSL_ALLOC) $(MUSL_STDIO)
-	$(MAKE) BUILD_DIR=build/musl-stdio-qemu \
+	CCACHE_DISABLE=1 $(MAKE) BUILD_DIR=$(MUSL_STDIO_QEMU_BUILD_DIR) \
 		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DKERNEL_TEST_NATIVE_MUSL_ALLOC -DKERNEL_TEST_NATIVE_MUSL_STDIO' \
-		iso build/musl-stdio-qemu/musl-stdio-root.img
+		iso $(MUSL_STDIO_QEMU_BUILD_DIR)/musl-stdio-root.img
 	@set +e; timeout 45s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \
-		-cdrom build/musl-stdio-qemu/opensillicon.iso \
-		-drive file=build/musl-stdio-qemu/musl-stdio-root.img,if=none,id=rootdisk,format=raw \
+		-cdrom $(MUSL_STDIO_QEMU_BUILD_DIR)/opensillicon.iso \
+		-drive file=$(MUSL_STDIO_QEMU_BUILD_DIR)/musl-stdio-root.img,if=none,id=rootdisk,format=raw \
 		-device ide-hd,drive=rootdisk,bus=ide.0 \
-		-serial file:build/musl-stdio-qemu/serial.log -display none \
+		-serial file:$(MUSL_STDIO_QEMU_BUILD_DIR)/serial.log -display none \
 		-no-reboot -no-shutdown; status=$$?; test $$status -eq 124
-	grep -F 'stdio printf: ok -7 42 0x2a' build/musl-stdio-qemu/serial.log
-	grep -F 'stdio stdout: fprintf' build/musl-stdio-qemu/serial.log
-	grep -F 'stdio stderr: fprintf' build/musl-stdio-qemu/serial.log
-	grep -F 'stdio puts' build/musl-stdio-qemu/serial.log
-	grep -F 'stdio fwrite' build/musl-stdio-qemu/serial.log
-	grep -F 'stdio writev: ok' build/musl-stdio-qemu/serial.log
+	grep -F 'stdio printf: ok -7 42 0x2a' $(MUSL_STDIO_QEMU_BUILD_DIR)/serial.log
+	grep -F 'stdio stdout: fprintf' $(MUSL_STDIO_QEMU_BUILD_DIR)/serial.log
+	grep -F 'stdio stderr: fprintf' $(MUSL_STDIO_QEMU_BUILD_DIR)/serial.log
+	grep -F 'stdio puts' $(MUSL_STDIO_QEMU_BUILD_DIR)/serial.log
+	grep -F 'stdio fwrite' $(MUSL_STDIO_QEMU_BUILD_DIR)/serial.log
+	grep -F 'stdio writev: ok' $(MUSL_STDIO_QEMU_BUILD_DIR)/serial.log
 	grep -F 'OpenSillicon: musl stdio, TTY query, VFS readv, allocator, and TLS passed' \
-		build/musl-stdio-qemu/serial.log
+		$(MUSL_STDIO_QEMU_BUILD_DIR)/serial.log
 	grep -F 'OpenSillicon: native musl stdio QEMU fixture exited with status zero' \
-		build/musl-stdio-qemu/serial.log
+		$(MUSL_STDIO_QEMU_BUILD_DIR)/serial.log
+
+$(MUSL_CLOCK_QEMU_BUILD_DIR)/musl-clock-root.img: $(BUILD_DIR)/init.elf \
+		$(BUILD_DIR)/shell.elf $(BUILD_DIR)/probe.elf \
+		$(BUILD_DIR)/populate_root $(MUSL_HELLO) $(MUSL_ALLOC) $(MUSL_STDIO) \
+		$(MUSL_CLOCK) tools/mksilliconfs.py | $(BUILD_DIR)
+	python3 tools/mksilliconfs.py $@ --blocks 32768 --inodes 1024
+	$(BUILD_DIR)/populate_root $@ $(BUILD_DIR)/init.elf \
+		$(BUILD_DIR)/shell.elf $(BUILD_DIR)/probe.elf $(MUSL_HELLO) \
+		$(MUSL_ALLOC) $(MUSL_STDIO) $(MUSL_CLOCK)
+
+native-musl-clock-qemu-test: native-musl-clock
+	CCACHE_DISABLE=1 $(MAKE) BUILD_DIR=$(MUSL_CLOCK_QEMU_BUILD_DIR) \
+		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DKERNEL_TEST_NATIVE_MUSL_CLOCK' \
+		iso $(MUSL_CLOCK_QEMU_BUILD_DIR)/musl-clock-root.img
+	@set +e; timeout 45s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \
+		-cdrom $(MUSL_CLOCK_QEMU_BUILD_DIR)/opensillicon.iso \
+		-drive file=$(MUSL_CLOCK_QEMU_BUILD_DIR)/musl-clock-root.img,if=none,id=rootdisk,format=raw \
+		-device ide-hd,drive=rootdisk,bus=ide.0 \
+		-serial file:$(MUSL_CLOCK_QEMU_BUILD_DIR)/serial.log -display none \
+		-no-reboot -no-shutdown; status=$$?; test $$status -eq 124
+	grep -F 'OpenSillicon: native musl CLOCK_MONOTONIC and error paths passed' \
+		$(MUSL_CLOCK_QEMU_BUILD_DIR)/serial.log
 
 $(BUILD_DIR)/acpica/%.o: $(ACPICA_ROOT)/%.c \
 		$(ACPICA_ROOT)/include/platform/acenv.h \
