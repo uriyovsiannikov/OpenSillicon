@@ -766,8 +766,8 @@ queue, endpoint, reference-lifetime, and timeout semantics. It is a static
 socket compatibility.
 
 Milestone 15.4B adds an isolated TCP state model in
-`kernel/net/tcp_core.c`. Phase 15.4R separates bounded wire parsing and
-serialization into `kernel/net/tcp_wire.c`; the core's compatibility helpers
+`kernel/net/tcp/tcp_core.c`. Phase 15.4R separates bounded wire parsing and
+serialization into `kernel/net/tcp/tcp_wire.c`; the core's compatibility helpers
 delegate to that module. It supports the eleven modeled states, IPv4
 pseudoheader checksums, MSS/NOP/EOL options, ACK and sequence checks, in-order
 receive data, and explicit actions for future packet output.
@@ -788,16 +788,18 @@ TIME-WAIT timers per call and returns retained handles/actions to a future
 deferred network service. Control RTO starts at 100 ticks, doubles to 800
 ticks, and aborts after five retries; TIME-WAIT is 12000 ticks. The timer
 source is 100 Hz, and comparisons handle uint64 wraparound. This service is
-not called by the timer interrupt or current UDP poll path. The Limine entropy
-request is not enabled: the bundled protocol defines its response as
-best-effort and permits timing-seeded fallback, so it is not accepted as a
-trusted ISN source.
+not called by the timer interrupt or current UDP poll path. The later 15.6A.1
+boot path requests Limine entropy and inspects the bounded response; the
+protocol defines it as best-effort and permits timing-seeded fallback, so it
+is not accepted as a trusted ISN source.
 
 Milestone 15.4I adds a bounded kernel random-byte API backed directly by the
 CPU RDRAND instruction when CPUID leaf 1 advertises it and the instruction
-returns valid output. RDRAND is the processor's CTR_DRBG-based generator; the
-kernel checks CF, retries at most ten times, and latches the API unavailable
-after initialization or runtime source failure. Requests are all-or-nothing,
+returns valid output. Intel documents its RDRAND output as CTR_DRBG-based;
+this kernel does not establish equivalent implementation or trust properties
+for every vendor or hypervisor. The kernel checks CF, retries at most ten
+times, and latches the API unavailable after initialization or runtime source
+failure. Requests are all-or-nothing,
 limited to 256 bytes, and run with local interrupts masked to prevent
 single-CPU timer-preemption reentrancy. This is not SMP synchronization and
 does not provide independent software state, a reseed policy, or protection
@@ -850,7 +852,7 @@ not production entropy quality.
 
 Source policy: RDRAND is an implemented but conditional hardware DRBG
 interface, not a universal OS CSPRNG; RDSEED is not implemented; Limine entropy
-is not requested and is rejected as a trusted source because the protocol is
+is requested but rejected as a trusted source because the protocol is
 best-effort; no external RNG device is supported; deterministic injection is
 host-test-only and never production entropy. No kernel caller currently uses
 `kernel_random_bytes()`. Keep production security-sensitive use unavailable
@@ -2075,10 +2077,11 @@ retry; failure is latched and requests fail closed. This source is not a
 reviewed kernel CSPRNG or a documented system entropy trust policy. The boot
 log's “hardware DRBG available” describes the CPU facility only; it is not
 evidence that the platform's output is trusted, seeded independently, or
-appropriate as the sole security source. No Limine entropy request or other
-approved boot entropy source is currently wired. Consequently, production
-TCP ISNs must remain unavailable; no timestamp, counter, MAC, PID, deterministic
-test seed, or unapproved RDRAND-only fallback is acceptable.
+appropriate as the sole security source. Phase 15.6A.1 added a request for
+Limine's best-effort entropy response and a bounded inspection/copy path, but
+does not accept it as an approved boot entropy source. Consequently,
+production TCP ISNs must remain unavailable; no timestamp, counter, MAC, PID,
+deterministic test seed, or unapproved RDRAND-only fallback is acceptable.
 
 Before enabling ISNs, define and review an entropy policy for supported boot
 environments, obtain sufficient seed material from a source the project
@@ -2226,3 +2229,302 @@ RFC 9293 is the primary protocol reference; RFC 5961 informs reset hardening.
 RFC 6528's keyed tuple/time construction is relevant to ISN design, but the
 RFC has been obsoleted by RFC 9293 §3.4.1. This assessment is a plan, not a
 conformance statement or production TCP enablement.
+
+### Phase 15.6A — entropy and production ISN gate (blocked)
+
+This phase did not add a CSPRNG or enable ISNs: the source audit found no
+approved entropy input from which to initialize one. `kernel_random_init()`
+only checks CPUID leaf 1 ECX bit 30 for RDRAND and makes one bounded
+10-attempt probe. `kernel_random_bytes()` then returns raw RDRAND words through
+a 256-byte stack temporary, with a maximum of ten instruction attempts per
+word. An instruction failure latches the source unavailable; failed calls
+leave caller output unchanged. Initialization is one-shot. There is no
+software DRBG state, entropy pool, reseed policy, source mixing, or entropy
+estimate. `kernel_random_available()` therefore reports only the legacy
+RDRAND probe state; it must not be interpreted as cryptographic readiness.
+The header and boot status text now state that limitation explicitly.
+
+| Security concept | Repository finding |
+| --- | --- |
+| Random instruction | RDRAND is detected and called; instruction failure is bounded and latched. |
+| Entropy source | No source is currently approved by the OS trust policy. RDRAND may be a supplemental hardware output, but QEMU/CPU feature presence does not establish platform entropy quality. |
+| Trusted entropy pool | Absent. There is no collected-and-accounted pool or boot seed. |
+| CSPRNG/DRBG | Absent. The API returns direct hardware words; it is not a kernel software generator and has no reseed/counter lifecycle. |
+| TCP ISN PRF | Absent in production. `tcp_core_live_isn_available()` returns false; `TCP_EVENT_ACTIVE_OPEN`, deterministic initial sequence fields, and Runtime deterministic ISN entry points are compiled only under TCP test macros. |
+
+The existing initialization runs in `_start` after IDT/FPU setup and before
+the bootstrap allocator, LAPIC timer, heap, scheduler, network initialization,
+and first userspace process. Global interrupts are not enabled until after
+scheduler setup; the random source guard also masks local interrupts. Thus an
+instruction source can be queried early without heap allocation, but early
+availability does not make it trusted. No random consumer other than boot's
+availability probe was found in kernel code. Test consumers use the explicit
+`KERNEL_RANDOM_TEST` injection hook.
+
+The original 15.6A boot request set included firmware type, HHDM, memory map,
+framebuffer, modules, and RSDP, but not Limine entropy. Phase 15.6A.1 now
+requests four entropy words. ACPI code reads platform tables for interrupt
+and PCI topology, not entropy. No RDSEED, TPM RNG, or virtio-rng driver exists
+in the inspected kernel or third-party source tree.
+The LAPIC tick, TSC frequency/value, addresses, memory layout, process IDs,
+network timing, and user input are not credited as cryptographic entropy.
+They may be predictable, attacker-influenced, unavailable early, or lack a
+defensible platform-specific entropy estimate. No entropy-bit claim is made.
+
+For a future cryptographic API, the intended externally visible lifecycle is
+`UNINITIALIZED -> COLLECTING -> READY` only after an approved trusted seed is
+obtained and the chosen DRBG initializes successfully. Missing/failed trusted
+input transitions to sticky `FAILED`; it must not transition to READY from
+timestamps, serial numbers, test seeds, or an RDRAND-only policy rejected by
+the platform trust review. `READY` must become `FAILED` on unrecoverable
+reseed failure or counter exhaustion. Supplemental inputs may be mixed after
+the trusted seed but cannot increase the credited entropy estimate without a
+source-specific justification. This lifecycle is a design requirement, not
+current code: the current booleans mean UNINITIALIZED, one-shot RDRAND probe
+success, or sticky RDRAND failure, and there is no COLLECTING state.
+
+No CSPRNG construction is selected or implemented. RFC 8439 specifies
+ChaCha20 and Poly1305, not a complete kernel DRBG/reseed policy; using that
+cipher in a home-grown generator would still require a separately reviewed
+construction. Before implementation, select a reviewed DRBG construction and
+audited implementation, define a fixed-size state and key/nonce/counter
+format, startup and reseed thresholds, maximum bytes per seed, wrap/exhaustion
+behavior, key erasure, and a single-CPU serialization contract. API failure
+must be explicit and must not expose partial output. Test-only deterministic
+source injection stays behind `KERNEL_RANDOM_TEST`; it cannot initialize a
+production generator.
+
+Production ISNs remain disabled. Once (and only once) trusted CSPRNG readiness
+is approved, a separate ISN provider can use a keyed PRF over an unambiguous,
+network-byte-order encoding of local IPv4, remote IPv4, local port, remote
+port, and a time component, then add the time component modulo 2^32 as in the
+RFC 6528 design now described by RFC 9293 §3.4.1. The secret key must originate
+from the approved CSPRNG, remain kernel-only, and rotate only under a defined
+policy. The tuple/time input cannot substitute for the secret. Repeated input
+may intentionally yield the same PRF output plus same time term; distinct
+tuples should not expose a simple relation. This proposal does not imply that
+the 32-bit ISN alone secures a TCP connection. It is not implemented, and
+`tcp_core_live_isn_available()` remains false.
+
+No CSPRNG known-answer, reseed, counter, or ISN PRF tests were added because
+there is no such implementation and no trusted production seed to test. The
+existing random host test covers its deterministic test source, bounded
+RDRAND-failure model, output-unchanged failure behavior, and reentrancy; it is
+not cryptographic validation. No physical-hardware entropy-quality evidence
+was collected. QEMU success can demonstrate instruction/path behavior only,
+not physical entropy quality or trust. In the four e1000 QEMU profiles run for
+this phase, the serial logs reported the RDRAND instruction unavailable; these
+guests therefore exercised the unavailable/fail-closed branch, not successful
+hardware output. No physical hardware was tested.
+
+The production build continues to include the legacy random source object,
+but the test injection API is guarded by `KERNEL_RANDOM_TEST`. The normal
+kernel flags do not define that macro. No TCP production ISN provider, TCP RX
+dispatch, TCP TX, TCP timer hook, or TCP syscall was introduced. Phase 15.6A
+is therefore **blocked at the trusted-source prerequisite**; do not proceed
+to production timer or transport integration until the trust policy and
+approved seed source exist. See the next-step gate in `ROADMAP.md`.
+
+### Phase 15.6A.1 — boot-time entropy source evaluation
+
+The pinned boot artifacts are Limine v12.9.6 (`limine/PROVENANCE.md`, release
+commit `89a9512c623a4779cc73e3869383876d54264b28`); the bundled protocol header
+is from commit `6e85ddd6f928b5b512015c4d47d1cfce2fd28079`. That header and
+protocol define Entropy request revision 0. The request's `value_count` is
+four. The response count may be lower than requested due to an
+implementation-defined cap; a zero count uses a null values pointer. The
+values pointer is HHDM-addressed and its array is in bootloader-reclaimable
+memory. Limine says these values are best effort and may fall back to a
+timing-seeded PRNG, with no hardware-grade entropy guarantee. The kernel does
+not treat them as trusted entropy.
+
+`boot_entropy_inspect()` checks response revision 0, response and values
+address translation through the HHDM offset, bootloader-reclaimable memory-map
+classification, overflow-safe ranges, a maximum of four values, and null/count
+consistency. It copies accepted values into a fixed kernel-owned temporary;
+`_start` immediately zeroizes that temporary and retains no Limine values
+pointer. Missing, empty, partial, complete-untrusted, and invalid responses
+have separate results. Memory-map traversal is capped at 512 entries. This
+protects the parser from malformed response metadata assuming the bootloader's
+already-validated memory-map response is readable; it does not authenticate a
+malicious bootloader or improve source quality. Invalid response data is
+ignored and does not block boot.
+
+The early sequence is: Limine transfers control after EFI boot services have
+been exited; `_start` parses firmware/HHDM/memory-map metadata, inspects and
+clears the optional response, initializes the IDT/FPU, probes legacy RDRAND,
+then initializes the bootstrap allocator and later kernel services. Entropy
+inspection allocates no memory, does not wait, performs bounded work, and
+does not feed `kernel_random_*`. The QEMU boot using the repository's pinned
+UEFI Limine artifacts reported a valid non-empty Limine response; this proves
+request compatibility in that QEMU configuration only, not entropy quality.
+No physical hardware test was performed.
+
+| Source | Availability/evidence | Trust classification and conditions |
+| --- | --- | --- |
+| Limine entropy | Revision-0 request implemented; present in this QEMU boot. | Best-effort, untrusted by default; bootloader may use timing-seeded fallback. No entropy credit. |
+| RDRAND | Kernel detects CPUID.1:ECX[30], uses bounded carry-checked instructions; default QEMU previously omitted it and `-cpu max` previously exposed it. | Conditional CPU DRBG output; supplemental candidate only under a separately approved vendor/hypervisor policy. Not a trusted pool or CSPRNG. |
+| RDSEED | Not detected or executed by this kernel. QEMU supports CPU profile feature configuration. | Candidate source only; unavailable in current kernel; platform/vendor policy and failure handling required. |
+| QEMU virtio-rng | QEMU 10.2.2 present-device profile completed a bounded 256-byte guest request through legacy PCI I/O and a split queue. | Host/hypervisor-provided candidate only; source quality and trust are not approved. No CSPRNG input or entropy credit. |
+| EFI RNG protocol | Boot is EFI64, but Limine exits EFI boot services before entry. | EFI_RNG_PROTOCOL is a boot-services protocol and cannot be called after exit; no EFI ABI/protocol driver is implemented. |
+| TPM / ACPI RNG | ACPI is used for platform topology; no TPM RNG driver or documented RNG-device driver is present. A TPM event-log request is not an RNG. | Not available through current kernel architecture. |
+| Time, TSC, layout, IDs, traffic | Some values may be available, but are predictable or attacker-influenced. | Never trusted entropy; no entropy credit. |
+
+Intel documents RDRAND as hardware-DRBG output, while RDSEED is intended to
+provide seed material. Vendor implementation properties are not generalized
+by this kernel; neither CPUID presence alone establishes trust across real
+CPUs or hypervisors. The current kernel checks only RDRAND, retries at most
+ten times, and latches instruction failure. The raw API is unchanged and is
+not promoted to CSPRNG readiness. Limine values are not combined with RDRAND
+or assigned entropy bits.
+
+The reusable acquisition boundary is: provider-specific bounded acquisition
+→ response/range validation → source classification → fixed kernel-owned
+staging → future separately reviewed CSPRNG initialization. Currently only
+the Limine best-effort inspection path and legacy RDRAND probe exist. There is
+no entropy manager state machine, trusted pool, CSPRNG, reseeding, or ISN
+derivation. Future providers must have explicit unavailable/partial/error
+statuses, bounded retries, no boot-blocking wait, source-specific trust review,
+and safe behavior when bootloader-reclaimable memory is reclaimed. Production
+ISNs remain disabled and `tcp_core_live_isn_available()` remains false.
+
+Provider test strategy: the host test constructs valid, missing, empty,
+partial, malformed-revision, over-count, null-pointer, bad-HHDM, and wrong
+memory-classification responses without compiling a mock provider into the
+kernel. The pinned Limine/QEMU boot covers the present-response case; an
+unsupported bootloader is represented by a null response in the host test.
+The earlier random-source QEMU matrix covered default CPU, `-cpu max`, and
+RDRAND/RDSEED feature toggles, but the kernel only probes RDRAND; those tests
+are not entropy-quality evidence. No RDSEED provider-failure test is possible
+until code exists. Phase 15.6A.2 adds an explicitly enabled QEMU profile for
+the VirtIO RNG driver; it does not approve that source as trusted entropy.
+Physical source quality and firmware behavior remain untested.
+
+### Phase 15.6A.2 — bounded QEMU VirtIO RNG provider
+
+`kernel/drivers/entropy/virtio_rng.c` supports only QEMU's transitional VirtIO RNG PCI device
+(`1af4:1005`) using the legacy PCI I/O register interface and queue 0. The
+normal kernel flags do not define `OPEN_SILLICON_ENABLE_QEMU_VIRTIO_RNG`; only
+the dedicated present/absent QEMU targets enable runtime discovery. Modern
+VirtIO PCI capabilities, MMIO transport, non-QEMU devices, interrupts, and a
+general PCI I/O resource allocator are unsupported.
+
+This OVMF/Q35 profile left the device BAR0 without an assigned address and
+left PCI bus mastering enabled. The QEMU-only probe uses a dedicated PCI
+helper that disables I/O, memory, and bus-master decode while sizing the
+device-specific BAR0. It preserves a firmware-assigned I/O base or assigns
+`0xc000` if unassigned, then leaves bus mastering disabled. The driver enables
+I/O decode and bus mastering only after queue memory and the request buffer
+are allocated and validated. This fixed fallback address is specific to the
+controlled QEMU test machine and is not a generic PCI allocator.
+
+The transport negotiates no device feature bits (the RNG device defines no
+device-specific features), initializes status and queue 0, and uses a
+physically contiguous, 4096-byte-aligned legacy queue region whose PFN fits in
+32 bits. The device's queue size must be a power of two no larger than 256.
+One writable descriptor and one 256-byte physically contiguous data buffer
+are used for a single outstanding request. The driver validates used-index
+advance, descriptor ID, and completed length, then copies only the completed
+bytes into caller-owned kernel memory. No DMA pointer is exposed. Device
+completion is polled for at most 1,000,000 iterations; timeout and malformed
+completion stop requests and attempt device reset plus verified PCI bus-master
+disable. DMA allocations remain quarantined if quiescence cannot be proven.
+There is no timer dependency, interrupt path, per-read allocation, or wait
+indefinite for device output.
+
+DMA relies on the existing Limine base-revision-5 identity-addressing
+contract: physical-contiguous PMM backing, HHDM CPU aliases, identity device
+addresses, and no preserved-IOMMU request. The implementation assumes the
+coherent x86/QEMU memory model and uses fences around descriptor publication
+and completion. It does not claim IOMMU isolation or generic platform DMA
+safety. The shared queue remains pinned for the lifetime of the provider;
+the request buffer transitions CPU→device→CPU for each read.
+
+The kernel initializes this provider after memory, DMA, and PCI setup, never
+before those dependencies. Failure and absence are non-fatal. QEMU present
+profile (`rng-random` backed by `/dev/urandom`, `disable-modern=on`) observed a
+256-byte guest completion; the absent profile is separately tested. Host fake
+transport tests cover feature negotiation, queue/descriptor setup, ownership,
+short completion, malformed ID/length, timeout, reset failure quarantine,
+and shutdown. These tests do not establish physical device behavior or source
+quality. The returned bytes are host-provided candidate data only; they are
+not fed into `kernel_random_*`, credited as entropy, or printed. No CSPRNG,
+reseed policy, production ISN key, or ISN generation is added, and
+`tcp_core_live_isn_available()` remains false. Production TCP RX/TX and timer
+integration remain disabled.
+
+### Phase 15.6A.3 — unified candidate-source inventory
+
+`kernel/random/entropy.c` provides a fixed-storage, one-shot manager. Its API reports
+source identity and status separately from cryptographic readiness. It accepts
+only the already validated `boot_entropy_inspect()` result, copies up to four
+Limine words into a 32-byte kernel-owned staging area, and retains no
+bootloader pointers. The stack temporary is cleared immediately after this
+copy. Limine bytes are returned only from the Limine source selection and are
+zeroized from manager staging when exhausted.
+If no caller selects Limine, its bounded 32-byte staging buffer remains
+kernel-owned for the boot lifetime; it is never exposed as trusted material.
+
+The stable sources currently represented are Limine, raw RDRAND, and the
+QEMU transitional VirtIO RNG provider. RDSEED is not implemented and is not
+advertised as a source. Status distinguishes not initialized, unavailable,
+candidate available, temporarily failed, permanently disabled, and exhausted;
+the trusted status exists only as a future policy state and no current path
+sets it. `kernel_random_status()` separately exposes the existing RDRAND
+provider's not-initialized/available/permanently-failed latch. Manager retry
+is explicit and only rechecks a temporary source; it never clears a permanent
+failure.
+
+`kernel_entropy_get_candidate(source, output, capacity, result)` requires an
+explicit source ID, caps requests at 256 bytes, reports exact provenance and
+byte count, and never falls back to another provider. Output is unchanged on
+failure. Limine may return fewer bytes than requested and becomes exhausted;
+RDRAND uses its existing bounded raw-byte API; VirtIO can return a short
+device completion. A manager busy guard prevents nested source retrieval in
+the current single-CPU model. Test source injection exists only under
+`KERNEL_ENTROPY_TESTING` and is absent from production objects.
+
+Trust policy remains fail-closed: Limine is best-effort bootloader data,
+RDRAND is raw CPU DRBG output, and VirtIO RNG is host/hypervisor-provided
+candidate data. These provenance classes remain separate. Concatenating or
+selecting candidates does not establish trust. The manager's
+`kernel_entropy_cryptographic_ready()` always returns false; there is no
+CSPRNG, reseed policy, entropy credit, or approved source trust policy. On
+ordinary boots VirtIO remains not initialized because its discovery and read
+are only reached by the explicit `OPEN_SILLICON_ENABLE_QEMU_VIRTIO_RNG` test
+profile. The QEMU path records provider status and obtains its sample through
+the manager, then clears the sample without logging bytes.
+The QEMU feature matrix was run with `max,+rdrand,+rdseed`,
+`max,+rdrand,-rdseed`, and `max,-rdrand,-rdseed`; all three guest profiles
+completed the same VirtIO request. This verifies only QEMU feature exposure
+and driver independence from RDRAND availability, not entropy quality or
+physical CPU behavior.
+
+Host manager tests cover no sources, each candidate source independently,
+provenance, invalid arguments, bounded and zero-length requests, partial Limine
+exhaustion, no fallback, atomic output on provider failure, temporary retry,
+permanent failure latching, and cryptographic readiness remaining false. The
+manager is initialized before memory allocation and does not depend on the
+scheduler, LAPIC timer, networking, or heap. Optional provider failures do not
+stop boot. Production ISN readiness remains false and production TCP routing,
+transmission, and timers remain disabled.
+
+### Kernel source organization
+
+Kernel implementation files are grouped by subsystem. `kernel/main.c` is the
+only implementation file at the `kernel/` root. `core/` contains boot,
+syscall, logging, and freestanding library code; `mm/`, `sched/`, `proc/`, and
+`ipc/` contain memory, scheduling, process, and IPC code. `fs/` separates the
+block layer and filesystem implementations. `drivers/` contains bus, storage,
+network-device, input, entropy, and TPM-specific code. `net/` contains network
+buffers/device interfaces and protocol/service code. `random/` owns candidate
+source management, while `tty/` owns terminal and framebuffer services.
+
+Architecture-specific implementations live under `arch/x86_64/`, grouped as
+boot/linker, CPU state, context entry, interrupt handling, timer, firmware,
+and interrupt controllers. Generic subsystem code remains outside this tree;
+device drivers may use architecture interfaces through the existing
+`include/arch/x86_64/` headers. Public kernel headers stay in `include/` and
+are not mirrored merely to match source paths. The Makefile keeps explicit
+production object and host-test source lists so moving files cannot silently
+pull tests into the kernel.

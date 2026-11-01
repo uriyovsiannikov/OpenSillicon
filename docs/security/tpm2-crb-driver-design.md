@@ -292,7 +292,7 @@ entropy credit. `kernel_entropy_cryptographic_ready()` and
 
 | Step | Likely files/API | Preconditions and deterministic tests | Disabled condition |
 |---|---|---|---|
-| A. TPM2 ACPI parser | `include/arch/x86_64/tpm_acpi.h`, `kernel/arch/x86_64/tpm_acpi.c` | Bounded copy; missing table, signature/checksum/revision/length, truncated options, method matrix, address overflow | No MMIO before parser/range validation |
+| A. TPM2 ACPI parser | `include/kernel/tpm2_acpi.h`, `kernel/drivers/tpm/tpm2_acpi.c` | Bounded copy; missing table, signature/checksum/revision/length, truncated options, method matrix, address overflow | No MMIO before parser/range validation |
 | B. Physical window lease | Small VMM extension, not PCI BAR API reuse | Resource ownership, RAM overlap, alignment, rounding, overflow, rollback/lifetime | No transport until map ownership is proven |
 | C. CRB state machine | `include/kernel/tpm_crb.h`, `kernel/tpm_crb.c` | Fake register backend: locality/ready/start/idle, timeout, fatal status, cancel, unsupported method, aliasing | No physical provider until all lifecycle tests pass |
 | D. Framing and GetRandom | Fixed bounded codec/API | Endianness, sizes, TPM errors, short/truncated/oversized responses, output unchanged, repeated command | No candidate result until response validation is complete |

@@ -1,6 +1,10 @@
 #include <stdint.h>
 #include "limine.h"
 #include "kernel/boot.h"
+#include "kernel/boot_entropy.h"
+#include "kernel/entropy.h"
+#include "kernel/rdseed.h"
+#include "kernel/virtio_rng.h"
 #include "kernel/log.h"
 #include "kernel/errno.h"
 #include "kernel/pmm.h"
@@ -1192,12 +1196,27 @@ static volatile uint64_t scheduler_test_finished;
 static uint64_t pci_device_count;
 static bool ahci_controller_found;
 static bool e1000_device_found;
+#ifdef OPEN_SILLICON_ENABLE_QEMU_VIRTIO_RNG
+static bool virtio_rng_device_found;
+static bool virtio_rng_device_ambiguous;
+static struct pci_device_info virtio_rng_pci_device;
+#endif
 
 static bool
 record_pci_device(const struct pci_device_info *device, void *context)
 {
 	(void)context;
 	pci_device_count++;
+#ifdef OPEN_SILLICON_ENABLE_QEMU_VIRTIO_RNG
+	if (virtio_rng_matches_device(device)) {
+		if (virtio_rng_device_found)
+			virtio_rng_device_ambiguous = true;
+		else {
+			virtio_rng_device_found = true;
+			virtio_rng_pci_device = *device;
+		}
+	}
+#endif
 	if (device->class_code == 0x02 && device->subclass == 0x00) {
 		if (device->vendor_id == E1000_QEMU_VENDOR_ID &&
 		    device->device_id == E1000_QEMU_DEVICE_ID) {
@@ -1277,8 +1296,23 @@ static volatile struct limine_rsdp_request rsdp_request = {
 	.revision = 0
 };
 
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_entropy_request entropy_request = {
+	.id = LIMINE_ENTROPY_REQUEST_ID,
+	.revision = 0,
+	.value_count = BOOT_ENTROPY_MAX_VALUES
+};
+
 __attribute__((used, section(".limine_requests_end")))
 static volatile uint64_t limine_requests_end[] = LIMINE_REQUESTS_END_MARKER;
+
+static void
+clear_boot_entropy_values(uint64_t values[BOOT_ENTROPY_MAX_VALUES])
+{
+	volatile uint64_t *current = values;
+	for (size_t i = 0; i < BOOT_ENTROPY_MAX_VALUES; i++)
+		current[i] = 0;
+}
 
 void
 _start(void)
@@ -1288,6 +1322,9 @@ _start(void)
 	struct acpi_madt_info madt;
 	struct limine_rsdp_response rsdp_response_copy;
 	const struct limine_rsdp_response *rsdp_response;
+	uint64_t entropy_values[BOOT_ENTROPY_MAX_VALUES];
+	size_t entropy_value_count;
+	enum boot_entropy_result entropy_result;
 	uint64_t test_page;
 	uint64_t user_page;
 	struct address_space user_space;
@@ -1341,17 +1378,66 @@ _start(void)
 		klog("\n");
 		kernel_halt();
 	}
+	entropy_result = boot_entropy_inspect(
+	    (const struct limine_entropy_response *)(uintptr_t)
+	    entropy_request.response, info.hhdm_offset, info.memmap,
+	    entropy_values, &entropy_value_count);
+	/* Limine explicitly classifies these values as best-effort. The bounded
+	 * stack copy is handed to the provenance-preserving manager after the raw
+	 * RDRAND provider has completed its own initialization. */
+	if (entropy_result == BOOT_ENTROPY_AVAILABLE_UNTRUSTED ||
+	    entropy_result == BOOT_ENTROPY_PARTIAL_UNTRUSTED)
+		klog_status("Limine entropy response", true,
+		    "best-effort values copied to bounded manager staging; untrusted");
+	else if (entropy_result == BOOT_ENTROPY_MISSING ||
+	    entropy_result == BOOT_ENTROPY_EMPTY)
+		klog_status("Limine entropy response", false,
+		    "not provided; no trusted entropy assumed");
+	else
+		klog_status("Limine entropy response", false,
+		    "invalid response; ignored");
+	(void)entropy_value_count;
 	idt_init();
 	if (!arch_fpu_init()) {
 		klog("OpenSillicon: CPU lacks required FXSAVE/SSE/SSE2 support\n");
 		kernel_halt();
 	}
 	if (kernel_random_init())
-		klog_status("kernel random source", true,
-		    "CPUID RDRAND hardware DRBG available");
+		klog_status("RDRAND instruction", true,
+		    "available; not approved entropy for keys or TCP ISNs");
 	else
-		klog_status("kernel random source", false,
-		    "unavailable; secure random requests fail closed");
+		klog_status("RDRAND instruction", false,
+		    "unsupported or temporarily unavailable; boot continues");
+	if (kernel_rdseed_init())
+		klog_status("RDSEED instruction", true,
+		    "supported; bounded reads may be temporarily unavailable; no trust implied");
+	else
+		klog_status("RDSEED instruction", false,
+		    "unsupported; boot continues without this candidate provider");
+#ifdef OPEN_SILLICON_RDSEED_QEMU_TEST
+	if (kernel_rdseed_supported()) {
+		uint8_t rdseed_probe[8];
+		enum kernel_rdseed_result probe_result =
+		    kernel_rdseed_bytes(rdseed_probe, sizeof(rdseed_probe));
+		for (size_t i = 0; i < sizeof(rdseed_probe); i++)
+			((volatile uint8_t *)rdseed_probe)[i] = 0;
+		if (probe_result == KERNEL_RDSEED_OK)
+			klog("OpenSillicon: RDSEED QEMU request completed bytes 8; data cleared\n");
+		else
+			klog("OpenSillicon: RDSEED QEMU request temporarily unavailable; boot continues\n");
+	} else {
+		klog("OpenSillicon: RDSEED QEMU feature unsupported; boot continues\n");
+	}
+#endif
+	if (kernel_entropy_init(entropy_result, entropy_values,
+	    entropy_value_count)) {
+		klog_status("kernel entropy manager", true,
+		    "candidate sources tracked separately; cryptographic readiness disabled");
+	} else {
+		klog_status("kernel entropy manager", false,
+		    "source inventory unavailable; boot continues fail closed");
+	}
+	clear_boot_entropy_values(entropy_values);
 #ifdef KERNEL_TEST_INTERRUPT
 	__asm__ volatile ("int $128");
 #endif
@@ -1482,6 +1568,57 @@ _start(void)
 		kernel_halt();
 	}
 	klog_status("PCI", true, NULL);
+#ifdef OPEN_SILLICON_ENABLE_QEMU_VIRTIO_RNG
+	if (virtio_rng_device_ambiguous) {
+		klog_status("VirtIO RNG", false,
+		    "multiple supported transitional devices; provider disabled");
+	} else if (virtio_rng_device_found) {
+		uint32_t assigned_bar;
+		enum virtio_rng_result result;
+		if (!pci_virtio_rng_legacy_io_assign(&virtio_rng_pci_device,
+		    0xc000U, &assigned_bar)) {
+			klog_status("VirtIO RNG", false,
+			    "QEMU legacy I/O BAR assignment failed; provider disabled");
+			goto virtio_rng_probe_done;
+		}
+		virtio_rng_pci_device.bars[0] = assigned_bar;
+		result = virtio_rng_init(&virtio_rng_pci_device);
+		if (result != VIRTIO_RNG_OK)
+			klog_status("VirtIO RNG", false,
+			    "provider unavailable or bounded request failed; no entropy fallback");
+	} else {
+		klog_status("VirtIO RNG", false,
+		    "supported transitional device absent; boot continues");
+	}
+virtio_rng_probe_done:
+	if (!kernel_entropy_virtio_probe_complete(virtio_rng_device_found))
+		klog_status("VirtIO RNG entropy status", false,
+		    "manager unavailable or source already finalized");
+	else if (kernel_entropy_source_state(
+	    KERNEL_ENTROPY_SOURCE_VIRTIO_RNG) ==
+	    KERNEL_ENTROPY_SUPPORTED) {
+		uint8_t sample[VIRTIO_RNG_MAX_READ];
+		struct kernel_entropy_candidate candidate;
+		enum kernel_entropy_result result =
+		    kernel_entropy_get_candidate(KERNEL_ENTROPY_SOURCE_VIRTIO_RNG,
+		    sample, sizeof(sample), &candidate);
+		for (size_t i = 0; i < sizeof(sample); i++)
+			((volatile uint8_t *)sample)[i] = 0;
+		if (result == KERNEL_ENTROPY_OK) {
+			klog_status("VirtIO RNG", true,
+			    "QEMU transitional legacy PCI I/O; manager returned host-provided candidate only");
+			klog("OpenSillicon: VirtIO RNG completion bytes ");
+			klog_u64(candidate.bytes_written);
+			klog("; bytes not credited as trusted entropy and not used for CSPRNG/ISN\n");
+		} else {
+			klog_status("VirtIO RNG", false,
+			    "bounded manager read failed; provider not trusted");
+		}
+	}
+#else
+	klog_status("VirtIO RNG", false,
+	    "runtime probing disabled outside the explicit QEMU profile");
+#endif
 	klog("OpenSillicon: PCI functions enumerated ");
 	klog_u64(pci_device_count);
 	klog(" AHCI ");

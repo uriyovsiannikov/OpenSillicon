@@ -847,7 +847,7 @@ the ABI and current limitations. Phase 15 remains incomplete.
 
 ### Milestone 15.4B — TCP wire and deterministic state-machine core
 
-Status: implemented as an isolated, host-tested core. `kernel/net/tcp_core.c`
+Status: implemented as an isolated, host-tested core. `kernel/net/tcp/tcp_core.c`
 parses and builds bounded IPv4 TCP segments, validates pseudoheader checksums,
 and supports only MSS, NOP, and EOL options. Its generation-tagged table has
 eight entries, at most four SYN children per listener, a 2048-byte receive
@@ -891,13 +891,14 @@ service budget exhaustion, and handle release during pending timers. Only
 SYN/FIN control retransmission is modeled; TCP data retransmission is absent.
 
 At the time of this audit, there was no kernel CSPRNG, CPU RNG use, or boot
-entropy request. The bundled Limine header defines an entropy response,
-but the kernel does not request it. Limine specifies those values as best
-effort and permits fallback to a timing-seeded PRNG, so they are not accepted
-as a trusted ISN source under this policy. `tcp_core_live_isn_available()`
-remains false; there is no live ISN generation or connection-establishment
-path. A trusted, conditioned entropy source, seeding/failure policy, and
-reviewed CSPRNG are prerequisites before live TCP.
+entropy request. The bundled Limine header defines an entropy response, but
+the kernel did not request it. The Phase 15.6A.1 follow-up now requests and
+validates this optional response, but Limine specifies its values as best
+effort and permits fallback to a timing-seeded PRNG, so they remain
+unacceptable as a trusted ISN source under this policy.
+`tcp_core_live_isn_available()` remains false; there is no live ISN generation
+or connection-establishment path. A trusted, conditioned entropy source,
+seeding/failure policy, and reviewed CSPRNG are prerequisites before live TCP.
 
 ### Milestone 15.4E — Trusted entropy and kernel CSPRNG readiness
 
@@ -960,9 +961,10 @@ uses its default x86 CPU profile without `-cpu`; on QEMU 10.2.2 the guest
 reported the source unavailable, as intended, while continuing boot and UDP
 traffic. A separate TCG boot using `-cpu max` reported random-source
 initialization success, which verifies instruction execution in that
-emulated profile, not physical hardware entropy quality. Limine entropy
-remains unrequested because its protocol is
-best-effort and permits timing-seeded fallback. No TCP code consumes this
+emulated profile, not physical hardware entropy quality. At this milestone,
+Limine entropy remained unrequested because its protocol is best-effort and
+permits timing-seeded fallback. The 15.6A.1 follow-up adds bounded inspection
+but does not change that trust classification. No TCP code consumes this
 API: `tcp_core_live_isn_available()` remains false, and live TCP and
 production ISNs remain disabled. Local interrupt masking protects calls only
 against timer preemption on this single-CPU kernel, not SMP concurrency.
@@ -993,8 +995,8 @@ defect on affected Zen 5 systems. Feature bits and CF therefore indicate the
 advertised/architectural operation, not trustworthiness of the source. QEMU
 exposes, suppresses, or emulates CPU features under hypervisor control, and
 the guest cannot distinguish that from bare metal using this code. The host
-does not provide a supported external RNG device, and Limine entropy remains
-unrequested and untrusted under its best-effort contract.
+does not provide a supported external RNG device. Limine entropy is now
+requested but remains untrusted under its best-effort contract.
 
 QEMU 10.2.2 guest boot observations: default CPU (no `-cpu`) => unavailable;
 `-cpu max` => initialization succeeds; `-cpu max,-rdrand` => unavailable;
@@ -1763,10 +1765,266 @@ No production functionality was enabled in 15.5J. See the readiness assessment
 in `DESIGN.md` for the component diagram, capability matrix, ownership detail,
 and entropy/timer/RX/TX rationale.
 
+### Phase 15.6A — trusted entropy and TCP ISN readiness (blocked)
+
+Audit found only the legacy raw RDRAND interface. It checks CPUID, probes with
+at most ten attempts, returns bounded raw words, and fails closed on instruction
+failure. It does not implement an entropy pool, software CSPRNG/DRBG, reseeding,
+or a trusted-source policy. At that audit point, boot requested no entropy
+from Limine; ACPI is used for platform topology, and no RDSEED, TPM RNG, or
+virtio-rng path was found.
+The source is queried early, before timer/scheduler/network/userspace, but
+early availability is not evidence of trust. Timestamps, counters, addresses,
+test seeds, network timing, and user input are not production substitutes.
+
+No CSPRNG or ISN provider was implemented because the trusted-source gate is
+not met. The legacy `kernel_random_available()` means only that the RDRAND
+probe succeeded; the API/header and boot log now say it is not approved for
+keys or TCP ISNs. Deterministic random/ISN injection remains test-macro-only.
+`tcp_core_live_isn_available()` remains false and the production TCP boundary
+is unchanged. The test build's deterministic random source is not evidence of
+entropy quality or CSPRNG correctness.
+
+The remaining 15.6A entry criteria are: approve an entropy source for each
+supported platform; specify seed trust and failure policy; select a reviewed
+DRBG construction rather than treating a primitive (including ChaCha20 alone)
+as a DRBG; define bounded state, reseed limits, counter exhaustion, zeroization
+and single-CPU concurrency; add published known-answer and failure tests; then
+implement a tuple/time keyed ISN PRF only after that provider is cryptographically
+ready. Test ISNs must remain separate, production must fail closed, and no
+entropy-bit claim may be made without a defensible source analysis. QEMU's
+RDRAND behavior is not physical-hardware entropy evidence.
+
+In this phase's four e1000 QEMU profiles, boot logs reported RDRAND
+unavailable, so they verified fail-closed behavior only. No physical hardware
+was tested.
+
+Phase 15.6A is blocked until an approved trusted entropy source and CSPRNG
+design are available. Do not start Phase 15.6B or enable production ISNs,
+TCP dispatch, packet transmission, timers, or syscalls on the basis of the
+existing RDRAND probe.
+
+### Phase 15.6A.1 — boot-time entropy architecture and source evaluation
+
+The pinned Limine release is v12.9.6 and the bundled protocol header is
+revision commit `6e85ddd6f928b5b512015c4d47d1cfce2fd28079`. Its revision-0
+Entropy feature is requested for four 64-bit values. The response is optional;
+the bootloader may leave the response null when unsupported or unavailable.
+The kernel validates revision, count, null/count consistency, HHDM conversion,
+overflow-safe ranges, and that the response and values reside in
+bootloader-reclaimable memory. It copies no more than four values, then clears
+the kernel temporary immediately. Memory-map traversal is capped at 512
+entries. Invalid or missing data is ignored and does not block boot. The
+kernel retains no pointer into bootloader-reclaimable entropy memory.
+
+Limine explicitly describes the source as best-effort, allows a timing-seeded
+PRNG fallback, and gives no hardware-grade entropy guarantee. The normal QEMU
+UEFI boot with the pinned Limine binary returned a non-empty response and the
+kernel logged that it inspected and discarded untrusted values. This confirms
+the request path for that QEMU setup, not entropy quality. No physical
+hardware test was performed. No entropy bits are credited and no values are
+passed to the legacy RDRAND API or any TCP code.
+
+Source status: RDRAND remains a CPUID-gated, bounded, carry-checked raw CPU
+DRBG interface, not a trusted pool or software CSPRNG; RDSEED is not queried
+or executed. QEMU 10.2.2 exposes `virtio-rng-pci`; a configuration using
+`rng-random` backed by `/dev/urandom` parsed and instantiated, but the kernel
+has no virtio transport or RNG driver. EFI64 is the current Limine handoff,
+but Limine exits EFI boot services before kernel entry, so EFI boot-services
+protocols such as EFI_RNG_PROTOCOL cannot be called. No TPM RNG driver or
+ACPI RNG-device driver exists; a TPM event log is not itself an RNG. Time,
+TSC values, memory layout, addresses, IDs, traffic, and test seeds are never
+trusted entropy sources.
+
+The future acquisition boundary is provider-specific bounded acquisition,
+response/range validation, source classification, fixed kernel-owned
+staging, then a separately reviewed CSPRNG initialization. This phase adds
+only Limine response inspection; it does not add an entropy manager state
+machine, source mixing, a trusted pool, CSPRNG, reseeding, or an ISN generator.
+Missing/partial/invalid provider output must never block boot indefinitely or
+be promoted to trusted input without source-specific policy. The production
+ISN and TCP gates remain closed.
+
+### Phase 15.6A.2 — QEMU VirtIO RNG provider
+
+The kernel now contains a bounded driver for QEMU transitional VirtIO RNG
+PCI (`1af4:1005`) using only legacy PCI I/O and queue 0. Runtime probing is
+behind `OPEN_SILLICON_ENABLE_QEMU_VIRTIO_RNG`, absent from ordinary kernel
+flags and enabled by the dedicated QEMU present/absent profiles. The
+QEMU-specific PCI helper sizes BAR0 with decode and bus mastering disabled,
+then uses an existing firmware I/O assignment or `0xc000` for an unassigned
+BAR. It leaves bus mastering disabled until DMA buffers and the queue are
+ready. This fixed-range helper is not a general PCI allocator.
+
+The queue is physically contiguous, page aligned, 32-bit-addressable, and
+bounded to device queue sizes up to 256; one writable descriptor and one
+256-byte data buffer support one request at a time. Completion polling is
+capped at one million iterations. Timeout or malformed completion marks the
+provider unavailable and attempts reset plus verified bus-master disable;
+DMA remains retained if quiescence cannot be proven. The code relies on the
+existing identity-DMA boot contract and coherent x86 memory behavior. Modern
+VirtIO PCI, MMIO transport, interrupts, IOMMU translation, generic hardware,
+and physical-device support remain out of scope.
+
+Host fake-transport tests cover setup, feature negotiation, descriptor and
+ring ownership, short completions, malformed completions, timeout, reset
+failure quarantine, and shutdown. The QEMU present profile completed a
+256-byte request; the absent profile verifies nonfatal absence. QEMU uses
+`rng-random` backed by the host `/dev/urandom`, so bytes remain host- and
+hypervisor-provided candidate data. They are not credited as entropy, fed to
+a CSPRNG, or used for ISNs. No CSPRNG, production ISN generation, or
+production TCP functionality is enabled.
+
+### Phase 15.6A.3 — unified kernel entropy manager
+
+Implemented `kernel_entropy_*` as an allocation-free, bounded source inventory.
+It preserves source identity for Limine bootloader candidates, RDRAND raw
+output, and the explicitly gated QEMU legacy VirtIO RNG provider. RDSEED is
+not implemented. The manager copies validated Limine values into a bounded
+kernel-owned staging buffer, reports per-source lifecycle/failure status, and
+requires callers to select a source; there is no fallback or anonymous
+combined stream. Output remains unchanged on failure, and result metadata
+reports the selected source and exact byte count.
+
+No source is promoted to trusted. Limine remains best-effort, RDRAND remains
+raw CPU DRBG output, and VirtIO remains host/hypervisor-provided candidate
+data. Temporary failures require explicit provider-status recheck; permanent
+failures remain latched. `kernel_entropy_cryptographic_ready()` is always
+false. There is still no entropy credit, CSPRNG, reseed policy, TCP ISN key,
+or production ISN generation. The normal build does not probe or read VirtIO;
+only the dedicated QEMU test profile finalizes that source's availability and
+reads its bounded sample through the manager. Tests cover source selection,
+provenance, bounds, failure atomicity, exhaustion, retry, and trust remaining
+disabled. QEMU RDRAND+RDSEED, RDRAND-only, and neither-instruction profiles
+all completed the VirtIO request; this is virtual CPU/device evidence only.
+
+### Phase 15.6B — CSPRNG architecture and security design (design only)
+
+`docs/security/csprng-design.md` records a source-backed design review. It
+compares the NIST HMAC_DRBG/SHA-256 and AES-256 CTR_DRBG constructions with a
+ChaCha20-based design, recommends HMAC_DRBG conditionally for a later
+implementation, and defines a fail-closed lifecycle, bounded API proposal,
+test plan, threat model, and prerequisites. This recommendation does not
+approve any current seed source: Limine remains best-effort, RDRAND remains
+raw hardware output, VirtIO RNG remains host/hypervisor-provided candidate
+data, and RDSEED is not implemented. The entropy manager's cryptographic
+readiness remains false, as does `tcp_core_live_isn_available()`. No CSPRNG,
+production entropy behavior, or TCP ISN behavior changed in this phase.
+Implementation remains blocked on an explicitly approved source trust policy
+and independent review; this entry does not start Phase 15.6C or authorize
+production TCP.
+
+### Phase 15.6C — cryptographic entropy trust assessment (audit only)
+
+`docs/security/entropy-trust-assessment.md` records the current provider,
+boot-chain, CPU, TPM, EFI, and virtualization assessment. The current sources
+remain candidate data only; no supported configuration establishes an
+approved unpredictable seed under the project's current policy. The practical
+default remains fail-closed with cryptographic readiness disabled. The
+assessment identifies possible narrower future deployment assumptions but
+does not approve them. No entropy collection, driver, CSPRNG, build behavior,
+or TCP ISN behavior changed; `tcp_core_live_isn_available()` remains false.
+
+### Phase 15.6D — RDSEED hardware entropy provider
+
+Added `kernel_rdseed_*` as a separately identified, allocation-free candidate
+provider. Initialization checks CPUID's maximum basic leaf before leaf 7,
+subleaf 0, EBX[18], without a vendor-string restriction. Reads use the 64-bit
+RDSEED destination and CF status, accept zero when CF=1, and retry at most ten
+times per word with `pause`. This retry limit is an OpenSillicon bound, not a
+vendor-prescribed RDSEED count. Exhaustion is temporary and retryable; the
+provider is not permanently disabled by CF=0. Requests are all-or-nothing,
+unchanged on failure, and capped at 256 bytes. The entropy manager exposes
+RDSEED as its own source, preserves provenance, and performs no implicit
+fallback.
+
+The provider initializes before the manager and does not block boot or make
+RDSEED mandatory. QEMU-only test builds make bounded requests under enabled
+and disabled CPU profiles; host tests inject CPUID and instruction results
+without executing RDSEED. These tests validate software behavior and QEMU
+feature exposure, not physical entropy quality. RDSEED remains an untrusted
+candidate and is not considered independent of RDRAND. No CSPRNG, entropy
+credit, production ISN, TCP routing, transmission, timer integration, or
+syscall was added. `kernel_entropy_cryptographic_ready()` and
+`tcp_core_live_isn_available()` remain false.
+
+### Phase 15.6E — RDSEED physical-hardware validation and reliability
+
+Added the standalone Linux diagnostic `tools/rdseed_hw_test.c` and target
+`make rdseed-hw-test`. It checks CPUID before executing RDSEED and performs
+exactly 100 requests per invocation, with at most ten attempts per request.
+It reports only feature and aggregate operational counts; values are not
+logged, stored, hashed, or sent. On the available Fedora 44 host, CPUID
+reported GenuineIntel, Core Ultra 5 225H, family 6/model 197/stepping 2,
+maximum basic leaf 35, RDSEED/RDRAND present, and no hypervisor bit. OS
+virtualization detection reported none and DMI identified an HONOR FMB-P
+platform. Because these signals are not attestation, execution is classified
+unknown/ambiguous rather than confirmed physical.
+
+Six bounded 100-request bursts completed without faults: 1,737 instruction
+attempts produced 498 CF=1 results and 1,239 CF=0 results; 102 requests
+exhausted the ten-attempt bound and were reported as temporary unavailability.
+The final three bursts took 140, 140, and 146 microseconds. The optional
+longer run was not performed after repeated short-burst retry exhaustion.
+These operational measurements do not estimate entropy or change trust
+policy. Native userspace testing did not execute the kernel provider; no
+reboot or active-kernel replacement was performed. QEMU tests continue to be
+emulator-only. The manager still treats RDSEED as an untrusted candidate, and
+`kernel_entropy_cryptographic_ready()` and
+`tcp_core_live_isn_available()` remain false.
+
+### Phase 15.6F — bounded entropy-source availability policy
+
+The entropy manager now separates unsupported hardware, absent optional
+devices, supported-but-not-yet-read providers, recent candidate availability,
+temporary failures, consumed Limine material, and permanently disabled
+providers. Candidate reads remain explicitly source-selected, all-or-nothing,
+and bounded at 256 bytes; there is no fallback, source mixing, request queue,
+timer, or background polling. RDSEED and RDRAND keep their ten-attempt
+instruction bound. Their transient exhaustion is retryable only through an
+explicit caller request; unsupported CPUID remains unavailable without
+retry. VirtIO BUSY is transient, while timeout or malformed completion is
+permanent in the current non-reinitializable driver. Limine remains one-shot.
+No production caller schedules retries and no normal kernel path waits for
+candidate material. The availability status is not a trust status:
+cryptographic readiness and `tcp_core_live_isn_available()` remain false.
+The manager retains the current single-CPU/non-interrupt-call assumptions and
+does not claim SMP safety.
+
+### Phase 15.6G — TPM 2.0 feasibility and entropy trust (assessment only)
+
+Read-only discovery on the development host found Linux TPM 2.0 sysfs and
+character devices, bound through the ACPI CRB driver (`tpm_crb_acpi`,
+`INTC7001:00`). Both `/dev/tpm0` and `/dev/tpmrm0` denied access to the current
+unprivileged user, so TPM capabilities and `TPM2_GetRandom` were not queried.
+The implementation may be firmware TPM / Intel PTT, but its exact type is
+unknown. No TPM driver or host configuration change is part of this phase.
+
+Decision: a provider for a narrowly supported CRB platform appears technically
+feasible, but platform and vendor trust evidence is insufficient. Before a
+driver phase, identify the device and firmware, obtain authorized capability
+data and vendor RNG/reseed/evaluation evidence, define a threat model, and
+review bounded CRB command/response, timeout, and failure handling. TPM output
+remains unapproved and receives no entropy credit. The CSPRNG and live TCP ISN
+gates remain closed. Details and source references are in
+`docs/security/tpm2-feasibility-assessment.md`.
+
+### Phase 15.6H — TPM 2.0 CRB access and protocol validation (design only)
+
+`docs/security/tpm2-crb-driver-design.md` records the observed Linux CRB
+binding, the still-inaccessible TPM2 ACPI table and device, the TCG ACPI/PTP
+CRB model, TPM command framing, bounded timeout/recovery policy, and a staged
+fake-backend-first implementation plan. The actual host start method, CRB
+addresses/capacities, TPM identity, and `TPM2_GetRandom` behavior remain
+unknown. No TPM code, build configuration, tests, or host state changed. TPM
+is still an unapproved candidate with no entropy credit;
+`kernel_entropy_cryptographic_ready()` and
+`tcp_core_live_isn_available()` remain false.
+
 ### Phase 15.6I — TPM2 ACPI table parser
 
 A pure host-tested parser for the TCG ACPI v1.50 TPM2 table is implemented in
-`kernel/tpm2_acpi.c`; it accepts revision 6 and only the PC Client CRB start
+`kernel/drivers/tpm/tpm2_acpi.c`; it accepts revision 6 and only the PC Client CRB start
 method (method 7), with output unchanged on failure. It is not linked into the
 production kernel and performs no TPM or MMIO access. The focused test and
 Clang ASan/UBSan run pass. The broader Phase 15.6I regression gate remains

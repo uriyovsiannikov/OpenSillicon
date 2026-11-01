@@ -53,6 +53,11 @@ bool pci_config_read(uint16_t segment, uint8_t bus, uint8_t device,
 	uint8_t function, uint16_t offset, unsigned int width, uint32_t *value);
 bool pci_config_write(uint16_t segment, uint8_t bus, uint8_t device,
 	uint8_t function, uint16_t offset, unsigned int width, uint32_t value);
+/* QEMU-only transitional VirtIO RNG profile helper. Sizes BAR0 while decode
+ * and bus mastering are disabled, then assigns the requested I/O base if the
+ * BAR is unassigned. This is not a general PCI resource allocator. */
+bool pci_virtio_rng_legacy_io_assign(const struct pci_device_info *device,
+	uint16_t requested_base, uint32_t *assigned_bar);
 bool pci_bar_decode(const struct pci_device_info *device, unsigned int index,
 	struct pci_bar_resource *resource);
 bool pci_enumerate(pci_device_callback callback, void *context);

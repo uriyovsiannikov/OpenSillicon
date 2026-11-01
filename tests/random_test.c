@@ -36,12 +36,14 @@ test_preinit_and_success(void)
 	uint8_t bytes[10];
 	unsigned int initialized_calls;
 	assert(!kernel_random_available());
+	assert(kernel_random_status() == KERNEL_RANDOM_NOT_INITIALIZED);
 	for (size_t i = 0; i < sizeof(bytes); i++)
 		bytes[i] = 0xa5;
 	assert(!kernel_random_bytes(bytes, sizeof(bytes)));
 	assert(bytes[0] == 0xa5 && bytes[sizeof(bytes) - 1] == 0xa5);
 	assert(kernel_random_test_init_source(deterministic_word, &source));
 	assert(kernel_random_available());
+	assert(kernel_random_status() == KERNEL_RANDOM_AVAILABLE);
 	initialized_calls = source.calls; /* one discarded initialization probe */
 	assert(initialized_calls == 1);
 	assert(kernel_random_init()); /* idempotent; does not reseed/reset */
@@ -65,8 +67,18 @@ test_failure_at_initialization(void)
 	assert(!kernel_random_test_init_source(deterministic_word, &source));
 	assert(source.calls == 10);
 	assert(!kernel_random_available());
+	assert(kernel_random_status() ==
+	    KERNEL_RANDOM_TEMPORARILY_UNAVAILABLE);
 	assert(!kernel_random_bytes(&byte, sizeof(byte)) && byte == 0x6c);
-	assert(!kernel_random_init());
+	assert(!kernel_random_init()); /* no implicit second probe */
+	assert(source.calls == 10);
+	source.fail_after = 0;
+	assert(kernel_random_retry());
+	assert(source.calls == 11);
+	assert(!kernel_random_retry()); /* only temporary state is retryable */
+	assert(source.calls == 11);
+	assert(kernel_random_status() == KERNEL_RANDOM_AVAILABLE);
+	assert(kernel_random_bytes(&byte, sizeof(byte)));
 }
 
 static void
@@ -83,10 +95,18 @@ test_failure_during_request(void)
 		bytes[i] = 0x3d;
 	assert(!kernel_random_bytes(bytes, sizeof(bytes)));
 	assert(!kernel_random_available());
+	assert(kernel_random_status() ==
+	    KERNEL_RANDOM_TEMPORARILY_UNAVAILABLE);
 	for (size_t i = 0; i < sizeof(bytes); i++)
 		assert(bytes[i] == 0x3d); /* no partial output escaped */
 	assert(!kernel_random_bytes(bytes, sizeof(bytes)));
-	assert(!kernel_random_init());
+	assert(!kernel_random_bytes(bytes, sizeof(bytes)));
+	assert(source.calls == source.fail_after + 9);
+	source.fail_after = 0;
+	assert(kernel_random_retry());
+	assert(source.calls == 13);
+	assert(kernel_random_status() == KERNEL_RANDOM_AVAILABLE);
+	assert(kernel_random_bytes(bytes, sizeof(bytes)));
 }
 
 int
@@ -99,6 +119,6 @@ main(void)
 	kernel_random_test_reset();
 	test_failure_during_request();
 	kernel_random_test_reset();
-	puts("Kernel random API tests: unavailable, deterministic test source, bounds, reentrancy, and fail-closed behavior passed");
+	puts("Kernel random API tests: bounded temporary failure, explicit retry, atomic output, and reentrancy passed");
 	return 0;
 }

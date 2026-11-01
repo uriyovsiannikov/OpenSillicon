@@ -18,7 +18,7 @@ KERNEL_CFLAGS := -std=c11 -O2 -g -ffreestanding -fno-stack-protector \
 	-mgeneral-regs-only -mno-mmx -mno-sse -mno-sse2 -msoft-float \
 	-Wall -Wextra -Werror -Ilimine
 KERNEL_LDFLAGS := -nostdlib -static -no-pie -z max-page-size=0x1000 \
-	-T kernel/linker.ld
+	-T kernel/arch/x86_64/boot/linker.ld
 KERNEL_ASFLAGS := -m64 -mno-red-zone
 USER_ASFLAGS := -m64 -ffreestanding -fno-pic -fno-pie -mno-red-zone
 USER_LDFLAGS := -nostdlib -static -no-pie -T user/linker.ld
@@ -56,9 +56,13 @@ UDP_SOCKET_TEST_OBJECTS := $(BUILD_DIR)/udp_socket_test_blob.o
 endif
 
 .PHONY: all kernel iso run run-gui test elf-test process-test vfs-test vfs-smoke-test \
-	kernel-random-test \
+	kernel-random-test boot-entropy-test virtio-rng-test kernel-entropy-test \
+	rdseed-test rdseed-qemu-test rdseed-hw-test \
+	virtio-rng-qemu-test virtio-rng-absent-qemu-test \
+	virtio-rng-cpu-qemu-test \
 	silliconfs-test silliconfs-image fault-test \
 	interrupt-test vmm-protection-test timer-test clean acpica-check acpi-test \
+	tpm2-acpi-test \
 	pci-test pci-resource-test dma-test pmm-contiguous-test network-foundation-test block-test phase10-test phase11-test terminal-test \
 	dma-ring-test e1000-profile-test e1000-ring-test e1000-init-qemu-test \
 	e1000-dma-qemu-test e1000-icmp-qemu-test e1000-udp-qemu-test \
@@ -93,7 +97,10 @@ $(BUILD_DIR)/main.o: kernel/main.c include/kernel/boot.h include/kernel/log.h \
 		include/kernel/netstack.h include/kernel/udp_socket.h \
 		include/kernel/network_service.h \
 		include/kernel/tcp_runtime.h \
-		include/kernel/random.h \
+	include/kernel/random.h include/kernel/boot_entropy.h \
+	include/kernel/entropy.h \
+	include/kernel/rdseed.h \
+	include/kernel/virtio_rng.h \
 		include/arch/x86_64/ahci.h include/kernel/block.h \
 		include/kernel/block_silliconfs.h include/kernel/silliconfs.h \
 		include/arch/x86_64/fpu.h \
@@ -101,8 +108,25 @@ $(BUILD_DIR)/main.o: kernel/main.c include/kernel/boot.h include/kernel/log.h \
 		limine/limine.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/boot.o: kernel/boot.c include/kernel/boot.h limine/limine.h | $(BUILD_DIR)
+$(BUILD_DIR)/boot.o: kernel/core/boot/boot.c include/kernel/boot.h limine/limine.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/boot_entropy.o: kernel/core/boot/boot_entropy.c \
+		include/kernel/boot_entropy.h limine/limine.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/entropy.o: kernel/random/entropy.c include/kernel/entropy.h \
+		include/kernel/random.h include/kernel/rdseed.h \
+		include/kernel/virtio_rng.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -DOPEN_SILLICON_KERNEL -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/rdseed.o: kernel/drivers/entropy/rdseed.c include/kernel/rdseed.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -DOPEN_SILLICON_KERNEL -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/virtio_rng.o: kernel/drivers/entropy/virtio_rng.c \
+		include/kernel/virtio_rng.h include/kernel/dma.h \
+		include/arch/x86_64/pci.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -DOPEN_SILLICON_KERNEL -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/pmm.o: kernel/mm/pmm.c include/kernel/pmm.h \
 		include/kernel/boot.h limine/limine.h | $(BUILD_DIR)
@@ -130,10 +154,10 @@ $(BUILD_DIR)/heap.o: kernel/mm/heap.c include/kernel/heap.h \
 		include/kernel/vmm.h include/kernel/pmm.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/log.o: kernel/log.c include/kernel/log.h include/kernel/tty.h | $(BUILD_DIR)
+$(BUILD_DIR)/log.o: kernel/core/log/log.c include/kernel/log.h include/kernel/tty.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/fd.o: kernel/fd.c include/kernel/fd.h include/kernel/log.h \
+$(BUILD_DIR)/fd.o: kernel/proc/fd.c include/kernel/fd.h include/kernel/log.h \
 		include/kernel/heap.h include/kernel/vfs.h include/kernel/tty.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
@@ -161,31 +185,31 @@ $(BUILD_DIR)/tty.o: kernel/tty/tty.c include/kernel/tty.h \
 		include/arch/x86_64/ps2_keyboard.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -Ithird_party -c $< -o $@
 
-$(BUILD_DIR)/ps2_keyboard.o: kernel/arch/x86_64/ps2_keyboard.c \
+$(BUILD_DIR)/ps2_keyboard.o: kernel/drivers/input/ps2_keyboard.c \
 		include/arch/x86_64/ps2_keyboard.h include/kernel/terminal.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/string.o: kernel/lib/string.c | $(BUILD_DIR)
+$(BUILD_DIR)/string.o: kernel/core/lib/string.c | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/vfs.o: kernel/vfs/vfs.c include/kernel/vfs.h \
+$(BUILD_DIR)/vfs.o: kernel/fs/vfs/vfs.c include/kernel/vfs.h \
 		include/kernel/fd.h include/kernel/heap.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/ramfs.o: kernel/vfs/ramfs.c include/kernel/vfs.h \
+$(BUILD_DIR)/ramfs.o: kernel/fs/ramfs/ramfs.c include/kernel/vfs.h \
 		include/kernel/heap.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/initramfs.o: kernel/vfs/initramfs.c include/kernel/vfs.h \
+$(BUILD_DIR)/initramfs.o: kernel/fs/initramfs/initramfs.c include/kernel/vfs.h \
 		include/kernel/heap.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/silliconfs.o: kernel/vfs/silliconfs.c \
+$(BUILD_DIR)/silliconfs.o: kernel/fs/silliconfs/silliconfs.c \
 		include/kernel/silliconfs.h include/kernel/vfs.h \
 		include/kernel/heap.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/syscall.o: kernel/syscall.c include/kernel/syscall.h \
+$(BUILD_DIR)/syscall.o: kernel/core/syscall/syscall.c include/kernel/syscall.h \
 		include/kernel/fd.h include/kernel/vmm.h include/kernel/log.h \
 		include/kernel/process.h include/kernel/vfs.h include/kernel/udp_socket.h \
 		include/kernel/icmp_echo.h \
@@ -193,7 +217,7 @@ $(BUILD_DIR)/syscall.o: kernel/syscall.c include/kernel/syscall.h \
 		include/arch/x86_64/user.h include/arch/x86_64/interrupts.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/elf.o: kernel/elf.c include/kernel/elf.h include/kernel/vmm.h \
+$(BUILD_DIR)/elf.o: kernel/proc/elf.c include/kernel/elf.h include/kernel/vmm.h \
 		include/kernel/heap.h include/kernel/pmm.h include/kernel/shm.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
@@ -208,109 +232,109 @@ $(BUILD_DIR)/signal_state.o: kernel/proc/signal_state.c \
 		include/kernel/signal_state.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/interrupts.o: kernel/arch/x86_64/interrupts.c \
+$(BUILD_DIR)/interrupts.o: kernel/arch/x86_64/interrupts/interrupts.c \
 		include/arch/x86_64/gdt.h include/arch/x86_64/interrupts.h \
 		include/kernel/log.h include/kernel/process.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/gdt.o: kernel/arch/x86_64/gdt.c include/arch/x86_64/gdt.h | $(BUILD_DIR)
+$(BUILD_DIR)/gdt.o: kernel/arch/x86_64/cpu/gdt.c include/arch/x86_64/gdt.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/fpu.o: kernel/arch/x86_64/fpu.c \
+$(BUILD_DIR)/fpu.o: kernel/arch/x86_64/cpu/fpu.c \
 		include/arch/x86_64/fpu.h include/kernel/log.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/random.o: kernel/random.c include/kernel/random.h | $(BUILD_DIR)
+$(BUILD_DIR)/random.o: kernel/random/random.c include/kernel/random.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/lapic.o: kernel/arch/x86_64/lapic.c \
+$(BUILD_DIR)/lapic.o: kernel/arch/x86_64/controllers/lapic.c \
 		include/arch/x86_64/lapic.h include/kernel/vmm.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/ioapic.o: kernel/arch/x86_64/ioapic.c \
+$(BUILD_DIR)/ioapic.o: kernel/arch/x86_64/controllers/ioapic.c \
 		include/arch/x86_64/ioapic.h include/arch/x86_64/acpi.h \
 		include/kernel/vmm.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/pci.o: kernel/arch/x86_64/pci.c \
+$(BUILD_DIR)/pci.o: kernel/drivers/bus/pci/pci.c \
 		include/arch/x86_64/pci.h include/arch/x86_64/acpi.h \
 		include/kernel/vmm.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/pci_resource.o: kernel/arch/x86_64/pci_resource.c \
+$(BUILD_DIR)/pci_resource.o: kernel/drivers/bus/pci/pci_resource.c \
 		include/arch/x86_64/pci_resource.h include/arch/x86_64/pci.h \
 		include/kernel/vmm.h include/kernel/log.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/netbuf.o: kernel/net/netbuf.c include/kernel/netbuf.h | $(BUILD_DIR)
+$(BUILD_DIR)/netbuf.o: kernel/net/core/netbuf.c include/kernel/netbuf.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/netdev.o: kernel/net/netdev.c include/kernel/netdev.h \
+$(BUILD_DIR)/netdev.o: kernel/net/core/netdev.c include/kernel/netdev.h \
 		include/kernel/netbuf.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/netstack.o: kernel/net/netstack.c include/kernel/netstack.h \
+$(BUILD_DIR)/netstack.o: kernel/net/core/netstack.c include/kernel/netstack.h \
 		include/kernel/tcp_wire.h include/kernel/tcp_runtime.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/udp_socket.o: kernel/net/udp_socket.c \
+$(BUILD_DIR)/udp_socket.o: kernel/net/udp/udp_socket.c \
 		include/kernel/udp_socket.h include/kernel/netstack.h \
 		include/kernel/netdev.h include/kernel/netbuf.h \
 		include/kernel/fd.h include/kernel/timer.h include/kernel/errno.h \
 		include/kernel/network_service.h include/kernel/icmp_echo.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/network_service.o: kernel/net/network_service.c \
+$(BUILD_DIR)/network_service.o: kernel/net/service/network_service.c \
 		include/kernel/network_service.h include/kernel/udp_socket.h \
 		include/kernel/errno.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -DOPEN_SILLICON_KERNEL -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/tcp_core.o: kernel/net/tcp_core.c include/kernel/tcp_core.h \
+$(BUILD_DIR)/tcp_core.o: kernel/net/tcp/tcp_core.c include/kernel/tcp_core.h \
 		include/kernel/tcp_wire.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/tcp_wire.o: kernel/net/tcp_wire.c include/kernel/tcp_wire.h | $(BUILD_DIR)
+$(BUILD_DIR)/tcp_wire.o: kernel/net/tcp/tcp_wire.c include/kernel/tcp_wire.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/tcp_runtime.o: kernel/net/tcp_runtime.c \
+$(BUILD_DIR)/tcp_runtime.o: kernel/net/tcp/tcp_runtime.c \
 		include/kernel/tcp_runtime.h include/kernel/tcp_core.h \
 		include/kernel/tcp_wire.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/e1000_profile.o: kernel/net/e1000_profile.c \
+$(BUILD_DIR)/e1000_profile.o: kernel/drivers/net/e1000/e1000_profile.c \
 		include/kernel/e1000_profile.h include/arch/x86_64/pci.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/e1000_ring.o: kernel/net/e1000_ring.c \
+$(BUILD_DIR)/e1000_ring.o: kernel/drivers/net/e1000/e1000_ring.c \
 		include/kernel/e1000_ring.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/e1000.o: kernel/net/e1000.c include/kernel/e1000.h \
+$(BUILD_DIR)/e1000.o: kernel/drivers/net/e1000/e1000.c include/kernel/e1000.h \
 		include/kernel/e1000_profile.h include/arch/x86_64/pci_resource.h \
 		include/kernel/e1000_ring.h include/kernel/dma.h \
 		include/kernel/dma_ring.h include/kernel/netdev.h \
 		include/kernel/netbuf.h include/kernel/log.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/e1000_reset.o: kernel/net/e1000_reset.c include/kernel/e1000.h | $(BUILD_DIR)
+$(BUILD_DIR)/e1000_reset.o: kernel/drivers/net/e1000/e1000_reset.c include/kernel/e1000.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/ahci.o: kernel/arch/x86_64/ahci.c \
+$(BUILD_DIR)/ahci.o: kernel/drivers/storage/ahci.c \
 		include/arch/x86_64/ahci.h include/arch/x86_64/pci.h \
 		include/kernel/block.h include/kernel/errno.h include/kernel/dma.h include/kernel/pmm.h \
 		include/kernel/vmm.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/block.o: kernel/block.c include/kernel/block.h \
+$(BUILD_DIR)/block.o: kernel/fs/block/block.c include/kernel/block.h \
 		include/kernel/errno.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/block_silliconfs.o: kernel/block_silliconfs.c \
+$(BUILD_DIR)/block_silliconfs.o: kernel/fs/block/block_silliconfs.c \
 		include/kernel/block_silliconfs.h include/kernel/block.h \
 		include/kernel/errno.h include/kernel/silliconfs.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/acpi.o: kernel/arch/x86_64/acpi.c \
+$(BUILD_DIR)/acpi.o: kernel/arch/x86_64/firmware/acpi.c \
 		include/arch/x86_64/acpi.h include/kernel/heap.h \
 		include/kernel/log.h include/kernel/timer.h include/kernel/vmm.h \
 		third_party/acpica/source/include/acpi.h \
@@ -319,7 +343,7 @@ $(BUILD_DIR)/acpi.o: kernel/arch/x86_64/acpi.c \
 	$(CC) $(KERNEL_CFLAGS) -DOPEN_SILLICON_KERNEL \
 		-isystem third_party/acpica/source/include -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/timer.o: kernel/arch/x86_64/timer.c \
+$(BUILD_DIR)/timer.o: kernel/arch/x86_64/timer/timer.c \
 		include/arch/x86_64/lapic.h include/arch/x86_64/interrupts.h \
 		include/kernel/timer.h include/kernel/process.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
@@ -329,19 +353,19 @@ $(BUILD_DIR)/scheduler.o: kernel/sched/scheduler.c \
 		include/kernel/log.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/gdt_asm.o: kernel/arch/x86_64/gdt.S | $(BUILD_DIR)
+$(BUILD_DIR)/gdt_asm.o: kernel/arch/x86_64/cpu/gdt.S | $(BUILD_DIR)
 	$(CC) $(KERNEL_ASFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/interrupts_asm.o: kernel/arch/x86_64/interrupts.S | $(BUILD_DIR)
+$(BUILD_DIR)/interrupts_asm.o: kernel/arch/x86_64/interrupts/interrupts.S | $(BUILD_DIR)
 	$(CC) $(KERNEL_ASFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/context.o: kernel/arch/x86_64/context.S | $(BUILD_DIR)
+$(BUILD_DIR)/context.o: kernel/arch/x86_64/context/context.S | $(BUILD_DIR)
 	$(CC) $(KERNEL_ASFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/user_entry.o: kernel/arch/x86_64/user_entry.S | $(BUILD_DIR)
+$(BUILD_DIR)/user_entry.o: kernel/arch/x86_64/context/user_entry.S | $(BUILD_DIR)
 	$(CC) $(KERNEL_ASFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/user_entry_c.o: kernel/arch/x86_64/user_entry.c | $(BUILD_DIR)
+$(BUILD_DIR)/user_entry_c.o: kernel/arch/x86_64/context/user_entry.c | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/user_start.o: user/start.S user/include/os.h | $(BUILD_DIR)
@@ -572,12 +596,12 @@ $(BUILD_DIR)/crash.elf: $(BUILD_DIR)/user_start.o $(BUILD_DIR)/user_os.o \
 		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
 		$(BUILD_DIR)/user_crash.o -o $@
 
-$(BUILD_DIR)/populate_root: tools/populate_root.c kernel/vfs/vfs.c \
-		kernel/vfs/silliconfs.c kernel/fd.c include/kernel/vfs.h \
+$(BUILD_DIR)/populate_root: tools/populate_root.c kernel/fs/vfs/vfs.c \
+		kernel/fs/silliconfs/silliconfs.c kernel/proc/fd.c include/kernel/vfs.h \
 		include/kernel/silliconfs.h
 	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Ilimine \
-		tools/populate_root.c kernel/vfs/vfs.c kernel/vfs/silliconfs.c \
-		kernel/fd.c -o $@
+		tools/populate_root.c kernel/fs/vfs/vfs.c kernel/fs/silliconfs/silliconfs.c \
+		kernel/proc/fd.c -o $@
 
 native-musl-verify:
 	python3 third_party/musl/scripts/verify.py --output build/musl-bootstrap
@@ -747,38 +771,37 @@ $(BUILD_DIR)/acpica/%.o: $(ACPICA_ROOT)/%.c \
 
 acpica-check: $(ACPICA_OBJECTS)
 
-$(BUILD_DIR)/acpi_test: kernel/arch/x86_64/acpi.c tests/acpi_test.c \
+$(BUILD_DIR)/acpi_test: kernel/arch/x86_64/firmware/acpi.c tests/acpi_test.c \
 		include/arch/x86_64/acpi.h third_party/acpica/source/include/acpi.h
 	$(CC) -std=c11 -Wall -Wextra -Werror \
 		-DOPEN_SILLICON_KERNEL -isystem third_party/acpica/source/include \
-		-Iinclude -Ilimine kernel/arch/x86_64/acpi.c tests/acpi_test.c \
+		-Iinclude -Ilimine kernel/arch/x86_64/firmware/acpi.c tests/acpi_test.c \
 		-o $@
 
 acpi-test: $(BUILD_DIR)/acpi_test
 	$(BUILD_DIR)/acpi_test
 
-.PHONY: tpm2-acpi-test
-$(BUILD_DIR)/tpm2_acpi_test: kernel/tpm2_acpi.c tests/tpm2_acpi_test.c \
+$(BUILD_DIR)/tpm2_acpi_test: kernel/drivers/tpm/tpm2_acpi.c tests/tpm2_acpi_test.c \
 		include/kernel/tpm2_acpi.h | $(BUILD_DIR)
 	$(CC) -std=c11 -O1 -g -Wall -Wextra -Werror -Iinclude \
-		kernel/tpm2_acpi.c tests/tpm2_acpi_test.c -o $@
+		kernel/drivers/tpm/tpm2_acpi.c tests/tpm2_acpi_test.c -o $@
 
 tpm2-acpi-test: $(BUILD_DIR)/tpm2_acpi_test
 	$(BUILD_DIR)/tpm2_acpi_test
 
-$(BUILD_DIR)/pci_test: kernel/arch/x86_64/pci.c tests/pci_test.c \
+$(BUILD_DIR)/pci_test: kernel/drivers/bus/pci/pci.c tests/pci_test.c \
 		include/arch/x86_64/pci.h include/arch/x86_64/acpi.h
 	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Ilimine \
-		kernel/arch/x86_64/pci.c tests/pci_test.c -o $@
+		kernel/drivers/bus/pci/pci.c tests/pci_test.c -o $@
 
 pci-test: $(BUILD_DIR)/pci_test
 	$(BUILD_DIR)/pci_test
 
-$(BUILD_DIR)/pci_resource_test: kernel/arch/x86_64/pci_resource.c \
+$(BUILD_DIR)/pci_resource_test: kernel/drivers/bus/pci/pci_resource.c \
 		tests/pci_resource_test.c include/arch/x86_64/pci_resource.h \
 		include/kernel/vmm.h
 	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Ilimine \
-		kernel/arch/x86_64/pci_resource.c tests/pci_resource_test.c -o $@
+		kernel/drivers/bus/pci/pci_resource.c tests/pci_resource_test.c -o $@
 
 pci-resource-test: $(BUILD_DIR)/pci_resource_test
 	$(BUILD_DIR)/pci_resource_test
@@ -800,31 +823,114 @@ $(BUILD_DIR)/dma_ring_test: kernel/mm/dma_ring.c tests/dma_ring_test.c \
 dma-ring-test: $(BUILD_DIR)/dma_ring_test
 	$(BUILD_DIR)/dma_ring_test
 
-$(BUILD_DIR)/e1000_profile_test: kernel/net/e1000_profile.c \
+$(BUILD_DIR)/e1000_profile_test: kernel/drivers/net/e1000/e1000_profile.c \
 		tests/e1000_profile_test.c include/kernel/e1000_profile.h \
 		include/arch/x86_64/pci.h
 	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude \
-		kernel/net/e1000_profile.c tests/e1000_profile_test.c -o $@
+		kernel/drivers/net/e1000/e1000_profile.c tests/e1000_profile_test.c -o $@
 
 e1000-profile-test: $(BUILD_DIR)/e1000_profile_test $(BUILD_DIR)/e1000_reset_test
 	$(BUILD_DIR)/e1000_profile_test
 	$(BUILD_DIR)/e1000_reset_test
 
-$(BUILD_DIR)/e1000_ring_test: kernel/net/e1000_ring.c \
+$(BUILD_DIR)/e1000_ring_test: kernel/drivers/net/e1000/e1000_ring.c \
 		tests/e1000_ring_test.c include/kernel/e1000_ring.h | $(BUILD_DIR)
 	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude \
-		kernel/net/e1000_ring.c tests/e1000_ring_test.c -o $@
+		kernel/drivers/net/e1000/e1000_ring.c tests/e1000_ring_test.c -o $@
 
 e1000-ring-test: $(BUILD_DIR)/e1000_ring_test
 	$(BUILD_DIR)/e1000_ring_test
 
-$(BUILD_DIR)/random_test: kernel/random.c tests/random_test.c \
+$(BUILD_DIR)/random_test: kernel/random/random.c tests/random_test.c \
 		include/kernel/random.h | $(BUILD_DIR)
 	$(CC) -std=c11 -Wall -Wextra -Werror -DKERNEL_RANDOM_TEST \
-		-Iinclude kernel/random.c tests/random_test.c -o $@
+		-Iinclude kernel/random/random.c tests/random_test.c -o $@
 
 kernel-random-test: $(BUILD_DIR)/random_test
 	$(BUILD_DIR)/random_test
+
+$(BUILD_DIR)/boot_entropy_test: kernel/core/boot/boot_entropy.c \
+		tests/boot_entropy_test.c include/kernel/boot_entropy.h \
+		limine/limine.h | $(BUILD_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Ilimine \
+		kernel/core/boot/boot_entropy.c tests/boot_entropy_test.c -o $@
+
+boot-entropy-test: $(BUILD_DIR)/boot_entropy_test
+	$(BUILD_DIR)/boot_entropy_test
+
+$(BUILD_DIR)/entropy_test: kernel/random/entropy.c tests/entropy_test.c \
+		include/kernel/entropy.h include/kernel/random.h \
+		include/kernel/rdseed.h include/kernel/virtio_rng.h | $(BUILD_DIR)
+	$(CC) -std=c11 -O1 -g -Wall -Wextra -Werror \
+		-DKERNEL_ENTROPY_TESTING -Iinclude -Ilimine kernel/random/entropy.c \
+		tests/entropy_test.c -o $@
+
+kernel-entropy-test: $(BUILD_DIR)/entropy_test
+	$(BUILD_DIR)/entropy_test
+
+$(BUILD_DIR)/rdseed_test: kernel/drivers/entropy/rdseed.c tests/rdseed_test.c \
+		include/kernel/rdseed.h | $(BUILD_DIR)
+	$(CC) -std=c11 -O1 -g -Wall -Wextra -Werror \
+		-DRDSEED_TESTING -Iinclude kernel/drivers/entropy/rdseed.c tests/rdseed_test.c -o $@
+
+rdseed-test: $(BUILD_DIR)/rdseed_test
+	$(BUILD_DIR)/rdseed_test
+
+$(BUILD_DIR)/rdseed_hw_test: tools/rdseed_hw_test.c | $(BUILD_DIR)
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror $< -o $@
+
+rdseed-hw-test: $(BUILD_DIR)/rdseed_hw_test
+	$(BUILD_DIR)/rdseed_hw_test
+
+rdseed-qemu-test:
+	$(MAKE) BUILD_DIR=build/rdseed-qemu \
+		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DOPEN_SILLICON_RDSEED_QEMU_TEST' iso \
+		build/rdseed-qemu/phase12-root.img
+	for profile in rdseed rdrand-only rdseed-no-rdrand neither; do \
+		python3 tests/rdseed_qemu_test.py $(QEMU) $(OVMF_CODE) \
+		build/rdseed-qemu/opensillicon.iso \
+		build/rdseed-qemu/phase12-root.img $$profile \
+		build/rdseed-qemu/rdseed-$$profile.log || exit $$?; \
+	done
+
+$(BUILD_DIR)/virtio_rng_test: kernel/drivers/entropy/virtio_rng.c tests/virtio_rng_test.c \
+		include/kernel/virtio_rng.h include/kernel/dma.h \
+		include/arch/x86_64/pci.h | $(BUILD_DIR)
+	$(CC) -std=c11 -O1 -g -Wall -Wextra -Werror \
+		-DVIRTIO_RNG_TESTING -Iinclude kernel/drivers/entropy/virtio_rng.c \
+		tests/virtio_rng_test.c -o $@
+
+virtio-rng-test: $(BUILD_DIR)/virtio_rng_test
+	$(BUILD_DIR)/virtio_rng_test
+
+virtio-rng-qemu-test:
+	$(MAKE) BUILD_DIR=build/virtio-rng-present \
+		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DOPEN_SILLICON_ENABLE_QEMU_VIRTIO_RNG' iso \
+		build/virtio-rng-present/phase12-root.img
+	python3 tests/virtio_rng_qemu_test.py $(QEMU) $(OVMF_CODE) present \
+		build/virtio-rng-present/opensillicon.iso \
+		build/virtio-rng-present/phase12-root.img \
+		build/virtio-rng-present/virtio-rng.log
+
+virtio-rng-absent-qemu-test:
+	$(MAKE) BUILD_DIR=build/virtio-rng-absent \
+		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DOPEN_SILLICON_ENABLE_QEMU_VIRTIO_RNG' iso \
+		build/virtio-rng-absent/phase12-root.img
+	python3 tests/virtio_rng_qemu_test.py $(QEMU) $(OVMF_CODE) absent \
+		build/virtio-rng-absent/opensillicon.iso \
+		build/virtio-rng-absent/phase12-root.img \
+		build/virtio-rng-absent/virtio-rng.log
+
+virtio-rng-cpu-qemu-test:
+	$(MAKE) BUILD_DIR=build/virtio-rng-cpu \
+		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DOPEN_SILLICON_ENABLE_QEMU_VIRTIO_RNG' iso \
+		build/virtio-rng-cpu/phase12-root.img
+	for profile in max-rdrand-rdseed max-rdrand max-neither; do \
+		python3 tests/virtio_rng_qemu_test.py $(QEMU) $(OVMF_CODE) present \
+		build/virtio-rng-cpu/opensillicon.iso \
+		build/virtio-rng-cpu/phase12-root.img \
+		build/virtio-rng-cpu/virtio-rng-$$profile.log $$profile || exit $$?; \
+	done
 
 e1000-init-qemu-test: iso $(BUILD_DIR)/phase12-root.img
 	@set +e; timeout 18s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \
@@ -850,20 +956,20 @@ e1000-dma-qemu-test:
 		build/e1000-smoke/e1000-smoke.log
 
 
-$(BUILD_DIR)/netstack_test: kernel/net/netstack.c kernel/net/tcp_wire.c \
+$(BUILD_DIR)/netstack_test: kernel/net/core/netstack.c kernel/net/tcp/tcp_wire.c \
 		tests/netstack_test.c include/kernel/netstack.h \
 		include/kernel/tcp_wire.h | $(BUILD_DIR)
 	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude \
-		kernel/net/netstack.c kernel/net/tcp_wire.c \
+		kernel/net/core/netstack.c kernel/net/tcp/tcp_wire.c \
 		tests/netstack_test.c -Wl,--wrap=tcp_wire_parse -o $@
 
-$(BUILD_DIR)/netstack_runtime_gate_test: kernel/net/netstack.c \
-		kernel/net/tcp_wire.c kernel/net/tcp_core.c \
-		kernel/net/tcp_runtime.c tests/netstack_runtime_gate_test.c \
+$(BUILD_DIR)/netstack_runtime_gate_test: kernel/net/core/netstack.c \
+		kernel/net/tcp/tcp_wire.c kernel/net/tcp/tcp_core.c \
+		kernel/net/tcp/tcp_runtime.c tests/netstack_runtime_gate_test.c \
 		include/kernel/netstack.h include/kernel/tcp_runtime.h | $(BUILD_DIR)
 	$(CC) -std=c11 -Wall -Wextra -Werror -DOPEN_SILLICON_ENABLE_TCP_ROUTING \
-		-Iinclude kernel/net/netstack.c kernel/net/tcp_wire.c \
-		kernel/net/tcp_core.c kernel/net/tcp_runtime.c \
+		-Iinclude kernel/net/core/netstack.c kernel/net/tcp/tcp_wire.c \
+		kernel/net/tcp/tcp_core.c kernel/net/tcp/tcp_runtime.c \
 		tests/netstack_runtime_gate_test.c -o $@
 
 netstack-test: $(BUILD_DIR)/netstack_test \
@@ -871,48 +977,48 @@ netstack-test: $(BUILD_DIR)/netstack_test \
 	$(BUILD_DIR)/netstack_test
 	$(BUILD_DIR)/netstack_runtime_gate_test
 
-$(BUILD_DIR)/udp_socket_test: kernel/net/udp_socket.c \
-		kernel/net/netstack.c kernel/net/tcp_wire.c \
-		kernel/net/netdev.c kernel/net/netbuf.c \
-		kernel/net/network_service.c kernel/fd.c tests/udp_socket_test.c
+$(BUILD_DIR)/udp_socket_test: kernel/net/udp/udp_socket.c \
+		kernel/net/core/netstack.c kernel/net/tcp/tcp_wire.c \
+		kernel/net/core/netdev.c kernel/net/core/netbuf.c \
+		kernel/net/service/network_service.c kernel/proc/fd.c tests/udp_socket_test.c
 	$(CC) -std=c11 -Wall -Wextra -Werror -ffunction-sections \
-		-fdata-sections -Iinclude -Ilimine kernel/net/udp_socket.c \
-		kernel/net/netstack.c kernel/net/tcp_wire.c \
-		kernel/net/netdev.c kernel/net/netbuf.c \
-		kernel/net/network_service.c kernel/fd.c tests/udp_socket_test.c \
+		-fdata-sections -Iinclude -Ilimine kernel/net/udp/udp_socket.c \
+		kernel/net/core/netstack.c kernel/net/tcp/tcp_wire.c \
+		kernel/net/core/netdev.c kernel/net/core/netbuf.c \
+		kernel/net/service/network_service.c kernel/proc/fd.c tests/udp_socket_test.c \
 		-Wl,--gc-sections -o $@
 
 udp-socket-test: $(BUILD_DIR)/udp_socket_test
 	$(BUILD_DIR)/udp_socket_test
 
-$(BUILD_DIR)/network_service_test: kernel/net/network_service.c \
+$(BUILD_DIR)/network_service_test: kernel/net/service/network_service.c \
 		tests/network_service_test.c include/kernel/network_service.h \
 		include/kernel/udp_socket.h include/kernel/errno.h | $(BUILD_DIR)
 	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude \
-		kernel/net/network_service.c tests/network_service_test.c -o $@
+		kernel/net/service/network_service.c tests/network_service_test.c -o $@
 
 network-service-test: $(BUILD_DIR)/network_service_test
 	$(BUILD_DIR)/network_service_test
 
-$(BUILD_DIR)/tcp_core_test: kernel/net/tcp_core.c kernel/net/tcp_wire.c \
+$(BUILD_DIR)/tcp_core_test: kernel/net/tcp/tcp_core.c kernel/net/tcp/tcp_wire.c \
 		tests/tcp_core_test.c include/kernel/tcp_core.h \
 		include/kernel/tcp_wire.h | $(BUILD_DIR)
 	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude \
-		-DTCP_CORE_TESTING kernel/net/tcp_core.c kernel/net/tcp_wire.c \
+		-DTCP_CORE_TESTING kernel/net/tcp/tcp_core.c kernel/net/tcp/tcp_wire.c \
 		tests/tcp_core_test.c -o $@
 
-$(BUILD_DIR)/tcp_wire_test: kernel/net/tcp_wire.c tests/tcp_wire_test.c \
+$(BUILD_DIR)/tcp_wire_test: kernel/net/tcp/tcp_wire.c tests/tcp_wire_test.c \
 		include/kernel/tcp_wire.h | $(BUILD_DIR)
 	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude \
-		kernel/net/tcp_wire.c tests/tcp_wire_test.c -o $@
+		kernel/net/tcp/tcp_wire.c tests/tcp_wire_test.c -o $@
 
 tcp-wire-test: $(BUILD_DIR)/tcp_wire_test
 	$(BUILD_DIR)/tcp_wire_test
 
-$(BUILD_DIR)/tcp_wire_fuzz_test: kernel/net/tcp_wire.c \
+$(BUILD_DIR)/tcp_wire_fuzz_test: kernel/net/tcp/tcp_wire.c \
 		tests/tcp_wire_fuzz_test.c include/kernel/tcp_wire.h | $(BUILD_DIR)
 	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Iinclude \
-		kernel/net/tcp_wire.c tests/tcp_wire_fuzz_test.c -o $@
+		kernel/net/tcp/tcp_wire.c tests/tcp_wire_fuzz_test.c -o $@
 
 tcp-wire-fuzz-test: $(BUILD_DIR)/tcp_wire_fuzz_test
 	$(BUILD_DIR)/tcp_wire_fuzz_test
@@ -920,22 +1026,22 @@ tcp-wire-fuzz-test: $(BUILD_DIR)/tcp_wire_fuzz_test
 tcp-core-test: $(BUILD_DIR)/tcp_core_test
 	$(BUILD_DIR)/tcp_core_test
 
-$(BUILD_DIR)/tcp_runtime_test: kernel/net/tcp_core.c kernel/net/tcp_runtime.c \
-		kernel/net/tcp_wire.c tests/tcp_runtime_test.c include/kernel/tcp_core.h \
+$(BUILD_DIR)/tcp_runtime_test: kernel/net/tcp/tcp_core.c kernel/net/tcp/tcp_runtime.c \
+		kernel/net/tcp/tcp_wire.c tests/tcp_runtime_test.c include/kernel/tcp_core.h \
 		include/kernel/tcp_wire.h \
 		include/kernel/tcp_runtime.h | $(BUILD_DIR)
 	$(CC) -std=c11 -Wall -Wextra -Werror -DOPEN_SILLICON_ENABLE_TCP_ROUTING \
 		-DTCP_CORE_TESTING -DTCP_RUNTIME_TESTING \
-		-Iinclude kernel/net/tcp_core.c kernel/net/tcp_wire.c \
-		kernel/net/tcp_runtime.c \
+		-Iinclude kernel/net/tcp/tcp_core.c kernel/net/tcp/tcp_wire.c \
+		kernel/net/tcp/tcp_runtime.c \
 		tests/tcp_runtime_test.c -o $@
 
-$(BUILD_DIR)/tcp_runtime_disabled_test: kernel/net/tcp_core.c \
-		kernel/net/tcp_runtime.c kernel/net/tcp_wire.c \
+$(BUILD_DIR)/tcp_runtime_disabled_test: kernel/net/tcp/tcp_core.c \
+		kernel/net/tcp/tcp_runtime.c kernel/net/tcp/tcp_wire.c \
 		tests/tcp_runtime_disabled_test.c include/kernel/tcp_runtime.h | $(BUILD_DIR)
 	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude \
-		kernel/net/tcp_core.c kernel/net/tcp_wire.c \
-		kernel/net/tcp_runtime.c tests/tcp_runtime_disabled_test.c -o $@
+		kernel/net/tcp/tcp_core.c kernel/net/tcp/tcp_wire.c \
+		kernel/net/tcp/tcp_runtime.c tests/tcp_runtime_disabled_test.c -o $@
 
 tcp-runtime-test: $(BUILD_DIR)/tcp_runtime_test \
 		$(BUILD_DIR)/tcp_runtime_disabled_test \
@@ -944,25 +1050,25 @@ tcp-runtime-test: $(BUILD_DIR)/tcp_runtime_test \
 	$(BUILD_DIR)/tcp_runtime_disabled_test
 	$(BUILD_DIR)/tcp_runtime_sim_test
 
-$(BUILD_DIR)/tcp_runtime_sim_test: kernel/net/tcp_core.c \
-		kernel/net/tcp_runtime.c kernel/net/tcp_wire.c \
+$(BUILD_DIR)/tcp_runtime_sim_test: kernel/net/tcp/tcp_core.c \
+		kernel/net/tcp/tcp_runtime.c kernel/net/tcp/tcp_wire.c \
 		tests/tcp_runtime_sim_test.c include/kernel/tcp_core.h \
 		include/kernel/tcp_wire.h include/kernel/tcp_runtime.h | $(BUILD_DIR)
 	$(CC) -std=c11 -Wall -Wextra -Werror -DOPEN_SILLICON_ENABLE_TCP_ROUTING \
 		-DTCP_CORE_TESTING -DTCP_RUNTIME_TESTING -Iinclude \
-		kernel/net/tcp_core.c kernel/net/tcp_wire.c kernel/net/tcp_runtime.c \
+		kernel/net/tcp/tcp_core.c kernel/net/tcp/tcp_wire.c kernel/net/tcp/tcp_runtime.c \
 		tests/tcp_runtime_sim_test.c -o $@
 
 tcp-runtime-sim-test: $(BUILD_DIR)/tcp_runtime_sim_test
 	$(BUILD_DIR)/tcp_runtime_sim_test
 
-$(BUILD_DIR)/tcp_linux_interop: kernel/net/tcp_core.c \
-		kernel/net/tcp_wire.c kernel/net/tcp_runtime.c \
+$(BUILD_DIR)/tcp_linux_interop: kernel/net/tcp/tcp_core.c \
+		kernel/net/tcp/tcp_wire.c kernel/net/tcp/tcp_runtime.c \
 		tests/tcp_linux_interop.c include/kernel/tcp_core.h \
 		include/kernel/tcp_wire.h include/kernel/tcp_runtime.h | $(BUILD_DIR)
 	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -DOPEN_SILLICON_ENABLE_TCP_ROUTING \
 		-DTCP_CORE_TESTING -DTCP_RUNTIME_TESTING -Iinclude \
-		kernel/net/tcp_core.c kernel/net/tcp_wire.c kernel/net/tcp_runtime.c \
+		kernel/net/tcp/tcp_core.c kernel/net/tcp/tcp_wire.c kernel/net/tcp/tcp_runtime.c \
 		tests/tcp_linux_interop.c -o $@
 
 tcp-linux-interop-test: $(BUILD_DIR)/tcp_linux_interop
@@ -1006,10 +1112,10 @@ e1000-icmp-ping-qemu-test:
 		build/e1000-icmp-ping/phase12-root.img \
 		build/e1000-icmp-ping/e1000-icmp-ping.log --userspace-ping
 
-$(BUILD_DIR)/e1000_reset_test: kernel/net/e1000_reset.c \
+$(BUILD_DIR)/e1000_reset_test: kernel/drivers/net/e1000/e1000_reset.c \
 		tests/e1000_reset_test.c include/kernel/e1000.h | $(BUILD_DIR)
 	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude \
-		kernel/net/e1000_reset.c tests/e1000_reset_test.c -o $@
+		kernel/drivers/net/e1000/e1000_reset.c tests/e1000_reset_test.c -o $@
 
 $(BUILD_DIR)/pmm_contiguous_test: kernel/mm/pmm.c tests/pmm_contiguous_test.c \
 		include/kernel/pmm.h include/kernel/boot.h limine/limine.h
@@ -1019,11 +1125,11 @@ $(BUILD_DIR)/pmm_contiguous_test: kernel/mm/pmm.c tests/pmm_contiguous_test.c \
 pmm-contiguous-test: $(BUILD_DIR)/pmm_contiguous_test
 	$(BUILD_DIR)/pmm_contiguous_test
 
-$(BUILD_DIR)/network_foundation_test: kernel/net/netbuf.c \
-		kernel/net/netdev.c tests/network_foundation_test.c \
+$(BUILD_DIR)/network_foundation_test: kernel/net/core/netbuf.c \
+		kernel/net/core/netdev.c tests/network_foundation_test.c \
 		include/kernel/netbuf.h include/kernel/netdev.h
 	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude \
-		kernel/net/netbuf.c kernel/net/netdev.c \
+		kernel/net/core/netbuf.c kernel/net/core/netdev.c \
 		tests/network_foundation_test.c -o $@
 
 network-foundation-test: $(BUILD_DIR)/network_foundation_test pci-test
@@ -1120,7 +1226,8 @@ $(BUILD_DIR)/initramfs.cpio: $(shell find initramfs -type f -o -type d) \
 		--file bin/argv_probe=$(BUILD_DIR)/argv_probe.elf \
 		--file bin/argv_limit_test=$(BUILD_DIR)/argv_limit_test.elf
 
-KERNEL_OBJECTS := $(BUILD_DIR)/main.o $(BUILD_DIR)/boot.o $(BUILD_DIR)/random.o $(BUILD_DIR)/pmm.o \
+KERNEL_OBJECTS := $(BUILD_DIR)/main.o $(BUILD_DIR)/boot.o $(BUILD_DIR)/boot_entropy.o $(BUILD_DIR)/entropy.o $(BUILD_DIR)/random.o $(BUILD_DIR)/rdseed.o $(BUILD_DIR)/pmm.o \
+	$(BUILD_DIR)/virtio_rng.o \
 	$(BUILD_DIR)/vmm.o $(BUILD_DIR)/shm.o $(BUILD_DIR)/heap.o $(BUILD_DIR)/log.o \
 	$(BUILD_DIR)/gdt.o $(BUILD_DIR)/fpu.o $(BUILD_DIR)/lapic.o $(BUILD_DIR)/acpi.o \
 	$(BUILD_DIR)/ioapic.o $(BUILD_DIR)/ahci.o $(BUILD_DIR)/block.o \
@@ -1149,7 +1256,7 @@ KERNEL_OBJECTS := $(BUILD_DIR)/main.o $(BUILD_DIR)/boot.o $(BUILD_DIR)/random.o 
 	$(BUILD_DIR)/initramfs.o $(BUILD_DIR)/silliconfs.o \
 	$(BUILD_DIR)/vfs_test_blob.o $(UDP_SOCKET_TEST_OBJECTS) $(ACPICA_OBJECTS)
 
-$(BUILD_DIR)/kernel.elf: $(KERNEL_OBJECTS) kernel/linker.ld
+$(BUILD_DIR)/kernel.elf: $(KERNEL_OBJECTS) kernel/arch/x86_64/boot/linker.ld
 	$(LD) $(KERNEL_LDFLAGS) $(KERNEL_OBJECTS) -o $@
 
 $(BUILD_DIR):
@@ -1259,11 +1366,11 @@ run-gui: iso $(BUILD_DIR)/root.img
 		-netdev user,id=net0 -device e1000,netdev=net0,id=e1000,mac=52:54:00:15:03:01 \
 		-serial stdio -display gtk -no-reboot
 
-$(BUILD_DIR)/block_test: kernel/block.c kernel/block_silliconfs.c \
+$(BUILD_DIR)/block_test: kernel/fs/block/block.c kernel/fs/block/block_silliconfs.c \
 		tests/block_test.c include/kernel/block.h include/kernel/errno.h \
 		include/kernel/block_silliconfs.h
-	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude kernel/block.c \
-		kernel/block_silliconfs.c tests/block_test.c -o $@
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude kernel/fs/block/block.c \
+		kernel/fs/block/block_silliconfs.c tests/block_test.c -o $@
 
 block-test: $(BUILD_DIR)/block_test
 	$(BUILD_DIR)/block_test
@@ -1272,12 +1379,12 @@ phase10-test: block-test acpi-test pci-test silliconfs-test
 
 test: | $(BUILD_DIR)
 	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Ilimine \
-		kernel/boot.c kernel/mm/pmm.c tests/boot_test.c -o $(BUILD_DIR)/boot_test
+		kernel/core/boot/boot.c kernel/mm/pmm.c tests/boot_test.c -o $(BUILD_DIR)/boot_test
 	$(BUILD_DIR)/boot_test
 
 elf-test: | $(BUILD_DIR)
 	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Ilimine \
-		kernel/elf.c tests/elf_test.c -o $(BUILD_DIR)/elf_test
+		kernel/proc/elf.c tests/elf_test.c -o $(BUILD_DIR)/elf_test
 	$(BUILD_DIR)/elf_test
 
 $(BUILD_DIR)/vmm_protection_test: tests/vmm_protection_test.c \
@@ -1296,10 +1403,10 @@ private-map-abi-test: $(BUILD_DIR)/private_mapping_abi_test
 
 vfs-test: $(BUILD_DIR)/initramfs.cpio | $(BUILD_DIR)
 	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Ilimine \
-		kernel/vfs/vfs.c kernel/vfs/ramfs.c kernel/vfs/initramfs.c \
-		kernel/fd.c kernel/tty/tty.c kernel/tty/terminal.c \
+		kernel/fs/vfs/vfs.c kernel/fs/ramfs/ramfs.c kernel/fs/initramfs/initramfs.c \
+		kernel/proc/fd.c kernel/tty/tty.c kernel/tty/terminal.c \
 		kernel/tty/keyboard.c kernel/tty/framebuffer.c \
-		kernel/arch/x86_64/ps2_keyboard.c tests/timer_stub.c \
+		kernel/drivers/input/ps2_keyboard.c tests/timer_stub.c \
 		-Ithird_party tests/vfs_test.c -o $(BUILD_DIR)/vfs_test
 	$(BUILD_DIR)/vfs_test $(BUILD_DIR)/initramfs.cpio
 
@@ -1310,22 +1417,22 @@ silliconfs-image: | $(BUILD_DIR)
 silliconfs-test: silliconfs-image | $(BUILD_DIR)
 	python3 tests/mksilliconfs_test.py
 	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Ilimine \
-		kernel/vfs/vfs.c kernel/vfs/silliconfs.c kernel/fd.c \
-		kernel/block.c kernel/block_silliconfs.c \
+		kernel/fs/vfs/vfs.c kernel/fs/silliconfs/silliconfs.c kernel/proc/fd.c \
+		kernel/fs/block/block.c kernel/fs/block/block_silliconfs.c \
 		kernel/tty/tty.c kernel/tty/terminal.c kernel/tty/framebuffer.c \
-		kernel/tty/keyboard.c kernel/arch/x86_64/ps2_keyboard.c \
+		kernel/tty/keyboard.c kernel/drivers/input/ps2_keyboard.c \
 		tests/timer_stub.c -Ithird_party \
 		tests/silliconfs_test.c -o $(BUILD_DIR)/silliconfs_test
 	$(BUILD_DIR)/silliconfs_test $(BUILD_DIR)/silliconfs.img
 
 $(BUILD_DIR)/terminal_test: kernel/tty/terminal.c kernel/tty/tty.c \
 		kernel/tty/keyboard.c kernel/tty/framebuffer.c \
-		kernel/arch/x86_64/ps2_keyboard.c tests/timer_stub.c \
+		kernel/drivers/input/ps2_keyboard.c tests/timer_stub.c \
 		tests/terminal_test.c include/kernel/terminal.h \
 		third_party/font8x16/font8x16_basic.h
 	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Ilimine -Ithird_party \
 		kernel/tty/terminal.c kernel/tty/tty.c kernel/tty/keyboard.c \
-		kernel/tty/framebuffer.c kernel/arch/x86_64/ps2_keyboard.c \
+		kernel/tty/framebuffer.c kernel/drivers/input/ps2_keyboard.c \
 		tests/timer_stub.c tests/terminal_test.c -o $@
 
 terminal-test: $(BUILD_DIR)/terminal_test
@@ -1351,10 +1458,10 @@ phase12-qemu-test: iso $(BUILD_DIR)/phase12-root.img $(BUILD_DIR)/blank-root.img
 
 phase12-test: user-path-test phase11-test phase12-qemu-test
 
-$(BUILD_DIR)/pipe_test: kernel/ipc/pipe.c kernel/ipc/pipe_buffer.c kernel/fd.c \
+$(BUILD_DIR)/pipe_test: kernel/ipc/pipe.c kernel/ipc/pipe_buffer.c kernel/proc/fd.c \
 		tests/pipe_test.c include/kernel/pipe.h include/kernel/fd.h | $(BUILD_DIR)
 	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Ilimine \
-		kernel/ipc/pipe.c kernel/ipc/pipe_buffer.c kernel/fd.c \
+		kernel/ipc/pipe.c kernel/ipc/pipe_buffer.c kernel/proc/fd.c \
 		tests/pipe_test.c -o $@
 
 pipe-test: $(BUILD_DIR)/pipe_test

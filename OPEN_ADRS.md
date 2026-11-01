@@ -810,7 +810,8 @@ Decision
 
 1. Layering and ownership
 
-Build a small in-kernel stack under `kernel/net/`: bounded packet buffers and
+Build a small in-kernel stack under `kernel/net/core/`, `kernel/net/tcp/`, and
+`kernel/net/udp/`: bounded packet buffers and
 network interfaces, Ethernet II, ARP, IPv4, ICMP, UDP, TCP, routes, and socket
 adaptation. Ethernet owns framing and dispatch; ARP resolves IPv4 next hops;
 IPv4 validates and dispatches datagrams and selects routes, but does not
@@ -978,7 +979,7 @@ Status: Accepted
 Decision (Phase 0): Use the installed system GCC and GNU binutils for x86_64
 freestanding kernel builds. GCC compiles with `-ffreestanding`,
 `-fno-stack-protector`, and `-mno-red-zone`; GNU ld links with `-nostdlib` and
-`-static`, using `kernel/linker.ld`. Kernel and userspace flags remain
+`-static`, using `kernel/arch/x86_64/boot/linker.ld`. Kernel and userspace flags remain
 separate. The measured development baseline is GCC 16.2.1 and binutils 2.46.1;
 these are environment versions, not hard minimums.
 
@@ -2496,7 +2497,7 @@ Context and verified implementation facts
 
 ADR-022 selects a native musl port, not Linux syscall compatibility. The
 current ABI is defined in `include/kernel/syscall.h` and dispatched by
-`kernel/syscall.c`: `int 0x80`, number/result in RAX, arguments in RDI, RSI,
+`kernel/core/syscall/syscall.c`: `int 0x80`, number/result in RAX, arguments in RDI, RSI,
 RDX, R10, R8, R9, and failure indicated by CF with a positive errno in RAX.
 The current syscall assignments are 0 ABI version, 1 exit, 2 write, 3
 getpid, 4 fork, 5 image-buffer exec, 6 waitpid, 7 open, 8 close, 9 read,
@@ -2506,7 +2507,7 @@ ADR-031 appends syscall 20 `set_fs_base`; numbers 0 through 19 and their
 meanings remain unchanged.
 
 OpenSillicon's kernel returns `ENOSYS` as 78 for an unknown call in
-`kernel/syscall.c`; `include/kernel/errno.h` does not define ENOSYS, and
+`kernel/core/syscall/syscall.c`; `include/kernel/errno.h` does not define ENOSYS, and
 several syscall errors are defined locally in dispatch/process code. The
 existing values used for EIO, EBADF, ENOMEM, EFAULT, EINVAL, EEXIST, EAGAIN,
 EMFILE, ENOSPC, EPIPE, EOVERFLOW, EOPNOTSUPP, ETIMEDOUT, EINTR, ECHILD,
@@ -2530,7 +2531,7 @@ In the single-thread profile, libc may define `gettid()` as `getpid()`;
 `set_tid_address` has no required role until a thread/clear-child-tid
 contract exists.
 
-The ELF loader in `kernel/elf.c` accepts fixed-address ET_EXEC PT_LOADs,
+The ELF loader in `kernel/proc/elf.c` accepts fixed-address ET_EXEC PT_LOADs,
 rejects PT_DYNAMIC and PT_INTERP, validates one PT_TLS (treating a structurally
 empty PT_TLS as no TLS image), excludes reserved arenas, and requires the
 complete program-header table in readable PT_LOAD memory. User path launches
@@ -2542,7 +2543,7 @@ registers to `user_main`, then invokes syscall 1. Legacy path-only launch
 places argc zero and argv[0] NULL. ADR-031 and Stage 14I-D add per-process FS-base state, syscall 20,
 and capture/restore on user entry and return.
 
-The VFS and FD implementation (`kernel/vfs/vfs.c`, `kernel/fd.c`,
+The VFS and FD implementation (`kernel/fs/vfs/vfs.c`, `kernel/proc/fd.c`,
 `include/kernel/vfs.h`) supports open/close/read/write, path stat, and
 indexed directory iteration. `stat` is path-based only; descriptors have a
 shared object offset, but there is no seek operation. Descriptor tables have
@@ -2686,7 +2687,8 @@ separate append-only ABI approval. `set_tid_address` is not needed for the
 single-thread profile; thread exit/clear-child-tid remains deferred.
 
 The kernel build in the current Makefile disables MMX/SSE/SSE2 and uses
-soft-float. Inspection of `kernel/arch/x86_64/interrupts.S`, `context.S`,
+soft-float. Inspection of `kernel/arch/x86_64/interrupts/interrupts.S`,
+`kernel/arch/x86_64/context/context.S`,
 and process switching finds no FXSAVE/FXRSTOR or XSAVE/XRSTOR state handling.
 The inspected GDT setup does not configure CR0/CR4 for an FPU policy. Thus
 the current code does not establish that userspace SSE is enabled or that
@@ -2707,7 +2709,7 @@ implemented.
 Time and entropy
 
 There is no clock_gettime or wall-clock syscall. The kernel timer counts
-100-Hz LAPIC ticks calibrated against PIT in `kernel/arch/x86_64/timer.c`;
+100-Hz LAPIC ticks calibrated against PIT in `kernel/arch/x86_64/timer/timer.c`;
 syscall 13 sleeps for ticks and returns EINTR when a non-ignored signal
 interrupts it. This supports a future coarse relative nanosleep adapter by
 rounding durations up to ticks, but cannot provide a POSIX timespec
@@ -2823,7 +2825,7 @@ syscall ABI remains open
 
 Context and verified current layout
 
-This ADR records the actual layout in `kernel/mm/vmm.c`, `kernel/elf.c`,
+This ADR records the actual layout in `kernel/mm/vmm.c`, `kernel/proc/elf.c`,
 `kernel/proc/process.c`, and `include/kernel/shm.h`, then reserves a fixed
 interval for private anonymous mappings. It resolves the arena-bounds
 question left open by ADR-026/027. Stage 14I-A implements the internal
@@ -3715,7 +3717,7 @@ state.
 
 All kernel C compilation uses `-mno-mmx -mno-sse -mno-sse2 -msoft-float`.
 The only kernel code that deliberately executes SSE instructions is
-`kernel/arch/x86_64/fpu.c`, where the initial XMM state is cleared. Interrupt
+`kernel/arch/x86_64/cpu/fpu.c`, where the initial XMM state is cleared. Interrupt
 entry and return assembly does not save FPU state on every interrupt. It does
 not execute FPU instructions, and only the scheduler performs process
 FXSAVE/FXRSTOR. A nested kernel interrupt therefore cannot replace the
@@ -3757,7 +3759,7 @@ Validation record:
   PASS.
 - `make native-musl-alloc-qemu-test`: PASS.
 - Kernel disassembly found FPU/SIMD instructions only in the intentional
-  `kernel/arch/x86_64/fpu.c` initializer; other kernel C objects were built
+  `kernel/arch/x86_64/cpu/fpu.c` initializer; other kernel C objects were built
   with general-register-only, no-MMX/no-SSE, and soft-float flags.
 - `git diff --check` and `git diff --cached --check`: PASS. No changes were
   staged or committed.
@@ -4020,7 +4022,7 @@ exercises rejected/unhonored/Keep-IOMMU contract inputs.
 
 The broader `make phase12-test` and `make phase13b-test` aggregate did not
 complete: the host `acpi-test` target fails to link because modified
-`kernel/arch/x86_64/acpi.c` references `vmm_vmalloc_device_start`, which its
+`kernel/arch/x86_64/firmware/acpi.c` references `vmm_vmalloc_device_start`, which its
 current test link command does not provide. Independent process, VFS, signal,
 FPU, FS-base, private mapping/protection, shared-memory, and native musl
 regressions were run separately; this unrelated ACPI test-link issue was not
@@ -4233,7 +4235,7 @@ or an unbounded receive worker.
 
 ### Decision
 
-The protocol module lives in `kernel/net/netstack.c`. It consumes borrowed
+The protocol module lives in `kernel/net/core/netstack.c`. It consumes borrowed
 bytes from a CORE-owned packet for the duration of one call, returns a
 bounded event and optionally writes a response into caller-owned storage.
 It retains no packet references. The caller remains responsible for releasing

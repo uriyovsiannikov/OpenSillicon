@@ -9,7 +9,9 @@
 
 static bool init_attempted;
 static bool source_ready;
-static bool source_failed;
+static bool feature_supported;
+static enum kernel_random_source_status provider_status =
+	KERNEL_RANDOM_NOT_INITIALIZED;
 static bool request_active;
 
 #ifdef KERNEL_RANDOM_TEST
@@ -102,24 +104,26 @@ initialize_locked(void)
 {
 	uint64_t probe = 0;
 	if (init_attempted)
-		return source_ready && !source_failed;
+		return provider_status == KERNEL_RANDOM_AVAILABLE;
 	init_attempted = true;
 #ifdef KERNEL_RANDOM_TEST
 	if (!test_source_active && !rdrand_supported()) {
 #else
 	if (!rdrand_supported()) {
 #endif
-		source_failed = true;
+		provider_status = KERNEL_RANDOM_UNSUPPORTED;
 		return false;
 	}
+	feature_supported = true;
 	if (!source_word_bounded(&probe)) {
-		source_failed = true;
+		provider_status = KERNEL_RANDOM_TEMPORARILY_UNAVAILABLE;
 		zeroize(&probe, sizeof(probe));
 		return false;
 	}
 	/* RDRAND is itself the CPU's DRBG output; this probe is discarded. */
 	zeroize(&probe, sizeof(probe));
 	source_ready = true;
+	provider_status = KERNEL_RANDOM_AVAILABLE;
 	return true;
 }
 
@@ -133,12 +137,47 @@ kernel_random_init(void)
 }
 
 bool
+kernel_random_retry(void)
+{
+	uint64_t flags = random_guard_enter();
+	uint64_t probe = 0;
+	bool ready = false;
+	if (init_attempted && feature_supported &&
+	    provider_status == KERNEL_RANDOM_TEMPORARILY_UNAVAILABLE &&
+	    !request_active) {
+		request_active = true;
+		if (source_word_bounded(&probe)) {
+			source_ready = true;
+			provider_status = KERNEL_RANDOM_AVAILABLE;
+			ready = true;
+		} else {
+			source_ready = false;
+			provider_status = KERNEL_RANDOM_TEMPORARILY_UNAVAILABLE;
+		}
+		zeroize(&probe, sizeof(probe));
+		request_active = false;
+	}
+	random_guard_leave(flags);
+	return ready;
+}
+
+bool
 kernel_random_available(void)
 {
 	uint64_t flags = random_guard_enter();
-	bool ready = source_ready && !source_failed;
+	bool ready = source_ready &&
+	    provider_status == KERNEL_RANDOM_AVAILABLE;
 	random_guard_leave(flags);
 	return ready;
+}
+
+enum kernel_random_source_status
+kernel_random_status(void)
+{
+	uint64_t flags = random_guard_enter();
+	enum kernel_random_source_status status = provider_status;
+	random_guard_leave(flags);
+	return status;
 }
 
 bool
@@ -152,7 +191,8 @@ kernel_random_bytes(void *output, size_t length)
 	    length > KERNEL_RANDOM_MAX_REQUEST)
 		return false;
 	flags = random_guard_enter();
-	if (!source_ready || source_failed || request_active) {
+	if (!source_ready || provider_status != KERNEL_RANDOM_AVAILABLE ||
+	    request_active) {
 		random_guard_leave(flags);
 		return false;
 	}
@@ -163,8 +203,8 @@ kernel_random_bytes(void *output, size_t length)
 		if (amount > sizeof(word))
 			amount = sizeof(word);
 		if (!source_word_bounded(&word)) {
-			source_failed = true;
 			source_ready = false;
+			provider_status = KERNEL_RANDOM_TEMPORARILY_UNAVAILABLE;
 			success = false;
 			zeroize(&word, sizeof(word));
 			break;
@@ -210,7 +250,8 @@ kernel_random_test_reset(void)
 	uint64_t flags = random_guard_enter();
 	init_attempted = false;
 	source_ready = false;
-	source_failed = false;
+	feature_supported = false;
+	provider_status = KERNEL_RANDOM_NOT_INITIALIZED;
 	request_active = false;
 	test_source_active = false;
 	test_source = NULL;

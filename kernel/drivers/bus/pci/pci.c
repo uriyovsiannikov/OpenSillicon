@@ -30,6 +30,12 @@ inl(uint16_t port)
 	return value;
 }
 
+static inline void
+outw(uint16_t port, uint16_t value)
+{
+	__asm__ volatile ("outw %0, %1" : : "a" (value), "Nd" (port));
+}
+
 static bool
 config_valid(uint8_t device, uint8_t function, uint16_t offset,
 	unsigned int width)
@@ -161,10 +167,49 @@ pci_config_write(uint16_t segment, uint8_t bus, uint8_t device,
 	uint32_t dword;
 	uint32_t mask;
 
-	/* This write path is called only for AHCI controller setup. */
-	if (offset != 4 || width != 16 ||
+	bool command_write = offset == 4 && width == 16;
+	bool rng_bar_write = offset == 0x10 && width == 32 &&
+	    (value == UINT32_MAX || value == 0 ||
+	    ((value & 1U) != 0 && (value & ~0x3U) >= 0x1000U &&
+	    (value & ~0x3U) <= 0xffe0U));
+	uint32_t identity;
+
+	/* Device-specific BAR probing is kept narrow: only the transitional
+	 * VirtIO RNG BAR0 may be sized/written by its dedicated helper below.
+	 * Other writes remain limited to PCI command-register setup. */
+	if (rng_bar_write) {
+		if (!pci_config_read(segment, bus, device, function, 0, 32,
+		    &identity) || (identity & 0xffffU) != 0x1af4U ||
+		    (identity >> 16) != 0x1005U)
+			return false;
+	}
+	if ((!command_write && !rng_bar_write) ||
 	    !config_valid(device, function, offset, width))
 		return false;
+	if (width == 16) {
+		if (region != NULL && segment != 0) {
+			uint64_t address;
+			volatile uint16_t *register_pointer;
+
+			if (!map_ecam_bus(region, bus))
+				return false;
+			address = vmm_vmalloc_start() + ECAM_VIRTUAL_OFFSET +
+			    ((uint64_t)device << 15) +
+			    ((uint64_t)function << 12) + offset;
+			register_pointer = (volatile uint16_t *)(uintptr_t)address;
+			*register_pointer = (uint16_t)value;
+		} else {
+			if (segment != 0 || offset >= 256)
+				return false;
+			outl(PCI_CONFIG_ADDRESS,
+			    0x80000000U | ((uint32_t)bus << 16) |
+			    ((uint32_t)device << 11) |
+			    ((uint32_t)function << 8) | (offset & 0xfcU));
+			outw((uint16_t)(PCI_CONFIG_DATA + (offset & 2U)),
+			    (uint16_t)value);
+		}
+		return true;
+	}
 	if (region != NULL && segment != 0) {
 		uint64_t address;
 		volatile uint32_t *register_pointer;
@@ -194,6 +239,83 @@ pci_config_write(uint16_t segment, uint8_t bus, uint8_t device,
 		outl(PCI_CONFIG_DATA, dword);
 	}
 	return true;
+}
+
+bool
+pci_virtio_rng_legacy_io_assign(const struct pci_device_info *device,
+	uint16_t requested_base, uint32_t *assigned_bar)
+{
+	uint32_t command;
+	uint32_t bar;
+	uint32_t mask;
+	uint16_t quiet_command;
+	uint16_t restore_command;
+	uint32_t masked;
+	uint32_t aperture;
+	uint32_t base;
+	bool command_changed = false;
+	bool bar_probed = false;
+	bool success = false;
+
+	if (device == NULL || assigned_bar == NULL ||
+	    device->vendor_id != 0x1af4U || device->device_id != 0x1005U ||
+	    (device->header_type & 0x7fU) != 0 || requested_base < 0xc000U ||
+	    (requested_base & 0x1fU) != 0 || requested_base > 0xffe0U ||
+	    !pci_config_read(device->segment, device->bus, device->device,
+	    device->function, 4, 16, &command) ||
+	    !pci_config_read(device->segment, device->bus, device->device,
+	    device->function, 0x10, 32, &bar))
+		return false;
+	quiet_command = (uint16_t)(command & ~0x0007U);
+	if (!pci_config_write(device->segment, device->bus, device->device,
+	    device->function, 4, 16, quiet_command))
+		return false;
+	command_changed = true;
+	if (!pci_config_write(device->segment, device->bus, device->device,
+	    device->function, 0x10, 32, UINT32_MAX))
+		goto restore;
+	bar_probed = true;
+	if (!pci_config_read(device->segment, device->bus, device->device,
+	    device->function, 0x10, 32, &mask))
+		goto restore;
+	masked = mask & ~0x3U;
+	if ((mask & 1U) == 0 || masked == 0)
+		goto restore;
+	aperture = (~masked) + 1U;
+	if (aperture < 0x20U || aperture > 0x100U ||
+	    (aperture & (aperture - 1U)) != 0 ||
+	    (requested_base & (aperture - 1U)) != 0 ||
+	    requested_base > UINT16_MAX - aperture)
+		goto restore;
+	base = bar & ~0x3U;
+	if (base == 0)
+		base = requested_base;
+	else if ((bar & 1U) == 0 || (base & (aperture - 1U)) != 0 ||
+	    base > UINT16_MAX - aperture)
+		goto restore;
+	if (!pci_config_write(device->segment, device->bus, device->device,
+	    device->function, 0x10, 32, base | 1U))
+		goto restore;
+	if (!pci_config_read(device->segment, device->bus, device->device,
+	    device->function, 0x10, 32, &mask) || mask != (base | 1U))
+		goto restore;
+	success = true;
+restore:
+	if (bar_probed && !pci_config_write(device->segment, device->bus,
+	    device->device, device->function, 0x10, 32,
+	    success ? (base | 1U) : bar))
+		success = false;
+	if (command_changed) {
+		/* Firmware may have left bus mastering enabled. The OS claims this
+		 * device and keeps bus mastering off until its queue is ready. */
+		restore_command = (uint16_t)(command & ~0x0004U);
+		if (!pci_config_write(device->segment, device->bus, device->device,
+		    device->function, 4, 16, restore_command))
+			success = false;
+	}
+	if (success)
+		*assigned_bar = base | 1U;
+	return success;
 }
 
 bool
