@@ -21,7 +21,7 @@ KERNEL_LDFLAGS := -nostdlib -static -no-pie -z max-page-size=0x1000 \
 	-T kernel/arch/x86_64/boot/linker.ld
 KERNEL_ASFLAGS := -m64 -mno-red-zone
 USER_ASFLAGS := -m64 -ffreestanding -fno-pic -fno-pie -mno-red-zone
-USER_LDFLAGS := -nostdlib -static -no-pie -T user/linker.ld
+USER_LDFLAGS := -nostdlib -static -no-pie -T tests/user/linker.ld
 USER_C_LDFLAGS := -nostdlib -static -no-pie -T user/c_linker.ld
 USER_CFLAGS := -std=c11 -O2 -ffreestanding -fno-builtin -fno-stack-protector \
 	-fno-pic -fno-pie -m64 -mno-red-zone -mcmodel=small \
@@ -30,7 +30,7 @@ USER_CFLAGS := -std=c11 -O2 -ffreestanding -fno-builtin -fno-stack-protector \
 COREUTILS := ls cat echo pwd true false clear uname fetch head wc stat basename dirname kill sleep which ps netdiag ping
 COREUTILS_ELFS := $(addprefix $(BUILD_DIR)/coreutils/,$(addsuffix .elf,$(COREUTILS)))
 
-ACPICA_ROOT := third_party/acpica/source
+ACPICA_ROOT := kernel/arch/x86_64/firmware/acpica/source
 ACPICA_COMPONENTS := dispatcher events executer hardware namespace parser \
 	resources tables utilities
 ACPICA_DIRS := $(foreach component,$(ACPICA_COMPONENTS), \
@@ -62,7 +62,7 @@ endif
 	virtio-rng-cpu-qemu-test \
 	silliconfs-test silliconfs-image fault-test \
 	interrupt-test vmm-protection-test timer-test clean acpica-check acpi-test \
-	tpm2-acpi-test \
+	tpm2-acpi-test tpm2-crb-test acpi-mmio-range-test \
 	pci-test pci-resource-test dma-test pmm-contiguous-test network-foundation-test block-test phase10-test phase11-test terminal-test \
 	dma-ring-test e1000-profile-test e1000-ring-test e1000-init-qemu-test \
 	e1000-dma-qemu-test e1000-icmp-qemu-test e1000-udp-qemu-test \
@@ -177,13 +177,13 @@ $(BUILD_DIR)/keyboard.o: kernel/tty/keyboard.c \
 
 $(BUILD_DIR)/framebuffer.o: kernel/tty/framebuffer.c \
 		include/kernel/framebuffer.h include/kernel/terminal.h \
-		third_party/font8x16/font8x16_basic.h | $(BUILD_DIR)
-	$(CC) $(KERNEL_CFLAGS) -Iinclude -Ithird_party -c $< -o $@
+		kernel/tty/font.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/tty.o: kernel/tty/tty.c include/kernel/tty.h \
 		include/kernel/terminal.h include/kernel/framebuffer.h \
 		include/arch/x86_64/ps2_keyboard.h | $(BUILD_DIR)
-	$(CC) $(KERNEL_CFLAGS) -Iinclude -Ithird_party -c $< -o $@
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/ps2_keyboard.o: kernel/drivers/input/ps2_keyboard.c \
 		include/arch/x86_64/ps2_keyboard.h include/kernel/terminal.h | $(BUILD_DIR)
@@ -337,11 +337,11 @@ $(BUILD_DIR)/block_silliconfs.o: kernel/fs/block/block_silliconfs.c \
 $(BUILD_DIR)/acpi.o: kernel/arch/x86_64/firmware/acpi.c \
 		include/arch/x86_64/acpi.h include/kernel/heap.h \
 		include/kernel/log.h include/kernel/timer.h include/kernel/vmm.h \
-		third_party/acpica/source/include/acpi.h \
-		third_party/acpica/source/include/acpiosxf.h \
-		third_party/acpica/source/include/acpixf.h | $(BUILD_DIR)
+		kernel/arch/x86_64/firmware/acpica/source/include/acpi.h \
+		kernel/arch/x86_64/firmware/acpica/source/include/acpiosxf.h \
+		kernel/arch/x86_64/firmware/acpica/source/include/acpixf.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -DOPEN_SILLICON_KERNEL \
-		-isystem third_party/acpica/source/include -Iinclude -c $< -o $@
+		-isystem kernel/arch/x86_64/firmware/acpica/source/include -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/timer.o: kernel/arch/x86_64/timer/timer.c \
 		include/arch/x86_64/lapic.h include/arch/x86_64/interrupts.h \
@@ -374,12 +374,12 @@ $(BUILD_DIR)/user_start.o: user/start.S user/include/os.h | $(BUILD_DIR)
 $(BUILD_DIR)/user_os.o: user/os.c user/include/os.h | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
-UDP_SOCKET_TEST_SOURCE ?= user/udp_socket_test.c
+UDP_SOCKET_TEST_SOURCE ?= tests/user/udp_socket_test.c
 UDP_SOCKET_TEST_CFLAGS ?=
 $(BUILD_DIR)/udp_socket_test.o: $(UDP_SOCKET_TEST_SOURCE) user/include/os.h | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) $(UDP_SOCKET_TEST_CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/udp_socket_start.o: user/udp_socket_start.S | $(BUILD_DIR)
+$(BUILD_DIR)/udp_socket_start.o: tests/user/udp_socket_start.S | $(BUILD_DIR)
 	$(CC) $(USER_ASFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/udp_socket_test.elf: $(BUILD_DIR)/udp_socket_start.o \
@@ -400,10 +400,10 @@ $(BUILD_DIR)/udp_socket_test_blob.o: $(BUILD_DIR)/udp_socket_test.elf
 $(BUILD_DIR)/user_path.o: user/path.c user/include/os.h | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/user_init.o: user/init.c user/include/os.h | $(BUILD_DIR)
+$(BUILD_DIR)/user_init.o: user/init/init.c user/include/os.h | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/user_shell.o: user/shell.c user/include/os.h | $(BUILD_DIR)
+$(BUILD_DIR)/user_shell.o: user/shell/shell.c user/include/os.h | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/coreutils/%.o: user/coreutils/%.c user/include/os.h | $(BUILD_DIR)
@@ -459,10 +459,10 @@ $(BUILD_DIR)/netdiag_args_test: user/netdiag_args.c \
 netdiag-args-test: $(BUILD_DIR)/netdiag_args_test
 	$(BUILD_DIR)/netdiag_args_test
 
-$(BUILD_DIR)/user_probe.o: user/probe.c user/include/os.h | $(BUILD_DIR)
+$(BUILD_DIR)/user_probe.o: tests/user/probe.c user/include/os.h | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/user_argv_probe.o: user/argv_probe.c user/include/os.h | $(BUILD_DIR)
+$(BUILD_DIR)/user_argv_probe.o: tests/user/argv_probe.c user/include/os.h | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/argv_probe.elf: $(BUILD_DIR)/user_start.o $(BUILD_DIR)/user_os.o \
@@ -471,7 +471,7 @@ $(BUILD_DIR)/argv_probe.elf: $(BUILD_DIR)/user_start.o $(BUILD_DIR)/user_os.o \
 		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
 		$(BUILD_DIR)/user_argv_probe.o -o $@
 
-$(BUILD_DIR)/user_argv_limit_test.o: user/argv_limit_test.c user/include/os.h | $(BUILD_DIR)
+$(BUILD_DIR)/user_argv_limit_test.o: tests/user/argv_limit_test.c user/include/os.h | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/argv_limit_test.elf: $(BUILD_DIR)/user_start.o $(BUILD_DIR)/user_os.o \
@@ -480,21 +480,21 @@ $(BUILD_DIR)/argv_limit_test.elf: $(BUILD_DIR)/user_start.o $(BUILD_DIR)/user_os
 		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
 		$(BUILD_DIR)/user_argv_limit_test.o -o $@
 
-$(BUILD_DIR)/user_pipe_test.o: user/pipe_test.c user/include/os.h | $(BUILD_DIR)
+$(BUILD_DIR)/user_pipe_test.o: tests/user/pipe_test.c user/include/os.h | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) -Iuser -c $< -o $@
 
-$(BUILD_DIR)/user_pipe_exec_child.o: user/pipe_exec_child.c user/include/os.h | $(BUILD_DIR)
+$(BUILD_DIR)/user_pipe_exec_child.o: tests/user/pipe_exec_child.c user/include/os.h | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) -Iuser -c $< -o $@
 
-$(BUILD_DIR)/user_signal_test.o: user/signal_test.c user/include/os.h | $(BUILD_DIR)
+$(BUILD_DIR)/user_signal_test.o: tests/user/signal_test.c user/include/os.h | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) -mno-sse -mno-sse2 -msoft-float \
 		-Iuser -c $< -o $@
 
-$(BUILD_DIR)/user_fpu_context_test.o: user/fpu_context_test.c \
+$(BUILD_DIR)/user_fpu_context_test.o: tests/user/fpu_context_test.c \
 		user/include/os.h | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) -Iuser -c $< -o $@
 
-$(BUILD_DIR)/user_fpu_exec_child.o: user/fpu_exec_child.c \
+$(BUILD_DIR)/user_fpu_exec_child.o: tests/user/fpu_exec_child.c \
 		user/include/os.h | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) -Iuser -c $< -o $@
 
@@ -512,11 +512,11 @@ $(BUILD_DIR)/fpu_exec_child.elf: $(BUILD_DIR)/user_start.o \
 		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
 		$(BUILD_DIR)/user_fpu_exec_child.o -o $@
 
-$(BUILD_DIR)/user_shm_lifecycle_test.o: user/shm_lifecycle_test.c \
+$(BUILD_DIR)/user_shm_lifecycle_test.o: tests/user/shm_lifecycle_test.c \
 		user/include/os.h | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) -Iuser -c $< -o $@
 
-$(BUILD_DIR)/user_shm_fork_failure_test.o: user/shm_fork_failure_test.c \
+$(BUILD_DIR)/user_shm_fork_failure_test.o: tests/user/shm_fork_failure_test.c \
 		user/include/os.h | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) -Iuser -c $< -o $@
 
@@ -541,7 +541,7 @@ $(BUILD_DIR)/signal_test.elf: $(BUILD_DIR)/user_start.o \
 		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
 		$(BUILD_DIR)/user_signal_test.o -o $@
 
-$(BUILD_DIR)/user_signal_exec_child.o: user/signal_exec_child.c \
+$(BUILD_DIR)/user_signal_exec_child.o: tests/user/signal_exec_child.c \
 		user/include/os.h | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) -mno-sse -mno-sse2 -msoft-float \
 		-Iuser -c $< -o $@
@@ -566,7 +566,7 @@ $(BUILD_DIR)/pipe_exec_child.elf: $(BUILD_DIR)/user_start.o \
 		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
 		$(BUILD_DIR)/user_pipe_exec_child.o -o $@
 
-$(BUILD_DIR)/user_crash.o: user/crash.c user/include/os.h | $(BUILD_DIR)
+$(BUILD_DIR)/user_crash.o: tests/user/crash.c user/include/os.h | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/init.elf: $(BUILD_DIR)/user_start.o $(BUILD_DIR)/user_os.o \
@@ -604,14 +604,14 @@ $(BUILD_DIR)/populate_root: tools/populate_root.c kernel/fs/vfs/vfs.c \
 		kernel/proc/fd.c -o $@
 
 native-musl-verify:
-	python3 third_party/musl/scripts/verify.py --output build/musl-bootstrap
+	python3 user/musl/scripts/verify.py --output build/musl-bootstrap
 
-$(MUSL_BUILD_DIR)/.native-musl-ready: third_party/musl/scripts/build_native.py \
-		third_party/musl/scripts/common.py \
-		third_party/musl/manifest/source.json \
-		third_party/musl/manifest/patches.json \
-		$(wildcard third_party/musl/opensillicon/*)
-	python3 third_party/musl/scripts/build_native.py \
+$(MUSL_BUILD_DIR)/.native-musl-ready: user/musl/scripts/build_native.py \
+		user/musl/scripts/common.py \
+		user/musl/manifest/source.json \
+		user/musl/manifest/patches.json \
+		$(wildcard user/musl/opensillicon/*)
+	python3 user/musl/scripts/build_native.py \
 		--output $(MUSL_BUILD_DIR) --bootstrap build/musl-bootstrap --jobs 4
 	touch $@
 
@@ -772,9 +772,9 @@ $(BUILD_DIR)/acpica/%.o: $(ACPICA_ROOT)/%.c \
 acpica-check: $(ACPICA_OBJECTS)
 
 $(BUILD_DIR)/acpi_test: kernel/arch/x86_64/firmware/acpi.c tests/acpi_test.c \
-		include/arch/x86_64/acpi.h third_party/acpica/source/include/acpi.h
+		include/arch/x86_64/acpi.h kernel/arch/x86_64/firmware/acpica/source/include/acpi.h
 	$(CC) -std=c11 -Wall -Wextra -Werror \
-		-DOPEN_SILLICON_KERNEL -isystem third_party/acpica/source/include \
+		-DOPEN_SILLICON_KERNEL -isystem kernel/arch/x86_64/firmware/acpica/source/include \
 		-Iinclude -Ilimine kernel/arch/x86_64/firmware/acpi.c tests/acpi_test.c \
 		-o $@
 
@@ -788,6 +788,26 @@ $(BUILD_DIR)/tpm2_acpi_test: kernel/drivers/tpm/tpm2_acpi.c tests/tpm2_acpi_test
 
 tpm2-acpi-test: $(BUILD_DIR)/tpm2_acpi_test
 	$(BUILD_DIR)/tpm2_acpi_test
+
+$(BUILD_DIR)/tpm2_crb_test: kernel/drivers/tpm/tpm2_crb.c \
+		tests/tpm2_crb_fake.c tests/tpm2_crb_test.c \
+		include/kernel/tpm2_crb.h tests/tpm2_crb_fake.h | $(BUILD_DIR)
+	$(CC) -std=c11 -O1 -g -Wall -Wextra -Werror -Iinclude -Itests \
+		kernel/drivers/tpm/tpm2_crb.c tests/tpm2_crb_fake.c \
+		tests/tpm2_crb_test.c -o $@
+
+tpm2-crb-test: $(BUILD_DIR)/tpm2_crb_test
+	$(BUILD_DIR)/tpm2_crb_test
+
+$(BUILD_DIR)/acpi_mmio_range_test: \
+		kernel/arch/x86_64/firmware/acpi_mmio_range.c \
+		tests/acpi_mmio_range_test.c include/kernel/acpi_mmio_range.h | $(BUILD_DIR)
+	$(CC) -std=c11 -O1 -g -Wall -Wextra -Werror -Iinclude \
+		kernel/arch/x86_64/firmware/acpi_mmio_range.c \
+		tests/acpi_mmio_range_test.c -o $@
+
+acpi-mmio-range-test: $(BUILD_DIR)/acpi_mmio_range_test
+	$(BUILD_DIR)/acpi_mmio_range_test
 
 $(BUILD_DIR)/pci_test: kernel/drivers/bus/pci/pci.c tests/pci_test.c \
 		include/arch/x86_64/pci.h include/arch/x86_64/acpi.h
@@ -1135,10 +1155,10 @@ $(BUILD_DIR)/network_foundation_test: kernel/net/core/netbuf.c \
 network-foundation-test: $(BUILD_DIR)/network_foundation_test pci-test
 	$(BUILD_DIR)/network_foundation_test
 
-$(BUILD_DIR)/user_test.o: user/test.S | $(BUILD_DIR)
+$(BUILD_DIR)/user_test.o: tests/user/test.S | $(BUILD_DIR)
 	$(CC) $(USER_ASFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/user_test.elf: $(BUILD_DIR)/user_test.o user/linker.ld
+$(BUILD_DIR)/user_test.elf: $(BUILD_DIR)/user_test.o tests/user/linker.ld
 	$(LD) $(USER_LDFLAGS) $< -o $@
 
 $(BUILD_DIR)/user_test.bin: $(BUILD_DIR)/user_test.elf
@@ -1149,17 +1169,17 @@ $(BUILD_DIR)/user_test_blob.o: $(BUILD_DIR)/user_test.bin
 		--rename-section .data=.rodata,alloc,load,readonly,data,contents \
 		user_test.bin user_test_blob.o
 
-$(BUILD_DIR)/exec_child.o: user/exec_child.S | $(BUILD_DIR)
+$(BUILD_DIR)/exec_child.o: tests/user/exec_child.S | $(BUILD_DIR)
 	$(CC) $(USER_ASFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/exec_child.elf: $(BUILD_DIR)/exec_child.o user/exec_child.ld
-	$(LD) -nostdlib -static -no-pie -T user/exec_child.ld $< -o $@
+$(BUILD_DIR)/exec_child.elf: $(BUILD_DIR)/exec_child.o tests/user/exec_child.ld
+	$(LD) -nostdlib -static -no-pie -T tests/user/exec_child.ld $< -o $@
 
-$(BUILD_DIR)/elf_test_user.o: user/elf_test.S $(BUILD_DIR)/exec_child.elf | $(BUILD_DIR)
+$(BUILD_DIR)/elf_test_user.o: tests/user/elf_test.S $(BUILD_DIR)/exec_child.elf | $(BUILD_DIR)
 	$(CC) $(USER_ASFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/elf_test_user.elf: $(BUILD_DIR)/elf_test_user.o user/elf_test.ld
-	$(LD) -nostdlib -static -no-pie -T user/elf_test.ld $< -o $@
+$(BUILD_DIR)/elf_test_user.elf: $(BUILD_DIR)/elf_test_user.o tests/user/elf_test.ld
+	$(LD) -nostdlib -static -no-pie -T tests/user/elf_test.ld $< -o $@
 
 $(BUILD_DIR)/elf_test_user.bin: $(BUILD_DIR)/elf_test_user.elf
 	objcopy -O binary $< $@
@@ -1172,12 +1192,12 @@ $(BUILD_DIR)/elf_test_blob.o: $(BUILD_DIR)/elf_test_user.elf
 		elf_test_user.elf elf_test_blob.o
 
 $(BUILD_DIR)/private_mapping_lifecycle_test.o: \
-		user/private_mapping_lifecycle_test.S | $(BUILD_DIR)
+		tests/user/private_mapping_lifecycle_test.S | $(BUILD_DIR)
 	$(CC) $(USER_ASFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/private_mapping_lifecycle_test.elf: \
-		$(BUILD_DIR)/private_mapping_lifecycle_test.o user/elf_test.ld
-	$(LD) -nostdlib -static -no-pie -T user/elf_test.ld $< -o $@
+		$(BUILD_DIR)/private_mapping_lifecycle_test.o tests/user/elf_test.ld
+	$(LD) -nostdlib -static -no-pie -T tests/user/elf_test.ld $< -o $@
 
 $(BUILD_DIR)/private_mapping_lifecycle_blob.o: \
 		$(BUILD_DIR)/private_mapping_lifecycle_test.elf
@@ -1185,11 +1205,11 @@ $(BUILD_DIR)/private_mapping_lifecycle_blob.o: \
 		--rename-section .data=.rodata,alloc,load,readonly,data,contents \
 		private_mapping_lifecycle_test.elf private_mapping_lifecycle_blob.o
 
-$(BUILD_DIR)/vfs_test_user.o: user/vfs_test.S | $(BUILD_DIR)
+$(BUILD_DIR)/vfs_test_user.o: tests/user/vfs_test.S | $(BUILD_DIR)
 	$(CC) $(USER_ASFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/vfs_test_user.elf: $(BUILD_DIR)/vfs_test_user.o user/vfs_test.ld
-	$(LD) -nostdlib -static -no-pie -T user/vfs_test.ld $< -o $@
+$(BUILD_DIR)/vfs_test_user.elf: $(BUILD_DIR)/vfs_test_user.o tests/user/vfs_test.ld
+	$(LD) -nostdlib -static -no-pie -T tests/user/vfs_test.ld $< -o $@
 
 $(BUILD_DIR)/vfs_test_blob.o: $(BUILD_DIR)/vfs_test_user.elf
 	cd $(BUILD_DIR) && objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
@@ -1198,11 +1218,11 @@ $(BUILD_DIR)/vfs_test_blob.o: $(BUILD_DIR)/vfs_test_user.elf
 		--redefine-sym _binary_vfs_test_user_elf_end=_binary_vfs_test_bin_end \
 		vfs_test_user.elf vfs_test_blob.o
 
-$(BUILD_DIR)/exec_path_child.o: user/exec_path_child.S | $(BUILD_DIR)
+$(BUILD_DIR)/exec_path_child.o: tests/user/exec_path_child.S | $(BUILD_DIR)
 	$(CC) $(USER_ASFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/exec_path_child.elf: $(BUILD_DIR)/exec_path_child.o user/exec_child.ld
-	$(LD) -nostdlib -static -no-pie -T user/exec_child.ld $< -o $@
+$(BUILD_DIR)/exec_path_child.elf: $(BUILD_DIR)/exec_path_child.o tests/user/exec_child.ld
+	$(LD) -nostdlib -static -no-pie -T tests/user/exec_child.ld $< -o $@
 
 $(BUILD_DIR)/initramfs.cpio: $(shell find initramfs -type f -o -type d) \
 		$(BUILD_DIR)/exec_path_child.elf $(BUILD_DIR)/pipe_test.elf \
@@ -1429,8 +1449,8 @@ $(BUILD_DIR)/terminal_test: kernel/tty/terminal.c kernel/tty/tty.c \
 		kernel/tty/keyboard.c kernel/tty/framebuffer.c \
 		kernel/drivers/input/ps2_keyboard.c tests/timer_stub.c \
 		tests/terminal_test.c include/kernel/terminal.h \
-		third_party/font8x16/font8x16_basic.h
-	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Ilimine -Ithird_party \
+		kernel/tty/font.h
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Ilimine \
 		kernel/tty/terminal.c kernel/tty/tty.c kernel/tty/keyboard.c \
 		kernel/tty/framebuffer.c kernel/drivers/input/ps2_keyboard.c \
 		tests/timer_stub.c tests/terminal_test.c -o $@

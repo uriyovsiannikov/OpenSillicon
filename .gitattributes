@@ -1,1 +1,1 @@
-third_party/acpica/source/** whitespace=-blank-at-eol,cr-at-eol
+kernel/arch/x86_64/firmware/acpica/source/** whitespace=-blank-at-eol,cr-at-eol

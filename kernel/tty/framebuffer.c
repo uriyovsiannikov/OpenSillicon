@@ -4,7 +4,7 @@
 #include "kernel/framebuffer.h"
 #include "kernel/terminal.h"
 
-#include "font8x16/font8x16_basic.h"
+#include "font.h"
 
 #define FONT_WIDTH 8U
 #define FONT_HEIGHT 16U

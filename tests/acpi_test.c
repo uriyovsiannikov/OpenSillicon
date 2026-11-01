@@ -186,6 +186,8 @@ uint64_t timer_ticks(void) { return 0; }
 uint64_t vmm_hhdm_offset(void) { return 0; }
 uint64_t vmm_vmalloc_start(void) { return 0; }
 uint64_t vmm_vmalloc_end(void) { return UINT64_MAX; }
+/* Parser-only tests never map devices; fail closed if that path is reached. */
+uint64_t vmm_vmalloc_device_start(void) { return 0; }
 struct address_space *vmm_kernel_address_space(void) { return NULL; }
 bool vmm_map_page(struct address_space *space, uint64_t va, uint64_t pa,
 	unsigned int flags) { (void)space; (void)va; (void)pa; (void)flags; return false; }

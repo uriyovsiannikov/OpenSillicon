@@ -5,7 +5,7 @@
 #include "kernel/tty.h"
 
 #define COM1 0x3f8
-#define BOOT_STATUS_BUFFER_SIZE 1024U
+#define BOOT_STATUS_BUFFER_SIZE 4096U
 
 static char pending_boot_status[BOOT_STATUS_BUFFER_SIZE];
 static size_t pending_boot_status_length;
@@ -123,10 +123,15 @@ klog_status(const char *component, bool success, const char *detail)
 		}
 		(void)tty_write(line, length);
 	} else {
-		size_t i;
-		for (i = 0; i < length && pending_boot_status_length <
-		    sizeof(pending_boot_status); i++)
-			pending_boot_status[pending_boot_status_length++] = line[i];
+		/* Keep complete status lines only. In particular, never truncate an
+		 * ANSI escape sequence and leave the terminal parser in CSI state. */
+		if (length <= sizeof(pending_boot_status) -
+		    pending_boot_status_length) {
+			size_t i;
+			for (i = 0; i < length; i++)
+				pending_boot_status[pending_boot_status_length++] =
+				    line[i];
+		}
 	}
 }
 

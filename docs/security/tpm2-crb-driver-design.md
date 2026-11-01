@@ -370,6 +370,72 @@ Phase 15.6I implementation results. CRB transport remains blocked on a
 validated ACPI-owned mapping/lifetime abstraction and separate transport
 state-machine tests.
 
+## Phase 15.6J — register abstraction and host fake
+
+`include/kernel/tpm2_crb.h` and `kernel/drivers/tpm/tpm2_crb.c` define a
+hardware-independent CRB register/buffer boundary and bounded software state
+machine. The source is compiled only by `make tpm2-crb-test`; it is not in the
+production kernel object list. `tests/tpm2_crb_fake.c` models register
+acknowledgments deterministically and is likewise host-test-only. No ACPI
+discovery, MMIO, TPM command protocol, cancellation, or entropy-manager
+integration is provided.
+
+The modeled locality-0 offsets and fields follow the PTP 1.07 PC Client CRB
+layout: `LOC_STATE` 0x00 (assigned bit 1, register-valid bit 7), `LOC_CTRL`
+0x08 (request bit 0, relinquish bit 1), `LOC_STS` 0x0c (granted bit 0),
+`CTRL_REQ` 0x40 (`cmdReady` bit 0, `goIdle` bit 1), `CTRL_STS` 0x44 (error
+bit 0, idle bit 1), and `START` 0x4c (invoke bit 0). The abstraction allows
+reads only of those modeled registers and writes only to the three request
+registers using defined bits. Polling is capped at 32 reads per transition;
+this is a host-model work limit, not a CRB time guarantee. Command and response
+capacities are supplied at initialization and capped at 4096 bytes in this
+test abstraction; that is a project test bound, not a TPM/CRB maximum.
+
+Software states are `UNINITIALIZED`, `IDLE`, `LOCALITY`, `READY`, `RUNNING`,
+`COMPLETE`, and `FAULT`. A timeout or backend/device error after a request
+transition faults the object. No reset/recovery operation is modeled, so a
+faulted object cannot continue. Response lengths are checked against caller
+capacity; an over-reported length clears the supplied response buffer and
+fails. Backend response callbacks must leave the destination unchanged on
+error. Fake acknowledgments describe only the test contract and are not
+evidence of physical device behavior or timing.
+
+`make tpm2-crb-test` covers register access, bounds, locality/ready/start/idle
+transitions, backend failures, bounded timeouts, device error status, response
+length rejection, and repeated successful cycles. This validates the software
+abstraction against its fake contract only. A hardware-facing implementation
+still requires ACPI-owned mapping validation, MMIO accessors and ordering, and
+device quiescence/lifetime rules before any real backend can be considered.
+
+## Phase 15.6K.1 — ACPI resource discovery status
+
+ACPICA headers and the selected `components/resources/rsxface.c` source provide
+`AcpiGetCurrentResources()`, whose implementation evaluates a device's `_CRS`.
+However, the kernel's current `acpi_init()` only initializes ACPICA, loads
+tables, and retrieves APIC/MCFG tables. It does not enable/initialize ACPI
+objects, locate a TPM namespace device, evaluate `_CRS`, or return its memory
+resources. Thus an ACPICA API exists in the vendored library, but there is no
+current kernel resource-discovery path suitable for establishing TPM resource
+ownership. The TPM2 table address alone is not used as an ownership proof.
+
+`include/kernel/acpi_mmio_range.h` and
+`kernel/arch/x86_64/firmware/acpi_mmio_range.c` provide pure geometry
+validation only. The helper accepts a canonicalized descriptor marked as
+memory with the single supported `MMIO_UNCACHED_NONPREFETCHABLE` attribute,
+requires the requested range to be contained, and requires the page-rounded
+extent to remain inside that descriptor. It rejects zero/overflowing ranges,
+unsupported type/attributes, invalid alignment, and unmapppable extents while
+leaving output unchanged on failure. The `make acpi-mmio-range-test` fixtures
+exercise arithmetic only; no ACPICA `_CRS`, hardware, or MMIO is involved.
+
+This descriptor is caller-provided canonical data, not an evaluated ACPI
+resource, and the helper does not prove provenance, device ownership, physical
+memory safety, cache policy implementation, or mapping lifetime. It is not an
+MMIO lease and does not authorize calling `vmm_map_page()`. No production
+object list, VMM interface, or ACPI initialization behavior changed. A future
+real lease still depends on an explicit `_CRS` evaluation path, resource
+attribute conversion, VMM-owned lease tracking, and safe unmapping.
+
 ## References
 
 - [TCG PTP v1.07 published (2026-03-23)](https://trustedcomputinggroup.org/wp-content/uploads/PC-Client-Specific-Platform-TPM-Profile-for-TPM-2p0-v1p07_Pub.pdf), §§6.5.1.3–5, 6.5.3.1–10; Tables 26, 27, 36, 41–44. See current [PTP errata index](https://www.trustedcomputinggroup.org/resources/documents/pc-client-platform-tpm-profile-ptp-specification).
@@ -377,3 +443,77 @@ state-machine tests.
 - [TCG TPM Library publication/errata index](https://www.trustedcomputinggroup.org/resources/documents/tpm-library-specification). Accessible RC-labelled PDFs are not final specifications.
 - Linux [`tpm_crb.c`](https://github.com/torvalds/linux/blob/master/drivers/char/tpm/tpm_crb.c), [`tpm2-cmd.c`](https://github.com/torvalds/linux/blob/master/drivers/char/tpm/tpm2-cmd.c), [`tpm-chip.c`](https://github.com/torvalds/linux/blob/master/drivers/char/tpm/tpm-chip.c). Linux `master` is mutable implementation evidence; pin a commit for implementation review.
 - [Linux TPM security documentation](https://kernel.org/doc/html/latest/security/tpm/tpm-security.html), [Linux CRB/FF-A documentation](https://www.kernel.org/doc/html/latest/security/tpm/tpm_ffa_crb.html), and [QEMU TPM device documentation](https://www.qemu.org/docs/master/specs/tpm).
+
+## Phase 15.6M — ACPICA initialization lifecycle and AML readiness
+
+**Audit result:** namespace control-method evaluation is not enabled by the
+kernel. Vendored ACPICA identifies itself through
+`ACPI_CA_VERSION 0x20260930` in `kernel/arch/x86_64/firmware/acpica/source/include/acpixf.h`.
+
+`kernel/arch/x86_64/firmware/acpi.c::acpi_init()` calls
+`AcpiInitializeSubsystem()`, `AcpiInitializeTables()`, and `AcpiLoadTables()`;
+it then reads MADT and MCFG. It does not call `AcpiEnableSubsystem()` or
+`AcpiInitializeObjects()`, and it publishes no AML readiness state.
+`AcpiLoadTables()` creates the namespace and the vendored implementation also
+calls `AcpiNsInitializeObjects()` for deferred namespace data objects. This
+does not complete ACPI hardware/event initialization or establish that
+control methods may safely execute.
+
+The method evaluation paths are explicit in ACPICA source:
+
+- `AcpiGetDevices()` in `components/namespace/nsxfeval.c` evaluates `_HID`,
+  `_CID`, and `_STA` during candidate enumeration.
+- `AcpiGetCurrentResources()` in `components/resources/rsxface.c` dispatches
+  to `_CRS` evaluation.
+- `AcpiInitializeObjects()` with normal flags walks the namespace and runs
+  device `_STA`/`_INI` and region `_REG` initialization; this is system-wide
+  AML execution, not a TPM-only operation.
+
+`components/utilities/utxfinit.c` describes `AcpiEnableSubsystem()` as
+completing hardware initialization. With default flags it initializes FACS,
+transitions to ACPI mode when needed, initializes fixed/GPE events, and
+installs SCI and Global Lock handlers. ACPICA states there that hardware and
+events must be initialized before executing methods because any method may
+require ACPI hardware support. `ACPI_NO_*` flags can skip portions, but do not
+prove those services are unnecessary for arbitrary firmware AML.
+
+The current OSL is not ready for the normal full path:
+
+- `AcpiOsInstallInterruptHandler()` and its removal counterpart return
+  `AE_SUPPORT`.
+- `AcpiOsExecute()` returns `AE_SUPPORT`; there is no ACPICA work-queue
+  integration.
+- `AcpiOsWaitSemaphore()` polls the kernel timer and permits
+  `ACPI_WAIT_FOREVER`; it is not scheduler-backed blocking.
+- AML operation-region memory access uses the current generic ACPI mapping
+  path, for which this project has not established a general resource
+  ownership/cache/lifetime contract.
+
+Calling the full lifecycle now could fail on unsupported OSL methods or
+activate ACPI mode, event registers and platform-wide AML without the needed
+interrupt/work execution integration. Using partial flags to avoid those
+effects would not satisfy ACPICA's general method-safety requirement. No
+safe minimal lifecycle has therefore been established, and this phase does
+not change initialization or add a readiness API.
+
+A future lifecycle should expose explicit states only after matching
+successful ACPICA calls, conceptually:
+
+```text
+UNINITIALIZED -> TABLES_LOADED -> SUBSYSTEM_ENABLED
+              -> OBJECTS_INITIALIZED -> NAMESPACE_EVALUATION_READY
+Any failed initialization stage -> FAILED
+```
+
+Readiness must represent the exact supported ACPICA/OSL configuration, not
+promise that arbitrary AML is harmless. Before implementation, the OS must
+complete and validate SCI handler registration/removal, work execution,
+timer/semaphore behavior, operation-region access and cleanup; select boot
+ordering for system-wide `_STA`/`_INI`/`_REG`; and test initialization failure
+on emulator and supported hardware. `AcpiGetDevices()` and `_CRS` evaluation
+remain unavailable until those prerequisites are met.
+
+This phase made no TPM discovery or `_CRS` call, MMIO access, TPM command,
+entropy credit, CSPRNG change, or TCP ISN readiness change. References for this
+audit are the vendored ACPICA files above and the
+[Intel ACPICA Programmer Reference and documentation](https://www.intel.com/content/www/us/en/developer/topic-technology/open/acpica/documentation.html).

@@ -633,7 +633,7 @@ avoids importing GPL-only source. Pinning the release and archive hash makes
 the vendor input reproducible.
 
 The choices above resolve the Phase 10 integration profile. The selected
-source and adaptation details are recorded in `third_party/acpica/PROVENANCE.md`;
+source and adaptation details are recorded in `kernel/arch/x86_64/firmware/acpica/PROVENANCE.md`;
 no Unix runtime or host library is linked into the freestanding kernel.
 
 ---
@@ -2053,7 +2053,7 @@ Source provenance and Stage 14F bootstrap
 
 Track port metadata, not an unreviewed source snapshot:
 
-    third_party/musl/
+    user/musl/
       README.md
       manifest/source.json
       manifest/patches.json
@@ -2066,7 +2066,7 @@ Track port metadata, not an unreviewed source snapshot:
       scripts/bootstrap.py
       scripts/verify.py
 
-Stage 14F implements the provenance layout under `third_party/musl/`: JSON
+Stage 14F implements the provenance layout under `user/musl/`: JSON
 source and patch manifests, exact reviewed patch artifacts, scripts, and a
 README. Generated archive and source trees remain under
 `build/musl-bootstrap/` by default. The bootstrap verifies the archive and
@@ -2076,7 +2076,7 @@ keeps the local `regexec` candidate separate unless explicitly requested for
 an experimental tree. The candidate is never applied to the default patched
 tree. The verification script replays the confirmed series against a clean
 extraction without configuring or compiling musl. The bootstrap does not
-install musl or modify system state. `third_party/musl/README.md` documents
+install musl or modify system state. `user/musl/README.md` documents
 the commands and notice-preservation rules. No upstream source archive or
 extracted source is tracked.
 
@@ -3439,7 +3439,7 @@ distribution.
 The pristine extraction remains under `build/musl-bootstrap/source/upstream`;
 the three-confirmed-patch tree remains under `source/patched`. The build
 script copies that tree to `build/musl-port/source/musl-1.2.6` and overlays
-only the files in `third_party/musl/opensillicon/`. It never edits the pinned
+only the files in `user/musl/opensillicon/`. It never edits the pinned
 trees. Generated source, configuration, logs, libraries, and sysroot remain
 under ignored `build/musl-port/`. The output script replaces only that
 dedicated directory when its ownership marker matches; it refuses an

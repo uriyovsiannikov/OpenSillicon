@@ -57,7 +57,7 @@ unrelated output.
 Verify an existing archive and all patch artifacts without compiling musl:
 
 ```sh
-python3 third_party/musl/scripts/verify.py \
+python3 user/musl/scripts/verify.py \
   --archive /path/to/musl-1.2.6.tar.gz
 ```
 
@@ -65,7 +65,7 @@ Optionally verify a detached signature against an explicitly supplied public
 key (the fingerprint is pinned and checked; GPG trust is not inferred):
 
 ```sh
-python3 third_party/musl/scripts/verify.py \
+python3 user/musl/scripts/verify.py \
   --archive /path/to/musl-1.2.6.tar.gz \
   --signature /path/to/musl-1.2.6.tar.gz.asc \
   --key /path/to/musl-release-key.asc
@@ -76,7 +76,7 @@ official archive when it is not cached:
 
 ```sh
 OPENSILLICON_MUSL_OUT="$PWD/build/musl-bootstrap" \
-  python3 third_party/musl/scripts/bootstrap.py \
+  python3 user/musl/scripts/bootstrap.py \
   --archive /path/to/musl-1.2.6.tar.gz
 ```
 
@@ -84,7 +84,7 @@ Re-run verification against the bootstrap cache and inspect the separate
 pristine and patched trees:
 
 ```sh
-python3 third_party/musl/scripts/verify.py \
+python3 user/musl/scripts/verify.py \
   --output "$PWD/build/musl-bootstrap"
 diff -ru build/musl-bootstrap/source/upstream/musl-1.2.6 \
   build/musl-bootstrap/source/patched/musl-1.2.6
@@ -102,7 +102,7 @@ test ! -e "$candidate_tree" || { echo "candidate tree already exists" >&2; exit 
 mkdir -p "$(dirname "$candidate_tree")"
 cp -a "$out_root/source/patched/musl-1.2.6" "$candidate_tree"
 (cd "$candidate_tree" && patch --batch --forward --fuzz=0 -p1 \
-  -i "$repo_root/third_party/musl/patches/candidates/regexec-backref-candidate.patch")
+  -i "$repo_root/user/musl/patches/candidates/regexec-backref-candidate.patch")
 ```
 
 This opt-in procedure does not change the default bootstrap or promote the
@@ -111,7 +111,7 @@ the candidate's explicit status.
 
 ## Native OpenSillicon build (Stage 14J)
 
-`third_party/musl/opensillicon/` contains the target-specific syscall and
+`user/musl/opensillicon/` contains the target-specific syscall and
 x86_64 thread-area adapter overlays. They are applied only to a generated
 copy of the confirmed-patched tree. The pristine extraction and confirmed
 patch output under `build/musl-bootstrap/` are not edited.

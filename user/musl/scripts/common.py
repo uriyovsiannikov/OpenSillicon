@@ -14,7 +14,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-MUSL_ROOT = REPO_ROOT / "third_party" / "musl"
+MUSL_ROOT = REPO_ROOT / "user" / "musl"
 
 
 def load_manifests() -> tuple[dict, dict]:

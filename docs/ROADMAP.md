@@ -633,7 +633,7 @@ Tasks
   and first integration milestone in ADR-026. This design assigns no syscall
   numbers and does not establish that the target toolchain already works.
 - Stage 14F: pin the musl 1.2.6 archive and reviewed patch bytes in
-  `third_party/musl`; verify provenance and reproduce a pristine extraction
+  `user/musl`; verify provenance and reproduce a pristine extraction
   plus the confirmed upstream patch series without building musl. Keep the
   unaccepted `regexec` candidate separate from the default patched tree.
 - Stage 14J: build the pinned confirmed-patch source with Clang/LLD for
