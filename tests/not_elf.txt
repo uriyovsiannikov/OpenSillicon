@@ -1,1 +1,0 @@
-This file is executable in the malformed-init test image but is not ELF.
