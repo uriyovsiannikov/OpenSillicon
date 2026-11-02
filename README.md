@@ -13,9 +13,9 @@ monolithic kernel and a native userspace. It boots through Limine on UEFI.
 - Ring 3 processes, ELF loading, `fork`/`exec`/`wait`, preemptive scheduling,
   virtual memory, shared memory, signals, pipes, and file descriptors.
 - VFS with RAMFS, initramfs, devfs, procfs, and the native SilliconFS.
-- Framebuffer terminal, PS/2 keyboard, interactive shell, and core utilities.
-- Native `libos` runtime and a growing port of musl.
-- TinyX graphical session with `twm`, `xterm`, and `xeyes`.
+- Framebuffer terminal, PS/2 keyboard, shell, and core utilities.
+- Native `libos` runtime.
+- TinyX session with `twm`, `xterm`, and `xeyes`.
 - Network stack components for Ethernet, ARP, IPv4, ICMP, UDP, and TCP.
 
 ## Build and run
