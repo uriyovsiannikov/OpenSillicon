@@ -348,8 +348,6 @@ redraw_line(const char *line, size_t length, size_t cursor)
 		u_puts("\033[");
 		u_put_u64(length - cursor);
 		u_puts("D");
-	} else {
-		u_puts("\033[1D");
 	}
 }
 
@@ -394,6 +392,10 @@ read_command_line(char *line)
 		cursor_visible = 1;
 		if (character == '\n') {
 			line[length] = '\0';
+			/* A blinking cursor is drawn as a literal underscore. Remove it
+			 * from the screen before leaving the editor for command output. */
+			cursor_visible = 0;
+			redraw_line(line, length, cursor);
 			u_puts("\n");
 			remember_command(line);
 			return 1;
