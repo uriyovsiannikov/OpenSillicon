@@ -35,15 +35,6 @@ SilliconFS as its root filesystem. The QEMU network profile uses the Intel
 does not imply compatibility with a particular PC. Back up disks before
 experimenting with storage drivers.
 
-Useful checks:
-
-```sh
-make devfs-procfs-test
-make pty-test
-make libos-qemu-test
-make tinyx-qemu-test
-```
-
 ## Source map
 
 - `kernel/` — kernel, architecture code, drivers, filesystems, and networking.
