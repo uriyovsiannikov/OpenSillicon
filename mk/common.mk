@@ -13,7 +13,7 @@ LIBOS_TEST := $(LIBOS_BUILD_DIR)/libos-test.elf
 LIBOS_ARCHIVE := $(LIBOS_BUILD_DIR)/liblibos.a
 LIBOS_CFLAGS := -std=c11 -O2 -ffreestanding -fno-builtin -fno-stack-protector \
 	-fno-pic -fno-pie -m64 -mno-red-zone -mno-mmx -mno-sse -mno-sse2 -msoft-float \
-	-Wall -Wextra -Werror -nostdinc -Iuser/libos/include -Iuser/libos/src \
+	-Wall -Wextra -Werror -nostdinc -Iinclude -Iuser/libos/include -Iuser/libos/src \
 	-isystem $(shell $(CC) -print-file-name=include)
 
 KERNEL_CFLAGS := -std=c11 -O2 -g -ffreestanding -fno-stack-protector \
@@ -27,7 +27,7 @@ USER_ASFLAGS := -m64 -ffreestanding -fno-pic -fno-pie -mno-red-zone
 USER_C_LDFLAGS := -nostdlib -static -no-pie -T user/c_linker.ld
 USER_CFLAGS := -std=c11 -O2 -ffreestanding -fno-builtin -fno-stack-protector \
 	-fno-pic -fno-pie -m64 -mno-red-zone -mcmodel=small \
-	-Wall -Wextra -Werror -Iuser
+	-Wall -Wextra -Werror -Iinclude -Iuser
 
 COREUTILS := ls cat echo pwd true false clear uname fetch head wc stat basename dirname kill sleep which ps netdiag ping
 COREUTILS_ELFS := $(addprefix $(BUILD_DIR)/coreutils/,$(addsuffix .elf,$(COREUTILS)))

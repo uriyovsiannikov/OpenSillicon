@@ -113,6 +113,7 @@ struct syscall_winsize {
 };
 
 static struct fd_table *descriptor_table;
+static bool syscall_handler_registered;
 
 static struct fd_table *
 current_fd_table(void)
@@ -1352,10 +1353,11 @@ syscall_interrupt(struct interrupt_frame *frame)
 void
 syscall_init(struct fd_table *table)
 {
-	if (table == NULL || !interrupt_register_handler(SYSCALL_VECTOR,
-	    syscall_interrupt)) {
+	if (table == NULL || (!syscall_handler_registered &&
+	    !interrupt_register_handler(SYSCALL_VECTOR, syscall_interrupt))) {
 		klog("OpenSillicon: syscall initialization failed\n");
 		kernel_halt();
 	}
+	syscall_handler_registered = true;
 	descriptor_table = table;
 }

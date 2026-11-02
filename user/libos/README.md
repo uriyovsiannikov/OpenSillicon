@@ -8,8 +8,9 @@ are out of scope. `errno` is a single process-global integer (the current
 single-threaded profile does not require TLS).
 
 The CRT consumes the initial `argc`, `argv`, and `envp` words, calls `main`, and
-exits through syscall 1. The kernel currently supplies argc 0 and null argv and
-envp entries. Static ELF links use `user/c_linker.ld`; no interpreter or dynamic
+exits through syscall 1 in ABI version 2. The kernel currently supplies argc 0
+and null argv and envp entries. Static ELF links use `user/c_linker.ld`; no
+interpreter or dynamic
 segment is emitted. The library does not invent auxiliary-vector values.
 
 Supported public functions are the declarations in `include/`: `exit`, `_exit`,
@@ -25,10 +26,12 @@ accepts only the exact modes `"r"` and `"w"`. `snprintf`
 returns the full would-have-written length and NUL-terminates when capacity is
 nonzero. Unsupported format conversions return -1.
 
-The native syscall ABI is unchanged: arguments in RDI, RSI, RDX, R10, R8, R9;
-carry set reports a positive errno; libos converts it to `-1` and sets errno.
-Syscall numbers used include exit 1, write 2, getpid 3, open 7, close 8, read 9,
-mmap/munmap/mprotect 21–23, lseek 36, fstat 37, getdents64 38, and fstatat 39.
+The native syscall ABI uses arguments in RDI, RSI, RDX, R10, R8, R9; carry set
+reports a positive errno; libos converts it to `-1` and sets errno. ABI version
+2 groups calls by subsystem and is defined once in `include/abi/syscall.h`.
+Numbers used here include exit 1, getpid 2, open 10, close 11, read 12,
+write 13, stat 14, fstat 15, fstatat 16, readdir 17, getdents64 18, lseek 19,
+mmap/munmap/mprotect 30–32.
 Memory mapping supports only private anonymous, non-executable mappings;
 `PROT_EXEC` is rejected by the kernel. `struct stat` is the kernel's existing
 144-byte x86_64 record (`st_mode` offset 24, `st_size` offset 48). The VFS
@@ -43,7 +46,7 @@ directories are represented. `AT_SYMLINK_NOFOLLOW` returns
 flags return `EINVAL`. `stat` is a wrapper around `fstatat(AT_FDCWD, path,
 buf, 0)`.
 
-Directory enumeration consumes syscall 38's getdents64 records. Public
+Directory enumeration consumes syscall 18's getdents64 records. Public
 `struct dirent` is 280 bytes with the name at offset 19, matching that record
 header; `readdir` validates each record and EOF returns null. Directory order
 is the VFS order and is not promised stable. There is no `rewinddir`,

@@ -141,6 +141,7 @@ $(BUILD_DIR)/silliconfs.o: kernel/fs/silliconfs/silliconfs.c \
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/syscall.o: kernel/core/syscall/syscall.c include/kernel/syscall.h \
+		include/abi/syscall.h \
 		include/kernel/fd.h include/kernel/vmm.h include/kernel/log.h \
 		include/kernel/process.h include/kernel/vfs.h include/kernel/udp_socket.h \
 		include/kernel/icmp_echo.h \
@@ -153,6 +154,7 @@ $(BUILD_DIR)/elf.o: kernel/proc/elf.c include/kernel/elf.h include/kernel/vmm.h 
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/process.o: kernel/proc/process.c include/kernel/process.h \
+		include/kernel/syscall.h include/abi/syscall.h \
 		include/kernel/signal_state.h include/kernel/elf.h include/kernel/vmm.h include/kernel/heap.h \
 		include/kernel/pmm.h include/kernel/fd.h include/kernel/timer.h \
 		include/kernel/network_service.h \

@@ -662,7 +662,7 @@ process_sigaction(struct interrupt_frame *frame, unsigned int signo,
 	uint64_t new_address, uint64_t old_address, uint64_t *error)
 {
 	static const uint8_t restorer_bytes[] = {
-		0xb8, 0x11, 0x00, 0x00, 0x00, 0xcd, 0x80, 0x0f, 0x0b
+		0xb8, SYSCALL_SIGRETURN, 0x00, 0x00, 0x00, 0xcd, 0x80, 0x0f, 0x0b
 	};
 	struct os_signal_action new_action;
 	struct os_signal_action old_action;
@@ -723,7 +723,7 @@ struct interrupt_frame *
 process_prepare_user_return(struct interrupt_frame *frame)
 {
 	static const uint8_t restorer_bytes[] = {
-		0xb8, 0x11, 0x00, 0x00, 0x00, 0xcd, 0x80, 0x0f, 0x0b
+		0xb8, SYSCALL_SIGRETURN, 0x00, 0x00, 0x00, 0xcd, 0x80, 0x0f, 0x0b
 	};
 
 	while (frame != NULL && (frame->cs & 3U) == 3U &&
@@ -797,7 +797,7 @@ struct interrupt_frame *
 process_sigreturn(struct interrupt_frame *frame, uint64_t *error)
 {
 	static const uint8_t restorer_bytes[] = {
-		0xb8, 0x11, 0x00, 0x00, 0x00, 0xcd, 0x80, 0x0f, 0x0b
+		0xb8, SYSCALL_SIGRETURN, 0x00, 0x00, 0x00, 0xcd, 0x80, 0x0f, 0x0b
 	};
 	struct process *process = current_process;
 	uint8_t actual_restorer[sizeof(restorer_bytes)];
@@ -912,6 +912,7 @@ process_run_elf_internal(const void *image, size_t image_size,
 	root->user_fs_base = 0;
 	arch_fpu_init_process_state(root->fpu_state);
 	fd_table_init_standard(&root->descriptors);
+	syscall_init(&root->descriptors);
 	if (!map_process_stack(root->loaded_image, startup_stack,
 	    &root->initial_user_stack, 0, NULL)) {
 		release_process(root);

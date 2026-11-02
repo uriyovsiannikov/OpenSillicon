@@ -621,6 +621,11 @@ verification are documented in `user/libos/README.md`. The earlier musl
 milestones below record what was built and tested at that time, not current
 support or a compatibility promise.
 
+Current syscall ABI is version 2. Calls are densely renumbered in subsystem
+groups; `include/abi/syscall.h` is the shared source of truth for kernel and
+userspace. Earlier ABI v1 numbering described in the historical milestones
+below is superseded.
+
 Goal
 
 Support a bounded static C userspace environment through a native OpenSillicon

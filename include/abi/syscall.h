@@ -1,0 +1,58 @@
+#ifndef ABI_SYSCALL_H
+#define ABI_SYSCALL_H
+
+/* OpenSillicon syscall ABI v2 numbers. Preserve assignments within this ABI. */
+#define SYSCALL_GET_ABI_VERSION 0U
+
+/* Process and scheduling. */
+#define SYSCALL_EXIT 1U
+#define SYSCALL_GETPID 2U
+#define SYSCALL_FORK 3U
+#define SYSCALL_EXEC 4U
+#define SYSCALL_WAITPID 5U
+#define SYSCALL_EXEC_PATH 6U
+#define SYSCALL_EXEC_PATH_ARGV 7U
+#define SYSCALL_SLEEP_TICKS 8U
+#define SYSCALL_PROCESS_SNAPSHOT 9U
+
+/* File descriptors, files, and directories. */
+#define SYSCALL_OPEN 10U
+#define SYSCALL_CLOSE 11U
+#define SYSCALL_READ 12U
+#define SYSCALL_WRITE 13U
+#define SYSCALL_STAT 14U
+#define SYSCALL_FSTAT 15U
+#define SYSCALL_FSTATAT 16U
+#define SYSCALL_READDIR 17U
+#define SYSCALL_GETDENTS 18U
+#define SYSCALL_LSEEK 19U
+#define SYSCALL_WRITEV 20U
+#define SYSCALL_READV 21U
+#define SYSCALL_IOCTL 22U
+
+/* IPC and signals. */
+#define SYSCALL_PIPE 23U
+#define SYSCALL_KILL 24U
+#define SYSCALL_SIGACTION 25U
+#define SYSCALL_SIGRETURN 26U
+#define SYSCALL_SHM_CREATE 27U
+#define SYSCALL_SHM_DETACH 28U
+
+/* Address spaces and process TLS. */
+#define SYSCALL_SET_FS_BASE 29U
+#define SYSCALL_MMAP 30U
+#define SYSCALL_MUNMAP 31U
+#define SYSCALL_MPROTECT 32U
+
+/* Network and time. */
+#define SYSCALL_UDP_SOCKET 33U
+#define SYSCALL_UDP_BIND 34U
+#define SYSCALL_UDP_SENDTO 35U
+#define SYSCALL_UDP_RECVFROM 36U
+#define SYSCALL_ICMP_ECHO 37U
+#define SYSCALL_CLOCK_GETTIME 38U
+#define SYSCALL_NANOSLEEP 39U
+
+#define SYSCALL_ABI_VERSION 2U
+
+#endif

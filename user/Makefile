@@ -13,7 +13,7 @@ else
 $(BUILD_DIR)/user_start.o: user/start.S user/include/os.h | $(BUILD_DIR)
 	$(CC) $(USER_ASFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/user_os.o: user/os.c user/include/os.h | $(BUILD_DIR)
+$(BUILD_DIR)/user_os.o: user/os.c user/include/os.h include/abi/syscall.h | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/user_path.o: user/path.c user/include/os.h | $(BUILD_DIR)
@@ -98,6 +98,7 @@ $(LIBOS_BUILD_DIR):
 	mkdir -p $@
 
 $(LIBOS_BUILD_DIR)/%.o: user/libos/src/%.c user/libos/src/internal.h \
+		include/abi/syscall.h \
 		$(wildcard user/libos/include/* user/libos/include/sys/*) | $(LIBOS_BUILD_DIR)
 	$(CC) $(LIBOS_CFLAGS) -c $< -o $@
 

@@ -11,6 +11,16 @@ When implementation depends on one of them, stop and request clarification or pr
 
 ---
 
+Current syscall ABI update (2026-11-02): ABI version 2 supersedes the ABI v1
+append-only numbering recorded in ADR-001 and later historical entries. Calls
+are densely renumbered by subsystem, without changing their argument or result
+contracts. The shared table in `include/abi/syscall.h` is authoritative:
+process/scheduling 1–9, file and descriptor operations 10–22, IPC/signals
+23–28, address-space/TLS 29–32, and network/time 33–39; syscall 0 returns ABI
+version 2. The historical ADR text below records the former assignments.
+
+---
+
 ADR-001 — System Call ABI
 
 Status: Accepted
