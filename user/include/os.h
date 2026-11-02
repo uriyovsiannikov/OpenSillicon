@@ -4,6 +4,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "abi/framebuffer.h"
+#include "abi/input.h"
+
 #define U_O_RDONLY 0U
 #define U_O_WRONLY 1U
 #define U_O_DIRECTORY 0x10000U
@@ -99,6 +102,9 @@ long u_sleep_ticks(uint64_t ticks);
 long u_pipe(uint32_t descriptors[2]);
 long u_getpid(void);
 long u_process_snapshot(struct u_process_info *entries, size_t capacity);
+long u_framebuffer_info(struct os_framebuffer_info *info);
+long u_framebuffer_present(const void *pixels, size_t length);
+long u_keyboard_poll(struct os_keyboard_event *event);
 long u_kill(uint64_t pid, uint64_t signo);
 long u_sigaction(uint64_t signo, const struct u_sigaction *new_action,
 	struct u_sigaction *old_action);

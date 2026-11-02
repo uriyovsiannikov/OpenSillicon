@@ -9,53 +9,38 @@
   <img src="other/screenshot1.png" alt="OpenSillicon running its shell" width="800">
 </p>
 
-## Build and run
+## Features
 
-On a Linux development host with the project’s toolchain, QEMU, OVMF, and ISO utilities installed:
+### Kernel and processes
 
-```sh
-make -j4 kernel
-make run
-```
+- Limine boot on x86_64 UEFI systems, with ACPI discovery and interrupt-controller support.
+- Ring 3 user processes with ELF loading, `fork`/`exec`/`wait`, preemptive scheduling, and process inspection.
+- Virtual and physical memory management, per-process address spaces, memory mapping and protection, shared memory, and DMA buffers.
+- System calls for process, filesystem, IPC, networking, time, and framebuffer operations.
+- Pipes and signal handling for basic inter-process communication and process control.
 
-## Build layout
+### Storage and filesystems
 
-The root `Makefile` is the canonical build entry point. It loads shared defaults
-from `mk/common.mk` and the target rules owned by `kernel/Makefile`,
-`user/Makefile`, and `tests/Makefile`. The current root targets include `all`,
-`kernel`, `iso`, `run`, `run-gui`, `clean`, `acpica-check`, `libos-build`,
-`libos-inspect`, and `libos-qemu-test`.
+- VFS with initramfs, RAMFS, `devfs`, and `procfs`.
+- SilliconFS with block-device support and an AHCI storage driver.
+- File and directory operations, file descriptors, metadata, and vectored I/O.
 
-The subsystem Makefiles can also be invoked directly; they re-enter the root
-build graph so cross-subsystem dependencies and repository-relative source paths
-are handled consistently:
+### Console and userspace
 
-```sh
-make -C kernel kernel
-make -C user libos-build
-make -C tests libos-qemu-test
-```
+- Framebuffer text terminal, PS/2 keyboard input, and a command-line shell.
+- Shell conveniences including command history, path handling, and executable discovery/completion.
+- A small C runtime and libc-style `libos` for user programs.
+- Core utilities such as `ls`, `cat`, `pwd`, `ps`, `stat`, `uname`, `wc`, `sleep`, and `ping`.
 
-Common overrides are passed on the command line and forwarded to nested Make
-invocations. The main build, user image, and libos QEMU fixture honor their output
-directory variables. For example, use a separate output tree without touching
-`build/`:
+### Networking and hardware
 
-```sh
-make -j4 kernel BUILD_DIR=/tmp/opensillicon-build
-make -C user libos-build BUILD_DIR=/tmp/opensillicon-build \
-  LIBOS_BUILD_DIR=/tmp/opensillicon-build/libos
-make -C tests libos-qemu-test BUILD_DIR=/tmp/opensillicon-build \
-  LIBOS_BUILD_DIR=/tmp/opensillicon-build/libos \
-  LIBOS_QEMU_BUILD_DIR=/tmp/opensillicon-build/libos-qemu
-```
+- IPv4 networking with ARP, ICMP Echo, UDP sockets, and TCP protocol/runtime components.
+- Intel e1000 network adapter driver, PCI enumeration, and DMA-backed device rings.
+- Entropy sources including CPU RDSEED, TPM 2.0, and virtio RNG support.
 
-`CC`, `LD`, `QEMU`, `OVMF_CODE`, `XORRISO`, and the existing subsystem flags
-can be overridden the same way. The tests layer currently owns the libos QEMU
-fixture and the minimal initramfs artifact. The retained `tests/vfs_test.c` has
-no target because its test-only timer stub was removed; the deleted legacy test
-sources have no Make targets. `make clean` removes the selected `BUILD_DIR`;
-when omitted, it is `build`.
+OpenSillicon is an experimental operating system, and hardware support is evolving.
+For a quick start, run `make run` on a Linux host with the required build tools,
+QEMU, OVMF, and ISO utilities installed.
 
 ## License
 

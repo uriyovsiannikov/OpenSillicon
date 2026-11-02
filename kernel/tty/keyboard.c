@@ -1,4 +1,5 @@
 #include "arch/x86_64/ps2_keyboard.h"
+#include "abi/input.h"
 
 void
 ps2_keyboard_decoder_init(struct ps2_keyboard_decoder *decoder)
@@ -20,7 +21,14 @@ ps2_keyboard_decode_byte(struct ps2_keyboard_decoder *decoder, uint8_t byte,
 	if (byte == 0xe1) {
 		decoder->extended = false;
 		decoder->pause_remaining = 5;
-		return false;
+		/* Set 1 has no ordinary make/break pair for Pause. Use the
+		 * otherwise-invalid 0x7f code with extended=true as its make event. */
+		*event = (struct terminal_key_event){
+			.scancode = OS_KEYBOARD_PAUSE_SCANCODE,
+			.extended = true,
+			.pressed = true
+		};
+		return true;
 	}
 	if (byte == 0xe0) {
 		decoder->extended = true;

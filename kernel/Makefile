@@ -27,6 +27,7 @@ $(BUILD_DIR)/main.o: kernel/main.c include/kernel/boot.h include/kernel/log.h \
 		include/kernel/e1000.h include/kernel/e1000_profile.h \
 		include/kernel/netstack.h include/kernel/udp_socket.h \
 		include/kernel/network_service.h \
+		include/kernel/framebuffer_device.h include/abi/framebuffer.h \
 		include/kernel/tcp_runtime.h \
 	include/kernel/random.h include/kernel/boot_entropy.h \
 	include/kernel/entropy.h \
@@ -37,6 +38,7 @@ $(BUILD_DIR)/main.o: kernel/main.c include/kernel/boot.h include/kernel/log.h \
 		include/kernel/devfs.h include/kernel/procfs.h \
 		include/arch/x86_64/fpu.h \
 		include/kernel/tty.h \
+		include/kernel/framebuffer_device.h \
 		limine/limine.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
@@ -100,7 +102,14 @@ $(BUILD_DIR)/pipe.o: kernel/ipc/pipe.c include/kernel/pipe.h \
 $(BUILD_DIR)/pipe_buffer.o: kernel/ipc/pipe_buffer.c include/kernel/pipe.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/terminal.o: kernel/tty/terminal.c include/kernel/terminal.h | $(BUILD_DIR)
+$(BUILD_DIR)/unix_socket.o: kernel/ipc/unix_socket.c \
+		include/kernel/unix_socket.h include/kernel/fd.h \
+		include/kernel/process.h include/kernel/heap.h \
+		include/abi/unix_socket.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/terminal.o: kernel/tty/terminal.c include/kernel/terminal.h \
+		include/kernel/fd.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/keyboard.o: kernel/tty/keyboard.c \
@@ -110,6 +119,11 @@ $(BUILD_DIR)/keyboard.o: kernel/tty/keyboard.c \
 $(BUILD_DIR)/framebuffer.o: kernel/tty/framebuffer.c \
 		include/kernel/framebuffer.h include/kernel/terminal.h \
 		kernel/tty/font.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/framebuffer_device.o: kernel/tty/framebuffer_device.c \
+		include/kernel/framebuffer_device.h include/abi/framebuffer.h \
+		include/kernel/vmm.h limine/limine.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/tty.o: kernel/tty/tty.c include/kernel/tty.h \
@@ -152,11 +166,13 @@ $(BUILD_DIR)/silliconfs.o: kernel/fs/silliconfs/silliconfs.c \
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/syscall.o: kernel/core/syscall/syscall.c include/kernel/syscall.h \
-		include/abi/syscall.h \
+		include/abi/syscall.h include/abi/select.h \
 		include/kernel/fd.h include/kernel/vmm.h include/kernel/log.h \
 		include/kernel/process.h include/kernel/vfs.h include/kernel/udp_socket.h \
-		include/kernel/icmp_echo.h \
+		include/kernel/icmp_echo.h include/kernel/unix_socket.h \
 		include/kernel/network_service.h \
+		include/kernel/framebuffer_device.h include/abi/framebuffer.h \
+		include/abi/input.h include/arch/x86_64/ps2_keyboard.h \
 		include/arch/x86_64/user.h include/arch/x86_64/interrupts.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
@@ -339,9 +355,11 @@ KERNEL_OBJECTS := $(BUILD_DIR)/main.o $(BUILD_DIR)/boot.o $(BUILD_DIR)/boot_entr
 	$(BUILD_DIR)/scheduler.o $(BUILD_DIR)/interrupts.o $(BUILD_DIR)/gdt_asm.o \
 	$(BUILD_DIR)/interrupts_asm.o $(BUILD_DIR)/context.o $(BUILD_DIR)/fd.o \
 	$(BUILD_DIR)/terminal.o $(BUILD_DIR)/keyboard.o \
-	$(BUILD_DIR)/framebuffer.o $(BUILD_DIR)/tty.o \
+	$(BUILD_DIR)/framebuffer.o $(BUILD_DIR)/framebuffer_device.o $(BUILD_DIR)/tty.o \
 	$(BUILD_DIR)/ps2_keyboard.o \
 	$(BUILD_DIR)/syscall.o $(BUILD_DIR)/pipe.o $(BUILD_DIR)/pipe_buffer.o \
+	$(BUILD_DIR)/unix_socket.o \
+	$(BUILD_DIR)/pty.o \
 	$(BUILD_DIR)/user_entry.o \
 	$(BUILD_DIR)/user_entry_c.o \
 	$(BUILD_DIR)/elf.o \
@@ -372,3 +390,6 @@ $(BUILD_DIR)/opensillicon.iso: $(BUILD_DIR)/kernel.elf $(BUILD_DIR)/initramfs.cp
 		$(ISO_ROOT) -o $@
 
 endif
+
+$(BUILD_DIR)/pty.o: kernel/tty/pty.c include/kernel/pty.h include/kernel/pipe.h
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@

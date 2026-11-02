@@ -30,6 +30,7 @@ bool terminal_init(unsigned int columns, unsigned int rows,
 	terminal_draw_cell draw_cell, void *context);
 void terminal_write(const char *buffer, size_t length);
 int terminal_read(char *buffer, size_t length, size_t *read_length);
+bool terminal_input_available(void);
 void terminal_set_raw_mode(bool enabled);
 bool terminal_raw_mode(void);
 void terminal_key_event(struct terminal_key_event event);

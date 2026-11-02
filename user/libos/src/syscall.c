@@ -10,7 +10,18 @@ long __libos_call(long n,long a,long b,long c,long d,long e,long f) {
  long r=__libos_syscall(n,a,b,c,d,e,f); if(r<0){errno=(int)-r;if(errno==78)errno=ENOSYS;return -1;} return r;
 }
 void _exit(int status) { (void)__libos_syscall(SYSCALL_EXIT,status,0,0,0,0,0); for (;;) __asm__ volatile("hlt"); }
-void exit(int status) { _exit(status); }
+static void (*exit_handlers[32])(void);
+static unsigned exit_handler_count;
+int atexit(void (*handler)(void)) {
+ if(!handler){errno=EINVAL;return -1;}
+ if(exit_handler_count==32){errno=ENOMEM;return -1;}
+ exit_handlers[exit_handler_count++]=handler;
+ return 0;
+}
+void exit(int status) {
+ while(exit_handler_count) exit_handlers[--exit_handler_count]();
+ _exit(status);
+}
 long __libos_getpid(void){return __libos_call(SYSCALL_GETPID,0,0,0,0,0,0);}
 long __libos_open(const char*p,int f,unsigned m){return __libos_call(SYSCALL_OPEN,(long)p,f,m,0,0,0);}
 long __libos_close(int f){return __libos_call(SYSCALL_CLOSE,f,0,0,0,0,0);}

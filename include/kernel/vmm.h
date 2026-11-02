@@ -120,6 +120,8 @@ struct address_space *vmm_active_address_space(void);
 uint64_t vmm_hhdm_offset(void);
 bool vmm_copy_from_user(const struct address_space *space, void *destination,
 	uint64_t source, size_t length);
+bool vmm_validate_user_read(const struct address_space *space,
+	uint64_t source, size_t length);
 bool vmm_copy_to_user(const struct address_space *space, uint64_t destination,
 	const void *source, size_t length);
 bool vmm_validate_user_write(const struct address_space *space,

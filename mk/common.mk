@@ -9,8 +9,17 @@ BUILD_DIR := build
 ISO_ROOT := $(BUILD_DIR)/iso_root
 LIBOS_BUILD_DIR ?= build/libos
 LIBOS_QEMU_BUILD_DIR ?= build/libos-qemu
+LIBZ_BUILD_DIR ?= build/libz
+LIBFONTENC_BUILD_DIR ?= build/libfontenc
+LIBXFONT_BUILD_DIR ?= build/libxfont
+TINYX_BUILD_DIR ?= build/tinyx/target
+TINYX_SOURCE_DIR ?= build/tinyx/source
+TINYX_BINARY := $(TINYX_BUILD_DIR)/kdrive/opensillicon/Xopensillicon
 LIBOS_TEST := $(LIBOS_BUILD_DIR)/libos-test.elf
 LIBOS_ARCHIVE := $(LIBOS_BUILD_DIR)/liblibos.a
+LIBZ_ARCHIVE := $(LIBZ_BUILD_DIR)/libz.a
+LIBFONTENC_ARCHIVE := $(LIBFONTENC_BUILD_DIR)/libfontenc.a
+LIBXFONT_ARCHIVE := $(LIBXFONT_BUILD_DIR)/libXfont.a
 LIBOS_CFLAGS := -std=c11 -O2 -ffreestanding -fno-builtin -fno-stack-protector \
 	-fno-pic -fno-pie -m64 -mno-red-zone -mno-mmx -mno-sse -mno-sse2 -msoft-float \
 	-Wall -Wextra -Werror -nostdinc -Iinclude -Iuser/libos/include -Iuser/libos/src \
@@ -47,7 +56,10 @@ ACPICA_CFLAGS := $(KERNEL_CFLAGS) -Wno-unused-parameter -fno-builtin \
 	-DBUILDING_ACPICA -DOPEN_SILLICON_KERNEL \
 	-I$(ACPICA_ROOT)/include -I$(ACPICA_ROOT)/include/platform
 
-.PHONY: all kernel iso run run-gui clean acpica-check libos-build \
+.PHONY: all kernel iso run run-gui clean acpica-check libos-build libz-build \
+	libfontenc-build \
+	libxfont-build \
+	tinyx-build \
 	libos-inspect libos-qemu-test
 
 $(BUILD_DIR):
@@ -57,6 +69,9 @@ $(BUILD_DIR):
 # Shared variables are exported for nested make invocations and tool scripts.
 export CC LD XORRISO QEMU OVMF_CODE BUILD_DIR ISO_ROOT
 export LIBOS_BUILD_DIR LIBOS_QEMU_BUILD_DIR LIBOS_TEST LIBOS_ARCHIVE LIBOS_CFLAGS
+export LIBZ_BUILD_DIR LIBZ_ARCHIVE LIBFONTENC_BUILD_DIR LIBFONTENC_ARCHIVE
+export LIBXFONT_BUILD_DIR LIBXFONT_ARCHIVE
+export TINYX_BUILD_DIR TINYX_SOURCE_DIR TINYX_BINARY
 export KERNEL_CFLAGS KERNEL_LDFLAGS KERNEL_ASFLAGS USER_ASFLAGS
 export USER_C_LDFLAGS USER_CFLAGS COREUTILS COREUTILS_ELFS
 export ACPICA_ROOT ACPICA_COMPONENTS ACPICA_DIRS ACPICA_SOURCES ACPICA_OBJECTS ACPICA_CFLAGS

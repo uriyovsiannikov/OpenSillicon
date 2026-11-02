@@ -69,6 +69,12 @@ long u_pipe(uint32_t descriptors[2])
 long u_getpid(void) { return syscall3(SYSCALL_GETPID, 0, 0, 0); }
 long u_process_snapshot(struct u_process_info *entries, size_t capacity)
 { return syscall3(SYSCALL_PROCESS_SNAPSHOT, (uintptr_t)entries, capacity, 0); }
+long u_framebuffer_info(struct os_framebuffer_info *info)
+{ return syscall3(SYSCALL_FRAMEBUFFER_INFO, (uintptr_t)info, 0, 0); }
+long u_framebuffer_present(const void *pixels, size_t length)
+{ return syscall3(SYSCALL_FRAMEBUFFER_PRESENT, (uintptr_t)pixels, length, 0); }
+long u_keyboard_poll(struct os_keyboard_event *event)
+{ return syscall3(SYSCALL_KEYBOARD_POLL, (uintptr_t)event, 0, 0); }
 long u_kill(uint64_t pid, uint64_t signo)
 { return syscall3(SYSCALL_KILL, pid, signo, 0); }
 long u_sigaction(uint64_t signo, const struct u_sigaction *new_action,

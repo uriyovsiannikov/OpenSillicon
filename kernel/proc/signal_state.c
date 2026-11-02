@@ -8,6 +8,7 @@ os_signal_state_init(struct os_signal_state *state)
 	unsigned int i;
 
 	state->pending = 0;
+	state->blocked = 0;
 	for (i = 0; i < OS_SIGNAL_COUNT; i++)
 		state->actions[i] = (struct os_signal_action){0};
 }
@@ -15,8 +16,25 @@ os_signal_state_init(struct os_signal_state *state)
 bool
 os_signal_valid(unsigned int signo)
 {
-	return signo == OS_SIGINT || signo == OS_SIGKILL ||
-	    signo == OS_SIGTERM;
+	switch (signo) {
+	case OS_SIGHUP:
+	case OS_SIGINT:
+	case 3U: /* SIGQUIT */
+	case 6U: /* SIGABRT */
+	case 8U: /* SIGFPE */
+	case OS_SIGKILL:
+	case OS_SIGUSR1:
+	case 11U: /* SIGSEGV */
+	case 12U: /* SIGUSR2 */
+	case OS_SIGPIPE:
+	case OS_SIGALRM:
+	case OS_SIGTERM:
+	case OS_SIGCHLD:
+	case OS_SIGIO:
+		return true;
+	default:
+		return false;
+	}
 }
 
 bool
@@ -59,19 +77,19 @@ os_signal_queue(struct os_signal_state *state, unsigned int signo)
 unsigned int
 os_signal_take(struct os_signal_state *state)
 {
-	static const unsigned int order[] = {
-		OS_SIGKILL, OS_SIGTERM, OS_SIGINT
-	};
 	unsigned int i;
 
 	if (state == NULL)
 		return 0;
-	for (i = 0; i < sizeof(order) / sizeof(order[0]); i++) {
-		uint64_t bit = 1ULL << order[i];
+	for (i = 0; i < OS_SIGNAL_COUNT; i++) {
+		unsigned int signo = i == 0 ? OS_SIGKILL : i;
+		uint64_t bit = 1ULL << signo;
 
-		if ((state->pending & bit) != 0) {
+		if ((state->pending & bit) != 0 &&
+		    (signo == OS_SIGKILL || (state->blocked & bit) == 0) &&
+		    os_signal_valid(signo)) {
 			state->pending &= ~bit;
-			return order[i];
+			return signo;
 		}
 	}
 	return 0;
@@ -98,6 +116,7 @@ os_signal_fork_state(const struct os_signal_state *parent,
 	unsigned int i;
 
 	child->pending = 0;
+	child->blocked = parent->blocked;
 	for (i = 0; i < OS_SIGNAL_COUNT; i++)
 		child->actions[i] = parent->actions[i];
 }

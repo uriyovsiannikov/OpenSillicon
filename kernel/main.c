@@ -33,6 +33,7 @@
 #include "kernel/block_silliconfs.h"
 #include "kernel/silliconfs.h"
 #include "kernel/tty.h"
+#include "kernel/framebuffer_device.h"
 #include "arch/x86_64/ahci.h"
 #include "arch/x86_64/user.h"
 #include "arch/x86_64/fpu.h"
@@ -1110,6 +1111,8 @@ _start(void)
 		klog_status("console", false, "terminal initialization failed");
 		kernel_halt();
 	}
+	if (!framebuffer_device_init(info.framebuffer))
+		klog("OpenSillicon: userspace framebuffer API unavailable\n");
 	klog_status("console", true, NULL);
 	if (tty_framebuffer_available())
 		klog_status("framebuffer renderer", true, NULL);

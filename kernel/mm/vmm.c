@@ -1667,6 +1667,36 @@ vmm_copy_to_user(const struct address_space *space, uint64_t destination,
 }
 
 bool
+vmm_validate_user_read(const struct address_space *space,
+	uint64_t source, size_t length)
+{
+	uint64_t current;
+	uint64_t remaining;
+
+	if (!initialized || !address_space_valid(space) || space == &kernel_space)
+		return false;
+	if (length == 0)
+		return true;
+	if (source < USER_BASE || source >= USER_END ||
+	    length > USER_END - source)
+		return false;
+	current = source;
+	remaining = length;
+	while (remaining != 0) {
+		uint64_t physical;
+		uint64_t chunk = PAGE_SIZE - (current & (PAGE_SIZE - 1));
+
+		if (chunk > remaining)
+			chunk = remaining;
+		if (!user_page_physical(space, current, &physical, false, false))
+			return false;
+		current += chunk;
+		remaining -= chunk;
+	}
+	return true;
+}
+
+bool
 vmm_validate_user_write(const struct address_space *space,
 	uint64_t destination, size_t length)
 {

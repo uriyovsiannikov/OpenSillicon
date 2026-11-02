@@ -12,6 +12,8 @@ extern int errno;
 #define EBADF 9
 #define ECHILD 10
 #define EAGAIN 11
+#define EWOULDBLOCK EAGAIN
+#define EINPROGRESS 115
 #define ENOMEM 12
 #define EACCES 13
 #define EFAULT 14
@@ -33,6 +35,16 @@ extern int errno;
 #define EPIPE 32
 #define ERANGE 34
 #define ENOSYS 38
+#define ENOTSOCK 88
+#define EPROTONOSUPPORT 93
+#define EAFNOSUPPORT 97
+#define EADDRINUSE 98
+#define ENOTCONN 107
+#define ECONNREFUSED 111
+#define ENOBUFS 105
 #define EOVERFLOW 75
 #define EOPNOTSUPP 95
+#define ENETUNREACH 101
+#define EADDRNOTAVAIL 99
+#define ETIMEDOUT 110
 #endif

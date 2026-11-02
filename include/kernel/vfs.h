@@ -15,6 +15,7 @@
 #define VFS_O_CREAT 0x40U
 #define VFS_O_TRUNC 0x200U
 #define VFS_O_DIRECTORY 0x10000U
+#define VFS_O_NONBLOCK 0x800U
 
 struct fd_object;
 struct vnode;

@@ -25,6 +25,8 @@ int tty_read(void *buffer, size_t length, size_t *read_length)
 { (void)buffer; (void)length; *read_length = 0; return -5; }
 bool tty_write(const void *buffer, size_t length)
 { (void)buffer; (void)length; return true; }
+void process_wake_channel(void *channel) { (void)channel; }
+bool terminal_input_available(void) { return false; }
 
 static int
 image_read(void *argument, uint32_t block, void *buffer)
@@ -122,16 +124,32 @@ main(int argc, char **argv)
 	int coreutils_start = 0;
 	int coreutils_count = 0;
 	const char *libos_path = NULL;
+	const char *tinyx_path = NULL;
+	const char *startx_path = NULL;
+	const char *twm_path = NULL;
+	const char *xterm_path = NULL;
 	int arg;
 
 	if (argc < 4) {
-		fprintf(stderr, "usage: %s image init-elf shell-elf [--libos elf] [--coreutils coreutils...]\n", argv[0]);
+		fprintf(stderr, "usage: %s image init-elf shell-elf [--libos elf] [--tinyx elf] [--startx elf] [--twm elf] [--xterm elf] [--coreutils coreutils...]\n", argv[0]);
 		return 2;
 	}
 	for (arg = 4; arg < argc; arg++) {
 		if (strcmp(argv[arg], "--libos") == 0 && arg + 1 < argc) {
 			if (libos_path != NULL) return 2;
 			libos_path = argv[++arg];
+		} else if (strcmp(argv[arg], "--tinyx") == 0 && arg + 1 < argc) {
+			if (tinyx_path != NULL) return 2;
+			tinyx_path = argv[++arg];
+		} else if (strcmp(argv[arg], "--startx") == 0 && arg + 1 < argc) {
+			if (startx_path != NULL) return 2;
+			startx_path = argv[++arg];
+		} else if (strcmp(argv[arg], "--twm") == 0 && arg + 1 < argc) {
+			if (twm_path != NULL) return 2;
+			twm_path = argv[++arg];
+		} else if (strcmp(argv[arg], "--xterm") == 0 && arg + 1 < argc) {
+			if (xterm_path != NULL) return 2;
+			xterm_path = argv[++arg];
 		} else if (strcmp(argv[arg], "--coreutils") == 0) {
 			if (coreutils_start != 0) return 2;
 			coreutils_start = arg + 1;
@@ -177,6 +195,30 @@ main(int argc, char **argv)
 	if (libos_path != NULL &&
 	    (error = add_file("/bin/libos-test", libos_path, 0755)) != 0) {
 		fprintf(stderr, "SilliconFS libos fixture population failed: %d\n", error);
+		fclose(image);
+		return 1;
+	}
+	if (tinyx_path != NULL &&
+	    (error = add_file("/bin/Xopensillicon", tinyx_path, 0755)) != 0) {
+		fprintf(stderr, "SilliconFS TinyX population failed: %d\n", error);
+		fclose(image);
+		return 1;
+	}
+	if (startx_path != NULL &&
+	    (error = add_file("/bin/startx", startx_path, 0755)) != 0) {
+		fprintf(stderr, "SilliconFS startx population failed: %d\n", error);
+		fclose(image);
+		return 1;
+	}
+	if (twm_path != NULL &&
+	    (error = add_file("/bin/twm", twm_path, 0755)) != 0) {
+		fprintf(stderr, "SilliconFS twm population failed: %d\n", error);
+		fclose(image);
+		return 1;
+	}
+	if (xterm_path != NULL &&
+	    (error = add_file("/bin/xterm", xterm_path, 0755)) != 0) {
+		fprintf(stderr, "SilliconFS xterm population failed: %d\n", error);
 		fclose(image);
 		return 1;
 	}

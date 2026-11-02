@@ -1,0 +1,7 @@
+includedir=${pcfiledir}/include
+
+Name: pthread-stubs
+Description: Single-thread pthread stubs for OpenSillicon libxcb
+Version: 0.4
+Cflags: -I${includedir}
+Libs:

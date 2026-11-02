@@ -5,9 +5,15 @@
 #include <stdint.h>
 
 #define OS_SIGINT 2U
+#define OS_SIGHUP 1U
 #define OS_SIGKILL 9U
+#define OS_SIGUSR1 10U
+#define OS_SIGPIPE 13U
+#define OS_SIGALRM 14U
 #define OS_SIGTERM 15U
-#define OS_SIGNAL_COUNT 16U
+#define OS_SIGCHLD 17U
+#define OS_SIGIO 29U
+#define OS_SIGNAL_COUNT 32U
 
 #define OS_SIGNAL_DEFAULT 0ULL
 #define OS_SIGNAL_IGNORE 1ULL
@@ -19,6 +25,7 @@ struct os_signal_action {
 
 struct os_signal_state {
 	uint64_t pending;
+	uint64_t blocked;
 	struct os_signal_action actions[OS_SIGNAL_COUNT];
 };
 

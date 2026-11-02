@@ -15,9 +15,10 @@
 #include "kernel/vfs.h"
 
 #define PROCESS_KERNEL_STACK_SIZE 65536U
+#define PROCESS_STACK_SIZE (64ULL * 1024ULL)
+#define PROCESS_STACK_PAGE_COUNT (PROCESS_STACK_SIZE / 4096ULL)
 #define PROCESS_STACK_TOP (0x00007ffffffff000ULL - 0x1000ULL)
-#define PROCESS_STACK_PAGE (PROCESS_STACK_TOP - 4096ULL)
-#define PROCESS_STACK_SIZE 4096ULL
+#define PROCESS_STACK_PAGE (PROCESS_STACK_TOP - PROCESS_STACK_SIZE)
 #define AUXV_AT_NULL 0ULL
 #define AUXV_AT_PHDR 3ULL
 #define AUXV_AT_PHENT 4ULL
@@ -66,6 +67,7 @@ struct process {
 	uint64_t waiting_for;
 	uint64_t wait_status_address;
 	uint64_t wake_tick;
+	uint64_t select_deadline;
 	uint64_t nanosleep_start_tick;
 	int64_t nanosleep_seconds;
 	int64_t nanosleep_nanoseconds;
@@ -154,7 +156,8 @@ process_has_pending_signal(const struct process *process)
 		if ((process->signals.pending & (1ULL << signo)) != 0 &&
 		    os_signal_valid(signo) &&
 		    (signo == OS_SIGKILL ||
-		    process->signals.actions[signo].handler != OS_SIGNAL_IGNORE))
+		    ((process->signals.blocked & (1ULL << signo)) == 0 &&
+		    process->signals.actions[signo].handler != OS_SIGNAL_IGNORE)))
 			return true;
 	}
 	return false;
@@ -205,6 +208,7 @@ process_set_interrupted_result(struct process *process)
 	process->waiting_for = 0;
 	process->wait_status_address = 0;
 	process->wake_tick = 0;
+	process->select_deadline = 0;
 	process->nanosleep_active = false;
 	process->nanosleep_remaining_address = 0;
 	process->blocked_channel = NULL;
@@ -217,6 +221,7 @@ process_set_interrupted_result(struct process *process)
 static void
 process_wake_retry(struct process *process)
 {
+	process->wake_tick = 0;
 	process->waiting_for = 0;
 	process->wait_status_address = 0;
 	process->block_reason = PROCESS_BLOCK_NONE;
@@ -237,6 +242,8 @@ process_wake_for_signal(struct process *process)
 		process_wake_retry(process);
 		return;
 	}
+	if (!process_has_pending_signal(process))
+		return;
 	if (process->block_reason == PROCESS_BLOCK_SLEEP &&
 	    timer_ticks() >= process->wake_tick) {
 		process->wake_tick = 0;
@@ -256,6 +263,26 @@ process_syscall_retry_begin(void)
 		return;
 	current_process->retry_in_progress = current_process->retry_pending;
 	current_process->retry_pending = false;
+}
+
+uint64_t
+process_select_deadline(void)
+{
+	return current_process == NULL ? 0 : current_process->select_deadline;
+}
+
+void
+process_select_deadline_set(uint64_t deadline)
+{
+	if (current_process != NULL)
+		current_process->select_deadline = deadline;
+}
+
+void
+process_select_deadline_clear(void)
+{
+	if (current_process != NULL)
+		current_process->select_deadline = 0;
 }
 
 void
@@ -524,7 +551,7 @@ build_initial_stack(const struct elf_loaded_image *image, uint64_t physical,
 	words[7 + argc] = AUXV_AT_PHNUM;
 	words[8 + argc] = image->plan.program_header_count;
 	words[9 + argc] = AUXV_AT_PAGESZ;
-	words[10 + argc] = PROCESS_STACK_SIZE;
+	words[10 + argc] = 4096;
 	words[11 + argc] = AUXV_AT_ENTRY;
 	words[12 + argc] = image->entry;
 	words[13 + argc] = AUXV_AT_BASE;
@@ -546,12 +573,15 @@ map_process_stack(struct elf_loaded_image *image, bool startup_stack,
 	uint64_t hhdm = vmm_hhdm_offset();
 	volatile uint8_t *stack;
 	uint64_t i;
+	uint64_t mapped = 0;
 
-	if (image == NULL || stack_pointer == NULL || !pmm_alloc_page(&physical))
+	if (image == NULL || stack_pointer == NULL ||
+	    !pmm_alloc_contiguous(PROCESS_STACK_PAGE_COUNT,
+	    PROCESS_STACK_PAGE_COUNT, UINT64_MAX, &physical))
 		return false;
 	if (hhdm > UINT64_MAX - physical ||
 	    PROCESS_STACK_SIZE - 1 > UINT64_MAX - (hhdm + physical)) {
-		(void)pmm_free_page(physical);
+		(void)pmm_free_contiguous(physical, PROCESS_STACK_PAGE_COUNT);
 		return false;
 	}
 	stack = (volatile uint8_t *)(uintptr_t)(hhdm + physical);
@@ -559,13 +589,24 @@ map_process_stack(struct elf_loaded_image *image, bool startup_stack,
 		stack[i] = 0;
 	if (startup_stack &&
 	    !build_initial_stack(image, physical, &initial_stack, argc, argv)) {
-		(void)pmm_free_page(physical);
+		(void)pmm_free_contiguous(physical, PROCESS_STACK_PAGE_COUNT);
 		return false;
 	}
-	if (!vmm_map_page(&image->address_space, PROCESS_STACK_PAGE, physical,
-	    VMM_USER | VMM_WRITE)) {
-		(void)pmm_free_page(physical);
-		return false;
+	for (i = 0; i < PROCESS_STACK_PAGE_COUNT; i++) {
+		if (!vmm_map_page(&image->address_space,
+		    PROCESS_STACK_PAGE + i * 4096ULL, physical + i * 4096ULL,
+		    VMM_USER | VMM_WRITE)) {
+			uint64_t page;
+			for (page = 0; page < mapped; page++) {
+				uint64_t unmapped;
+				(void)vmm_unmap_page(&image->address_space,
+				    PROCESS_STACK_PAGE + page * 4096ULL, &unmapped);
+			}
+			(void)pmm_free_contiguous(physical,
+			    PROCESS_STACK_PAGE_COUNT);
+			return false;
+		}
+		mapped++;
 	}
 	*stack_pointer = initial_stack;
 	return true;
@@ -596,6 +637,19 @@ uint64_t
 process_current_pid(void)
 {
 	return current_process == NULL ? 1 : current_process->id;
+}
+
+uint64_t
+process_current_ppid(void)
+{
+	uint64_t flags;
+	uint64_t parent_pid;
+	__asm__ volatile ("pushfq; popq %0; cli" : "=r" (flags) : : "memory");
+	parent_pid = current_process == NULL || current_process->parent == NULL ?
+	    0 : current_process->parent->id;
+	if ((flags & (1ULL << 9)) != 0)
+		__asm__ volatile ("sti" : : : "memory");
+	return parent_pid;
 }
 
 int
@@ -659,13 +713,15 @@ process_kill(uint64_t pid, unsigned int signo)
 
 	if (pid == 0 || (int64_t)pid < 0)
 		return PROCESS_ERROR_EINVAL;
-	if (!os_signal_valid(signo))
+	if (signo != 0 && !os_signal_valid(signo))
 		return PROCESS_ERROR_EINVAL;
 	if (process_head == NULL)
 		return PROCESS_ERROR_ESRCH;
 	process = process_head;
 	do {
 		if (process->id == pid && process->state != PROCESS_ZOMBIE) {
+			if (signo == 0)
+				return 0;
 			if (signo != OS_SIGKILL &&
 			    process->signals.actions[signo].handler ==
 			    OS_SIGNAL_IGNORE)
@@ -677,6 +733,35 @@ process_kill(uint64_t pid, unsigned int signo)
 		process = process->next;
 	} while (process != process_head);
 	return PROCESS_ERROR_ESRCH;
+}
+
+int
+process_signal_mask(int how, const uint64_t *set, uint64_t *old_set)
+{
+	uint64_t mask;
+
+	if (current_process == NULL)
+		return -(int)PROCESS_ERROR_EINVAL;
+	if (old_set != NULL)
+		*old_set = current_process->signals.blocked;
+	if (set == NULL)
+		return 0;
+	mask = *set;
+	switch (how) {
+	case 0: /* SIG_BLOCK */
+		current_process->signals.blocked |= mask;
+		break;
+	case 1: /* SIG_UNBLOCK */
+		current_process->signals.blocked &= ~mask;
+		break;
+	case 2: /* SIG_SETMASK */
+		current_process->signals.blocked = mask;
+		break;
+	default:
+		return -(int)PROCESS_ERROR_EINVAL;
+	}
+	current_process->signals.blocked &= ~(1ULL << OS_SIGKILL);
+	return 0;
 }
 
 struct interrupt_frame *
@@ -760,6 +845,9 @@ process_prepare_user_return(struct interrupt_frame *frame)
 		if (signo == 0)
 			return frame;
 		action = current_process->signals.actions[signo];
+		if (signo == OS_SIGCHLD &&
+		    action.handler == OS_SIGNAL_DEFAULT)
+			continue;
 		if (action.handler == OS_SIGNAL_IGNORE && signo != OS_SIGKILL)
 			continue;
 		if (signo == OS_SIGKILL || action.handler == OS_SIGNAL_DEFAULT) {
@@ -908,6 +996,7 @@ process_run_elf_internal(const void *image, size_t image_size,
 	root->waiting_for = 0;
 	root->wait_status_address = 0;
 	root->wake_tick = 0;
+	root->select_deadline = 0;
 	root->nanosleep_start_tick = 0;
 	root->nanosleep_seconds = 0;
 	root->nanosleep_nanoseconds = 0;
@@ -1117,6 +1206,7 @@ process_fork(struct interrupt_frame *frame, uint64_t *error)
 	child->waiting_for = 0;
 	child->wait_status_address = 0;
 	child->wake_tick = 0;
+	child->select_deadline = 0;
 	child->nanosleep_start_tick = 0;
 	child->nanosleep_seconds = 0;
 	child->nanosleep_nanoseconds = 0;
@@ -1236,6 +1326,7 @@ replace_process_image(struct interrupt_frame *frame, const void *image,
 		*error = PROCESS_ERROR_ENOMEM;
 		return frame;
 	}
+	fd_table_close_on_exec(&process->descriptors);
 	process->loaded_image = replacement;
 	process->address_space = &replacement->address_space;
 	process->tls = process_tls_from_plan(&replacement->plan);
@@ -1579,6 +1670,13 @@ process_nanosleep(struct interrupt_frame *frame, uint64_t ticks,
 struct interrupt_frame *
 process_block_on_channel(struct interrupt_frame *frame, void *channel)
 {
+	return process_block_on_channel_until(frame, channel, 0);
+}
+
+struct interrupt_frame *
+process_block_on_channel_until(struct interrupt_frame *frame, void *channel,
+	uint64_t wake_tick)
+{
 	if (current_process == NULL || channel == NULL) {
 		frame->rax = PROCESS_ERROR_EINVAL;
 		frame->rflags |= 1U;
@@ -1588,9 +1686,11 @@ process_block_on_channel(struct interrupt_frame *frame, void *channel)
 		frame->rax = PROCESS_ERROR_EINTR;
 		frame->rflags |= 1U;
 		current_process->retry_in_progress = false;
+		current_process->select_deadline = 0;
 		return frame;
 	}
 	current_process->blocked_channel = channel;
+	current_process->wake_tick = wake_tick;
 	current_process->state = PROCESS_BLOCKED;
 	current_process->saved_frame = frame;
 	current_process->block_reason = PROCESS_BLOCK_CHANNEL;
@@ -1632,6 +1732,12 @@ process_timer_wakeup(uint64_t ticks)
 		if (process->state == PROCESS_BLOCKED && process->wake_tick != 0 &&
 		    ticks >= process->wake_tick) {
 			process->wake_tick = 0;
+			if (process->block_reason == PROCESS_BLOCK_CHANNEL) {
+				process->blocked_channel = NULL;
+				process_wake_retry(process);
+				process = process->next;
+				continue;
+			}
 			process->nanosleep_active = false;
 			process->nanosleep_remaining_address = 0;
 			process->blocked_channel = NULL;

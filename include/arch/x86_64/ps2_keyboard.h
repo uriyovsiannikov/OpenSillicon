@@ -6,6 +6,8 @@
 
 #include "kernel/terminal.h"
 
+struct os_mouse_event;
+
 struct ps2_keyboard_decoder {
 	bool extended;
 	uint8_t pause_remaining;
@@ -27,5 +29,9 @@ bool ps2_keyboard_init(void);
 bool ps2_keyboard_available(void);
 enum ps2_keyboard_error ps2_keyboard_last_error(void);
 bool ps2_keyboard_poll(struct terminal_key_event *event);
+bool ps2_keyboard_event_poll(struct terminal_key_event *event);
+bool ps2_mouse_init(void);
+bool ps2_mouse_available(void);
+bool ps2_mouse_event_poll(struct os_mouse_event *event);
 
 #endif

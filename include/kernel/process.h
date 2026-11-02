@@ -41,13 +41,18 @@ bool process_test_user_fault_capture(uint64_t *vector, uint64_t *error_code);
 uint64_t process_run_path(const char *path, bool startup_stack);
 struct fd_table *process_current_fd_table(void);
 uint64_t process_current_pid(void);
+uint64_t process_current_ppid(void);
 int process_current_snapshot(struct process_snapshot_entry *entry);
 int process_snapshot(struct process_snapshot_entry *entries, size_t capacity);
 void process_syscall_retry_begin(void);
+uint64_t process_select_deadline(void);
+void process_select_deadline_set(uint64_t deadline);
+void process_select_deadline_clear(void);
 void process_capture_user_fs_base(uint64_t base);
 void process_restore_user_fs_base(void);
 uint64_t process_set_fs_base(uint64_t base);
 uint64_t process_kill(uint64_t pid, unsigned int signo);
+int process_signal_mask(int how, const uint64_t *set, uint64_t *old_set);
 struct interrupt_frame *process_sigaction(struct interrupt_frame *frame,
 	unsigned int signo, uint64_t new_action, uint64_t old_action,
 	uint64_t *error);
@@ -80,6 +85,8 @@ struct interrupt_frame *process_nanosleep(struct interrupt_frame *frame,
 	uint64_t remaining_address, uint64_t *error);
 struct interrupt_frame *process_block_on_channel(
 	struct interrupt_frame *frame, void *channel);
+struct interrupt_frame *process_block_on_channel_until(
+	struct interrupt_frame *frame, void *channel, uint64_t wake_tick);
 void process_wake_channel(void *channel);
 void process_timer_wakeup(uint64_t ticks);
 struct interrupt_frame *process_exit(struct interrupt_frame *frame,

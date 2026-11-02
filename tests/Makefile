@@ -21,6 +21,14 @@ $(BUILD_DIR)/devfs_procfs_test: tests/devfs_procfs_test.c \
 		kernel/fs/procfs/procfs.c kernel/proc/fd.c -o $@
 
 .PHONY: devfs-procfs-test
+.PHONY: pty-test
+pty-test: $(BUILD_DIR)/pty_test
+	$(BUILD_DIR)/pty_test
+
+$(BUILD_DIR)/pty_test: tests/pty_test.c kernel/tty/pty.c kernel/proc/fd.c kernel/ipc/pipe_buffer.c | $(BUILD_DIR)
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -ffunction-sections -fdata-sections \
+		-Iinclude -Ilimine $^ -Wl,--gc-sections -o $@
+
 devfs-procfs-test: $(BUILD_DIR)/devfs_procfs_test
 	$(BUILD_DIR)/devfs_procfs_test
 
@@ -34,6 +42,11 @@ $(LIBOS_QEMU_BUILD_DIR)/libos-root.img: $(BUILD_DIR)/init.elf \
 	python3 tools/mksilliconfs.py $@ --blocks 32768 --inodes 1024
 	$(BUILD_DIR)/populate_root $@ $(BUILD_DIR)/init.elf \
 		$(BUILD_DIR)/shell.elf --libos $(LIBOS_TEST)
+
+.PHONY: tinyx-qemu-test
+tinyx-qemu-test: iso $(BUILD_DIR)/root.img
+	python3 tests/tinyx_qemu_test.py --qemu '$(QEMU)' \
+		--bios '$(OVMF_CODE)' --build-dir '$(BUILD_DIR)'
 
 libos-qemu-test: libos-build
 	CCACHE_DISABLE=1 $(MAKE) BUILD_DIR=$(LIBOS_QEMU_BUILD_DIR) \

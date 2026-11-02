@@ -516,7 +516,7 @@ vfs_open(const char *path, uint32_t flags, uint32_t mode,
 	struct fd_object **result)
 {
 	const uint32_t allowed = VFS_O_ACCMODE | VFS_O_CREAT | VFS_O_TRUNC |
-	    VFS_O_DIRECTORY;
+	    VFS_O_DIRECTORY | VFS_O_NONBLOCK;
 	struct vfs_file_context *context;
 	struct vnode *node = NULL;
 	struct fd_object *file;
@@ -581,6 +581,7 @@ vfs_open(const char *path, uint32_t flags, uint32_t mode,
 		(void)kheap_free(context);
 		return -VFS_ENOMEM;
 	}
+	file->status_flags = flags & (VFS_O_ACCMODE | VFS_O_NONBLOCK);
 	*result = file;
 	return 0;
 }

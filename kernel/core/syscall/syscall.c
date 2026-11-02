@@ -1,3 +1,4 @@
+#include "kernel/pty.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -15,7 +16,14 @@
 #include "kernel/network_service.h"
 #include "kernel/udp_socket.h"
 #include "kernel/icmp_echo.h"
+#include "kernel/unix_socket.h"
 #include "kernel/timer.h"
+#include "kernel/framebuffer_device.h"
+#include "abi/framebuffer.h"
+#include "abi/input.h"
+#include "abi/select.h"
+#include "abi/ioctl.h"
+#include "arch/x86_64/ps2_keyboard.h"
 
 #define SYSCALL_VECTOR 128U
 #define SYSCALL_MAX_IO 4096U
@@ -23,6 +31,9 @@
 #define SYSCALL_MAX_IOV_BYTES (64U * 1024U)
 #define SYSCALL_IOV_CHUNK 512U
 #define TIOCGWINSZ_REQUEST 0x5413U
+#define OS_FIONBIO 0x5421U
+#define TCGETS_REQUEST 0x5401U
+#define TCSETS_REQUEST 0x5402U
 #define TIOCSRAW_REQUEST 0x4f530001U
 #define TIOCCANON_REQUEST 0x4f530002U
 #define ERRNO_EFAULT 14U
@@ -36,6 +47,7 @@
 #define ERRNO_EPIPE 32U
 #define ERRNO_EMFILE 24U
 #define ERRNO_ENOTTY 25U
+#define ERRNO_ENODEV 19U
 #define CLOCK_MONOTONIC_ID 1U
 #define MONOTONIC_TICK_HZ 100U
 #define MONOTONIC_TICK_NS (1000000000ULL / MONOTONIC_TICK_HZ)
@@ -44,6 +56,13 @@
 #define NATIVE_S_IFCHR 0020000U
 #define NATIVE_AT_FDCWD (-100)
 #define NATIVE_AT_SYMLINK_NOFOLLOW 0x100U
+#define NATIVE_F_GETFD 1U
+#define NATIVE_F_SETFD 2U
+#define NATIVE_F_GETFL 3U
+#define NATIVE_F_SETFL 4U
+#define NATIVE_F_SETOWN 8U
+#define NATIVE_O_NONBLOCK FD_STATUS_NONBLOCK
+#define NATIVE_O_ACCMODE 3U
 
 struct native_timespec {
 	int64_t tv_sec;
@@ -157,6 +176,157 @@ syscall_error(struct interrupt_frame *frame, uint64_t error)
 	frame->rflags |= 1U;
 }
 
+static bool
+fd_set_contains(const struct os_fd_set *set, unsigned int descriptor)
+{
+	return set != NULL && (set->words[descriptor / 64U] &
+	    (1ULL << (descriptor % 64U))) != 0;
+}
+
+static void
+fd_set_add(struct os_fd_set *set, unsigned int descriptor)
+{
+	set->words[descriptor / 64U] |= 1ULL << (descriptor % 64U);
+}
+
+static struct interrupt_frame *
+syscall_select(struct interrupt_frame *frame)
+{
+	struct os_fd_set requested_read = {0}, requested_write = {0};
+	struct os_fd_set requested_except = {0};
+	struct os_fd_set ready_read = {0}, ready_write = {0};
+	struct os_fd_set ready_except = {0};
+	struct os_timeval timeout;
+	uint64_t nfds = frame->rdi;
+	uint64_t deadline = process_select_deadline();
+	uint64_t now;
+	uint64_t wait_ticks = 0;
+	int ready_count = 0;
+	bool has_timeout = frame->r8 != 0;
+	if (nfds > FD_TABLE_CAPACITY) {
+		process_select_deadline_clear();
+		syscall_error(frame, EINVAL);
+		return frame;
+	}
+	if ((frame->rsi != 0 && !vmm_copy_from_user(vmm_active_address_space(),
+	    &requested_read, frame->rsi, sizeof(requested_read))) ||
+	    (frame->rdx != 0 && !vmm_copy_from_user(vmm_active_address_space(),
+	    &requested_write, frame->rdx, sizeof(requested_write))) ||
+	    (frame->r10 != 0 && !vmm_copy_from_user(vmm_active_address_space(),
+	    &requested_except, frame->r10, sizeof(requested_except)))) {
+		process_select_deadline_clear();
+		syscall_error(frame, EFAULT);
+		return frame;
+	}
+	if (has_timeout && !vmm_copy_from_user(vmm_active_address_space(),
+	    &timeout, frame->r8, sizeof(timeout))) {
+		process_select_deadline_clear();
+		syscall_error(frame, EFAULT);
+		return frame;
+	}
+	if (has_timeout && (timeout.seconds < 0 || timeout.microseconds < 0 ||
+	    timeout.microseconds >= 1000000)) {
+		process_select_deadline_clear();
+		syscall_error(frame, EINVAL);
+		return frame;
+	}
+	if ((frame->rsi != 0 && !vmm_validate_user_write(
+	    vmm_active_address_space(), frame->rsi, sizeof(ready_read))) ||
+	    (frame->rdx != 0 && !vmm_validate_user_write(
+	    vmm_active_address_space(), frame->rdx, sizeof(ready_write))) ||
+	    (frame->r10 != 0 && !vmm_validate_user_write(
+	    vmm_active_address_space(), frame->r10, sizeof(ready_except)))) {
+		process_select_deadline_clear();
+		syscall_error(frame, EFAULT);
+		return frame;
+	}
+	for (unsigned int descriptor = 0; descriptor < nfds; descriptor++) {
+		uint32_t requested = 0, ready;
+		struct fd_object *object;
+		if (fd_set_contains(&requested_read, descriptor))
+			requested |= FD_POLL_READ;
+		if (fd_set_contains(&requested_write, descriptor))
+			requested |= FD_POLL_WRITE;
+		if (fd_set_contains(&requested_except, descriptor))
+			requested |= FD_POLL_ERROR;
+		if (requested == 0)
+			continue;
+		object = fd_object_for_descriptor(current_fd_table(), descriptor);
+		if (object == NULL) {
+			process_select_deadline_clear();
+			syscall_error(frame, EBADF);
+			return frame;
+		}
+		ready = fd_object_poll(object, requested);
+		if ((ready & FD_POLL_READ) != 0) {
+			fd_set_add(&ready_read, descriptor);
+			ready_count++;
+		}
+		if ((ready & FD_POLL_WRITE) != 0) {
+			fd_set_add(&ready_write, descriptor);
+			ready_count++;
+		}
+		if ((ready & FD_POLL_ERROR) != 0) {
+			fd_set_add(&ready_except, descriptor);
+			ready_count++;
+		}
+	}
+	if (ready_count != 0) {
+		process_select_deadline_clear();
+		if ((frame->rsi != 0 && !vmm_copy_to_user(vmm_active_address_space(),
+		    frame->rsi, &ready_read, sizeof(ready_read))) ||
+		    (frame->rdx != 0 && !vmm_copy_to_user(vmm_active_address_space(),
+		    frame->rdx, &ready_write, sizeof(ready_write))) ||
+		    (frame->r10 != 0 && !vmm_copy_to_user(vmm_active_address_space(),
+		    frame->r10, &ready_except, sizeof(ready_except)))) {
+			syscall_error(frame, EFAULT);
+			return frame;
+		}
+		frame->rax = (uint64_t)ready_count;
+		return frame;
+	}
+	if (deadline == 0) {
+		if (!has_timeout) {
+			deadline = UINT64_MAX;
+		} else {
+			if ((uint64_t)timeout.seconds >
+			    (UINT64_MAX - MONOTONIC_TICK_HZ) / MONOTONIC_TICK_HZ) {
+				process_select_deadline_clear();
+				syscall_error(frame, EINVAL);
+				return frame;
+			}
+			wait_ticks = (uint64_t)timeout.seconds *
+			    MONOTONIC_TICK_HZ;
+			wait_ticks += ((uint64_t)timeout.microseconds *
+			    MONOTONIC_TICK_HZ + 999999U) / 1000000U;
+			now = timer_ticks();
+			if (wait_ticks > UINT64_MAX - now) {
+				process_select_deadline_clear();
+				syscall_error(frame, EINVAL);
+				return frame;
+			}
+			deadline = now + wait_ticks;
+		}
+		process_select_deadline_set(deadline);
+	}
+	if (deadline != UINT64_MAX && timer_ticks() >= deadline) {
+		process_select_deadline_clear();
+		if ((frame->rsi != 0 && !vmm_copy_to_user(vmm_active_address_space(),
+		    frame->rsi, &ready_read, sizeof(ready_read))) ||
+		    (frame->rdx != 0 && !vmm_copy_to_user(vmm_active_address_space(),
+		    frame->rdx, &ready_write, sizeof(ready_write))) ||
+		    (frame->r10 != 0 && !vmm_copy_to_user(vmm_active_address_space(),
+		    frame->r10, &ready_except, sizeof(ready_except)))) {
+			syscall_error(frame, EFAULT);
+			return frame;
+		}
+		frame->rax = 0;
+		return frame;
+	}
+	return process_block_on_channel_until(frame, fd_readiness_wait_channel(),
+	    deadline == UINT64_MAX ? 0 : deadline);
+}
+
 static int
 load_iovecs(struct interrupt_frame *frame, struct syscall_iovec *vectors,
 	uint64_t *total)
@@ -263,12 +433,28 @@ syscall_writev(struct interrupt_frame *frame)
 				if (result == -(int)ERRNO_EAGAIN) {
 					if (written != 0)
 						goto partial;
+					if (fd_object_nonblocking(object)) {
+						syscall_error(frame, ERRNO_EAGAIN);
+						return frame;
+					}
 					return process_block_on_channel(frame,
 					    pipe_wait_channel(object, PIPE_WRITE_WAIT));
 				}
 			} else {
 				result = fd_write(table, frame->rdi, buffer, chunk,
 				    &amount);
+				if (result == -(int)ERRNO_EAGAIN &&
+				    (unix_socket_is_object(object) || pty_is_object(object))) {
+					if (written != 0)
+						goto partial;
+					if (fd_object_nonblocking(object)) {
+						syscall_error(frame, ERRNO_EAGAIN);
+						return frame;
+					}
+					return process_block_on_channel(frame,
+					    pty_is_object(object) ? fd_readiness_wait_channel() :
+				    unix_socket_wait_channel(object, false));
+				}
 			}
 			if (result != 0) {
 				if (written != 0)
@@ -333,12 +519,28 @@ syscall_readv(struct interrupt_frame *frame)
 				if (result == -(int)ERRNO_EAGAIN) {
 					if (received != 0)
 						goto partial;
+					if (fd_object_nonblocking(object)) {
+						syscall_error(frame, ERRNO_EAGAIN);
+						return frame;
+					}
 					return process_block_on_channel(frame,
 					    pipe_wait_channel(object, PIPE_READ_WAIT));
 				}
 			} else {
 				result = fd_read(table, frame->rdi, buffer, chunk,
 				    &amount);
+				if (result == -(int)ERRNO_EAGAIN &&
+				    (unix_socket_is_object(object) || pty_is_object(object))) {
+					if (received != 0)
+						goto partial;
+					if (fd_object_nonblocking(object)) {
+						syscall_error(frame, ERRNO_EAGAIN);
+						return frame;
+					}
+					return process_block_on_channel(frame,
+					    pty_is_object(object) ? fd_readiness_wait_channel() :
+				    unix_socket_wait_channel(object, true));
+				}
 			}
 			if (result != 0) {
 				if (received != 0)
@@ -512,6 +714,183 @@ syscall_interrupt(struct interrupt_frame *frame)
 	case SYSCALL_GET_ABI_VERSION:
 		frame->rax = SYSCALL_ABI_VERSION;
 		break;
+	case SYSCALL_FRAMEBUFFER_INFO:
+		{
+			struct os_framebuffer_info info;
+			struct address_space *space = vmm_active_address_space();
+
+			if (!framebuffer_device_info(&info)) {
+				syscall_error(frame, ERRNO_ENODEV);
+				break;
+			}
+			if (!vmm_validate_user_write(space, frame->rdi, sizeof(info)) ||
+			    !vmm_copy_to_user(space, frame->rdi, &info, sizeof(info))) {
+				syscall_error(frame, ERRNO_EFAULT);
+				break;
+			}
+			frame->rax = 0;
+		}
+		break;
+	case SYSCALL_FRAMEBUFFER_PRESENT:
+		{
+			int result = framebuffer_device_present(frame->rdi,
+			    (size_t)frame->rsi);
+
+			if (result != 0)
+				syscall_error(frame, errno_from_kernel(result));
+			else
+				frame->rax = 0;
+		}
+		break;
+	case SYSCALL_KEYBOARD_POLL:
+		{
+			struct terminal_key_event event;
+			struct os_keyboard_event output;
+			struct address_space *space = vmm_active_address_space();
+
+			if (!vmm_validate_user_write(space, frame->rdi, sizeof(output))) {
+				syscall_error(frame, ERRNO_EFAULT);
+				break;
+			}
+			if (!ps2_keyboard_available()) {
+				syscall_error(frame, ERRNO_ENODEV);
+				break;
+			}
+			if (!ps2_keyboard_event_poll(&event)) {
+				frame->rax = 0;
+				break;
+			}
+			output = (struct os_keyboard_event){
+				.scancode = event.scancode,
+				.extended = event.extended,
+				.pressed = event.pressed,
+				.reserved = 0
+			};
+			if (!vmm_copy_to_user(space, frame->rdi, &output,
+			    sizeof(output))) {
+				syscall_error(frame, ERRNO_EFAULT);
+				break;
+			}
+			frame->rax = 1;
+		}
+		break;
+	case SYSCALL_MOUSE_POLL:
+		{
+			struct os_mouse_event output;
+			struct address_space *space = vmm_active_address_space();
+
+			if (!vmm_validate_user_write(space, frame->rdi,
+			    sizeof(output))) {
+				syscall_error(frame, EFAULT);
+				break;
+			}
+			if (!ps2_mouse_available()) {
+				syscall_error(frame, ERRNO_ENODEV);
+				break;
+			}
+			if (!ps2_mouse_event_poll(&output)) {
+				frame->rax = 0;
+				break;
+			}
+			if (!vmm_copy_to_user(space, frame->rdi, &output,
+			    sizeof(output))) {
+				syscall_error(frame, EFAULT);
+				break;
+			}
+			frame->rax = 1;
+		}
+		break;
+	case SYSCALL_UNIX_SOCKET:
+		{
+			int result = unix_socket_create(current_fd_table(),
+			    (int)frame->rdi, (int)frame->rsi, (int)frame->rdx);
+			if (result < 0)
+				syscall_error(frame, errno_from_kernel(result));
+			else
+				frame->rax = (uint64_t)result;
+		}
+		break;
+	case SYSCALL_UNIX_BIND:
+	case SYSCALL_UNIX_CONNECT:
+		{
+			struct unix_socket_address address;
+			struct fd_object *object = fd_object_for_descriptor(
+			    current_fd_table(), frame->rdi);
+			int result;
+			if (object == NULL) {
+				syscall_error(frame, EBADF);
+				break;
+			}
+			if (frame->rdx < sizeof(address.family) + 1 ||
+			    frame->rdx > sizeof(address)) {
+				syscall_error(frame, EINVAL);
+				break;
+			}
+			if (!vmm_copy_from_user(vmm_active_address_space(), &address,
+			    frame->rsi, (size_t)frame->rdx)) {
+				syscall_error(frame, EFAULT);
+				break;
+			}
+			result = number == SYSCALL_UNIX_BIND ?
+			    unix_socket_bind(object, &address, (size_t)frame->rdx) :
+			    unix_socket_connect(object, &address, (size_t)frame->rdx);
+			if (result != 0)
+				syscall_error(frame, errno_from_kernel(result));
+			else
+				frame->rax = 0;
+		}
+		break;
+	case SYSCALL_UNIX_LISTEN:
+		{
+			struct fd_object *object = fd_object_for_descriptor(
+			    current_fd_table(), frame->rdi);
+			int result = unix_socket_listen(object, (int)frame->rsi);
+			if (result != 0)
+				syscall_error(frame, errno_from_kernel(result));
+			else
+				frame->rax = 0;
+		}
+		break;
+	case SYSCALL_UNIX_ACCEPT:
+		{
+			struct fd_object *object = fd_object_for_descriptor(
+			    current_fd_table(), frame->rdi);
+			int result;
+			if (object == NULL) {
+				syscall_error(frame, EBADF);
+				break;
+			}
+			result = unix_socket_accept(current_fd_table(), object);
+			if (result == -EAGAIN && fd_object_nonblocking(object)) {
+				syscall_error(frame, ERRNO_EAGAIN);
+				break;
+			}
+			if (result == -EAGAIN)
+				return process_block_on_channel(frame,
+				    pty_is_object(object) ? fd_readiness_wait_channel() :
+				    unix_socket_wait_channel(object, true));
+			if (result < 0)
+				syscall_error(frame, errno_from_kernel(result));
+			else if (frame->rsi != 0) {
+				uint32_t capacity;
+				uint32_t actual = sizeof(uint16_t);
+				uint16_t family = UNIX_SOCKET_AF_UNIX;
+				if (frame->rdx == 0 || !vmm_copy_from_user(
+				    vmm_active_address_space(), &capacity, frame->rdx,
+				    sizeof(capacity)) || capacity < sizeof(family) ||
+				    !vmm_copy_to_user(vmm_active_address_space(), frame->rsi,
+				    &family, sizeof(family)) || !vmm_copy_to_user(
+				    vmm_active_address_space(), frame->rdx, &actual,
+				    sizeof(actual))) {
+					(void)fd_close(current_fd_table(), (uint64_t)result);
+					syscall_error(frame, EFAULT);
+				} else {
+					frame->rax = (uint64_t)result;
+				}
+			} else
+				frame->rax = (uint64_t)result;
+		}
+		break;
 	case SYSCALL_EXIT:
 		return process_exit(frame, frame->rdi);
 	case SYSCALL_WRITE:
@@ -522,6 +901,7 @@ syscall_interrupt(struct interrupt_frame *frame)
 		{
 			char buffer[SYSCALL_MAX_IO];
 			struct address_space *space = vmm_active_address_space();
+			struct fd_object *object;
 			int result;
 
 			if (frame->rdx != 0 &&
@@ -531,28 +911,38 @@ syscall_interrupt(struct interrupt_frame *frame)
 				break;
 			}
 			table = current_fd_table();
-			{
-				struct fd_object *object = fd_object_for_descriptor(table,
-				    frame->rdi);
-
-				if (pipe_is_write_endpoint(object)) {
-					result = pipe_write_try(object, buffer,
-					    (size_t)frame->rdx, &amount);
-					if (result == -(int)ERRNO_EAGAIN)
-						return process_block_on_channel(frame,
-						    pipe_wait_channel(object,
-						    PIPE_WRITE_WAIT));
-					if (result != 0) {
-						syscall_error(frame,
-						    errno_from_kernel(result));
-						break;
-					}
-					frame->rax = amount;
+			object = fd_object_for_descriptor(table, frame->rdi);
+			if (pipe_is_write_endpoint(object)) {
+				result = pipe_write_try(object, buffer,
+				    (size_t)frame->rdx, &amount);
+				if (result == -(int)ERRNO_EAGAIN &&
+				    fd_object_nonblocking(object)) {
+					syscall_error(frame, ERRNO_EAGAIN);
 					break;
 				}
+				if (result == -(int)ERRNO_EAGAIN)
+					return process_block_on_channel(frame,
+					    pipe_wait_channel(object, PIPE_WRITE_WAIT));
+				if (result != 0) {
+					syscall_error(frame, errno_from_kernel(result));
+					break;
+				}
+				frame->rax = amount;
+				break;
 			}
 			result = fd_write(table, frame->rdi, buffer,
 			    (size_t)frame->rdx, &amount);
+			if (result == -(int)ERRNO_EAGAIN &&
+			    (unix_socket_is_object(object) || pty_is_object(object)) &&
+			    fd_object_nonblocking(object)) {
+				syscall_error(frame, ERRNO_EAGAIN);
+				break;
+			}
+			if (result == -(int)ERRNO_EAGAIN &&
+			    (unix_socket_is_object(object) || pty_is_object(object)))
+				return process_block_on_channel(frame,
+				    pty_is_object(object) ? fd_readiness_wait_channel() :
+				    unix_socket_wait_channel(object, false));
 			if (result != 0) {
 				syscall_error(frame, errno_from_kernel(result));
 				break;
@@ -562,6 +952,9 @@ syscall_interrupt(struct interrupt_frame *frame)
 		break;
 	case SYSCALL_GETPID:
 		frame->rax = process_current_pid();
+		break;
+	case SYSCALL_GETPPID:
+		frame->rax = process_current_ppid();
 		break;
 	case SYSCALL_PROCESS_SNAPSHOT:
 		{
@@ -751,6 +1144,7 @@ syscall_interrupt(struct interrupt_frame *frame)
 			frame->rax = 0;
 		}
 		break;
+	case SYSCALL_PTY_PAIR:
 	case SYSCALL_PIPE:
 		{
 			uint32_t descriptors[2];
@@ -764,8 +1158,9 @@ syscall_interrupt(struct interrupt_frame *frame)
 				break;
 			}
 			table = current_fd_table();
-			result = pipe_create(table, &read_descriptor,
-			    &write_descriptor);
+			result = number == SYSCALL_PTY_PAIR ?
+			    pty_create(table, &read_descriptor, &write_descriptor) :
+			    pipe_create(table, &read_descriptor, &write_descriptor);
 			if (result != 0) {
 				syscall_error(frame, errno_from_kernel(result));
 				break;
@@ -796,6 +1191,48 @@ syscall_interrupt(struct interrupt_frame *frame)
 		else
 			frame = process_sigaction(frame, (unsigned int)frame->rdi,
 			    frame->rsi, frame->rdx, &error);
+		break;
+	case SYSCALL_SIGPROCMASK:
+		{
+			uint64_t requested, previous;
+			uint64_t *requested_pointer = NULL;
+			uint64_t *previous_pointer = NULL;
+			int result;
+			struct address_space *space = vmm_active_address_space();
+
+			if (frame->rsi != 0) {
+				if (!vmm_copy_from_user(space, &requested, frame->rsi,
+				    sizeof(requested))) {
+					syscall_error(frame, ERRNO_EFAULT);
+					break;
+				}
+				requested_pointer = &requested;
+			}
+			if (frame->rdx != 0) {
+				if (!vmm_validate_user_write(space, frame->rdx,
+				    sizeof(previous))) {
+					syscall_error(frame, ERRNO_EFAULT);
+					break;
+				}
+				previous_pointer = &previous;
+			}
+			if (frame->rdi > INT32_MAX) {
+				syscall_error(frame, ERRNO_EINVAL);
+				break;
+			}
+			result = process_signal_mask((int)frame->rdi,
+			    requested_pointer, previous_pointer);
+			if (result < 0) {
+				syscall_error(frame, (uint64_t)-result);
+				break;
+			}
+			if (previous_pointer != NULL && !vmm_copy_to_user(space,
+			    frame->rdx, &previous, sizeof(previous))) {
+				syscall_error(frame, ERRNO_EFAULT);
+				break;
+			}
+			frame->rax = 0;
+		}
 		break;
 	case SYSCALL_SIGRETURN:
 		frame = process_sigreturn(frame, &error);
@@ -889,12 +1326,110 @@ syscall_interrupt(struct interrupt_frame *frame)
 				syscall_error(frame, 9);
 				break;
 			}
+			if (frame->rsi == OS_FIONBIO) {
+				int enabled;
+				if (!vmm_copy_from_user(vmm_active_address_space(),
+				    &enabled, frame->rdx, sizeof(enabled))) {
+					syscall_error(frame, ERRNO_EFAULT);
+					break;
+				}
+				if (enabled)
+					object->status_flags |= FD_STATUS_NONBLOCK;
+				else
+					object->status_flags &= ~FD_STATUS_NONBLOCK;
+				fd_readiness_wake();
+				frame->rax = 0;
+				break;
+			}
+			if (frame->rsi == OS_FIONREAD) {
+				size_t available;
+				int result;
+				if (!(unix_socket_is_object(object) || pty_is_object(object))) {
+					syscall_error(frame, ERRNO_ENOTTY);
+					break;
+				}
+				if (!vmm_validate_user_write(vmm_active_address_space(),
+				    frame->rdx, sizeof(int))) {
+					syscall_error(frame, ERRNO_EFAULT);
+					break;
+				}
+				result = pty_is_object(object) ? pty_bytes_available(object, &available) :
+				    unix_socket_bytes_available(object, &available);
+				if (result != 0) {
+					syscall_error(frame, errno_from_kernel(result));
+					break;
+				}
+				int value = (int)available;
+				if (!vmm_copy_to_user(vmm_active_address_space(),
+				    frame->rdx, &value, sizeof(value))) {
+					syscall_error(frame, ERRNO_EFAULT);
+					break;
+				}
+				frame->rax = 0;
+				break;
+			}
+			if (pty_is_object(object) &&
+			    (frame->rsi == TIOCGWINSZ_REQUEST || frame->rsi == 0x5414U)) {
+				uint16_t dimensions[4];
+				bool set = frame->rsi == 0x5414U;
+				struct address_space *space = vmm_active_address_space();
+				if ((set && !vmm_copy_from_user(space, dimensions,
+				    frame->rdx, sizeof(dimensions))) ||
+				    (!set && !vmm_validate_user_write(space, frame->rdx,
+				    sizeof(dimensions)))) {
+					syscall_error(frame, ERRNO_EFAULT);
+					break;
+				}
+				(void)pty_window(object, dimensions, set);
+				if (!set && !vmm_copy_to_user(space, frame->rdx,
+				    dimensions, sizeof(dimensions)))
+					syscall_error(frame, ERRNO_EFAULT);
+				else
+					frame->rax = 0;
+				break;
+			}
+			if (pty_is_object(object) &&
+			    (frame->rsi == TCGETS_REQUEST || frame->rsi == TCSETS_REQUEST)) {
+				struct syscall_termios {
+					uint32_t input_flags, output_flags, control_flags, local_flags;
+					uint8_t control_chars[32];
+					uint32_t input_speed, output_speed;
+				} attributes;
+				bool set = frame->rsi == TCSETS_REQUEST;
+				struct address_space *space = vmm_active_address_space();
+				int result;
+
+				if ((set && !vmm_copy_from_user(space, &attributes,
+				    frame->rdx, sizeof(attributes))) ||
+				    (!set && !vmm_validate_user_write(space, frame->rdx,
+				    sizeof(attributes)))) {
+					syscall_error(frame, ERRNO_EFAULT);
+					break;
+				}
+				result = pty_termios(object, &attributes, set);
+				if (result != 0) {
+					syscall_error(frame, errno_from_kernel(result));
+					break;
+				}
+				if (!set && !vmm_copy_to_user(space, frame->rdx,
+				    &attributes, sizeof(attributes)))
+					syscall_error(frame, ERRNO_EFAULT);
+				else
+					frame->rax = 0;
+				break;
+			}
 			if (!fd_object_is_terminal(object)) {
 				syscall_error(frame, ERRNO_ENOTTY);
 				break;
 			}
 			if (frame->rsi == TIOCSRAW_REQUEST ||
 			    frame->rsi == TIOCCANON_REQUEST) {
+				if (pty_is_object(object)) {
+					int result = pty_set_raw(object, frame->rsi == TIOCSRAW_REQUEST);
+					if (result != 0) syscall_error(frame, errno_from_kernel(result));
+					else frame->rax = 0;
+					break;
+				}
 				if (!tty_set_raw_mode(frame->rsi == TIOCSRAW_REQUEST))
 					syscall_error(frame, ERRNO_ENOTTY);
 				else
@@ -1131,6 +1666,81 @@ syscall_interrupt(struct interrupt_frame *frame)
 				frame->rax = 0;
 		}
 		break;
+	case SYSCALL_FCNTL:
+		{
+			struct fd_object *object = fd_object_for_descriptor(
+			    current_fd_table(), frame->rdi);
+			if (object == NULL) {
+				syscall_error(frame, EBADF);
+				break;
+			}
+			switch (frame->rsi) {
+			case NATIVE_F_GETFD: {
+				uint32_t flags;
+				int result = fd_get_descriptor_flags(current_fd_table(),
+				    frame->rdi, &flags);
+				if (result != 0)
+					syscall_error(frame, errno_from_kernel(result));
+				else
+					frame->rax = flags;
+				break;
+			}
+			case NATIVE_F_SETFD: {
+				int result = fd_set_descriptor_flags(current_fd_table(),
+				    frame->rdi, (uint32_t)frame->rdx);
+				if (result != 0)
+					syscall_error(frame, errno_from_kernel(result));
+				else
+					frame->rax = 0;
+				break;
+			}
+			case NATIVE_F_GETFL:
+				frame->rax = object->status_flags;
+				break;
+			case NATIVE_F_SETFL:
+				object->status_flags = (object->status_flags &
+				    NATIVE_O_ACCMODE) | ((uint32_t)frame->rdx &
+				    NATIVE_O_NONBLOCK);
+				fd_readiness_wake();
+				frame->rax = 0;
+				break;
+			case NATIVE_F_SETOWN:
+				syscall_error(frame, EOPNOTSUPP);
+				break;
+			default:
+				syscall_error(frame, EOPNOTSUPP);
+				break;
+			}
+		}
+		break;
+	case SYSCALL_DUP2:
+		{
+			int result;
+			if (frame->rdi > UINT32_MAX || frame->rsi > UINT32_MAX) {
+				syscall_error(frame, EBADF);
+				break;
+			}
+			result = fd_dup2(current_fd_table(), frame->rdi, frame->rsi);
+			if (result < 0)
+				syscall_error(frame, errno_from_kernel(result));
+			else
+				frame->rax = (uint64_t)result;
+		}
+		break;
+	case SYSCALL_DUP:
+		{
+			int result;
+			if (frame->rdi > UINT32_MAX) {
+				syscall_error(frame, EBADF);
+				break;
+			}
+			result = fd_dup(current_fd_table(), frame->rdi);
+			if (result < 0)
+				syscall_error(frame, errno_from_kernel(result));
+			else
+				frame->rax = (uint64_t)result;
+		}
+		break;
 	case SYSCALL_LSEEK:
 		{
 			uint64_t position;
@@ -1266,6 +1876,11 @@ syscall_interrupt(struct interrupt_frame *frame)
 			if (pipe_is_read_endpoint(object)) {
 				result = pipe_read_stage(object, buffer,
 				    (size_t)frame->rdx, &amount);
+				if (result == -(int)ERRNO_EAGAIN &&
+				    fd_object_nonblocking(object)) {
+					syscall_error(frame, ERRNO_EAGAIN);
+					break;
+				}
 				if (result == -(int)ERRNO_EAGAIN)
 					return process_block_on_channel(frame,
 					    pipe_wait_channel(object, PIPE_READ_WAIT));
@@ -1288,6 +1903,16 @@ syscall_interrupt(struct interrupt_frame *frame)
 			}
 			result = fd_read(current_fd_table(), frame->rdi, buffer,
 			    (size_t)frame->rdx, &amount);
+			if (result == -(int)ERRNO_EAGAIN &&
+			    (unix_socket_is_object(object) || pty_is_object(object)) &&
+			    fd_object_nonblocking(object)) {
+				syscall_error(frame, ERRNO_EAGAIN);
+				break;
+			}
+			if (result == -(int)ERRNO_EAGAIN && (unix_socket_is_object(object) || pty_is_object(object)))
+				return process_block_on_channel(frame,
+				    pty_is_object(object) ? fd_readiness_wait_channel() :
+				    unix_socket_wait_channel(object, true));
 
 			if (result != 0) {
 				syscall_error(frame, errno_from_kernel(result));
@@ -1345,6 +1970,82 @@ syscall_interrupt(struct interrupt_frame *frame)
 				break;
 			}
 			frame->rax = (uint64_t)result;
+		}
+		break;
+	case SYSCALL_SELECT:
+		return syscall_select(frame);
+	case SYSCALL_UNIX_SHUTDOWN:
+		{
+			struct fd_object *object = fd_object_for_descriptor(
+			    current_fd_table(), frame->rdi);
+			int result = unix_socket_shutdown(object, (int)frame->rsi);
+			if (result != 0)
+				syscall_error(frame, errno_from_kernel(result));
+			else
+				frame->rax = 0;
+		}
+		break;
+	case SYSCALL_UNIX_GETSOCKOPT:
+		{
+			uint8_t value[16] = {0};
+			uint32_t length;
+			struct fd_object *object = fd_object_for_descriptor(
+			    current_fd_table(), frame->rdi);
+			size_t actual;
+			int result;
+			if (object == NULL) {
+				syscall_error(frame, EBADF);
+				break;
+			}
+			if (frame->rsi != UNIX_SOCKET_SOL_SOCKET || frame->r8 == 0 ||
+			    !vmm_copy_from_user(vmm_active_address_space(), &length,
+			    frame->r8, sizeof(length)) || length > sizeof(value)) {
+				syscall_error(frame, EINVAL);
+				break;
+			}
+			actual = length;
+			result = unix_socket_get_option(object, (int)frame->rdx,
+			    value, &actual);
+			if (result != 0) {
+				syscall_error(frame, errno_from_kernel(result));
+				break;
+			}
+			length = (uint32_t)actual;
+			if (!vmm_validate_user_write(vmm_active_address_space(),
+			    frame->r10, actual) || !vmm_validate_user_write(
+			    vmm_active_address_space(), frame->r8, sizeof(length)) ||
+			    !vmm_copy_to_user(vmm_active_address_space(), frame->r10,
+			    value, actual) || !vmm_copy_to_user(vmm_active_address_space(),
+			    frame->r8, &length, sizeof(length))) {
+				syscall_error(frame, EFAULT);
+				break;
+			}
+			frame->rax = 0;
+		}
+		break;
+	case SYSCALL_UNIX_SETSOCKOPT:
+		{
+			uint8_t value[16];
+			struct fd_object *object = fd_object_for_descriptor(
+			    current_fd_table(), frame->rdi);
+			int result;
+			if (object == NULL) {
+				syscall_error(frame, EBADF);
+				break;
+			}
+			if (frame->rsi != UNIX_SOCKET_SOL_SOCKET || frame->r8 == 0 ||
+			    frame->r8 > sizeof(value) || !vmm_copy_from_user(
+			    vmm_active_address_space(), value, frame->r10,
+			    (size_t)frame->r8)) {
+				syscall_error(frame, EINVAL);
+				break;
+			}
+			result = unix_socket_set_option(object, (int)frame->rdx,
+			    value, (size_t)frame->r8);
+			if (result != 0)
+				syscall_error(frame, errno_from_kernel(result));
+			else
+				frame->rax = 0;
 		}
 		break;
 	default:

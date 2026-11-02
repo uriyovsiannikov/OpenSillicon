@@ -3,6 +3,8 @@
 #include "kernel/fd.h"
 #include "kernel/heap.h"
 #include "kernel/log.h"
+#include "kernel/process.h"
+#include "kernel/terminal.h"
 #include "kernel/tty.h"
 #include "kernel/vfs.h"
 
@@ -18,6 +20,19 @@
 static struct fd_object *get_object(struct fd_table *table,
 	uint64_t descriptor);
 static bool console_framebuffer_enabled;
+static uint8_t fd_readiness_channel;
+
+void
+fd_readiness_wake(void)
+{
+	process_wake_channel(&fd_readiness_channel);
+}
+
+void *
+fd_readiness_wait_channel(void)
+{
+	return &fd_readiness_channel;
+}
 
 void
 fd_console_framebuffer_enable(bool enable)
@@ -66,18 +81,21 @@ static const struct fd_operations console_operations = {
 
 static struct fd_object standard_input = {
 	.operations = &console_operations,
+	.status_flags = 0,
 	.references = UINT32_MAX,
 	.immortal = true
 };
 
 static struct fd_object standard_output = {
 	.operations = &console_operations,
+	.status_flags = 1,
 	.references = UINT32_MAX,
 	.immortal = true
 };
 
 static struct fd_object standard_error = {
 	.operations = &console_operations,
+	.status_flags = 1,
 	.references = UINT32_MAX,
 	.immortal = true
 };
@@ -139,8 +157,10 @@ fd_table_init_standard(struct fd_table *table)
 
 	if (table == NULL)
 		return;
-	for (i = 0; i < FD_TABLE_CAPACITY; i++)
+	for (i = 0; i < FD_TABLE_CAPACITY; i++) {
 		table->entries[i] = NULL;
+		table->descriptor_flags[i] = 0;
+	}
 	table->entries[0] = &standard_input;
 	table->entries[1] = &standard_output;
 	table->entries[2] = &standard_error;
@@ -155,6 +175,7 @@ fd_table_clone(struct fd_table *destination, const struct fd_table *source)
 		return false;
 	for (i = 0; i < FD_TABLE_CAPACITY; i++) {
 		destination->entries[i] = source->entries[i];
+		destination->descriptor_flags[i] = source->descriptor_flags[i];
 		fd_object_get(destination->entries[i]);
 	}
 	return true;
@@ -171,6 +192,7 @@ fd_table_destroy(struct fd_table *table)
 		struct fd_object *object = table->entries[i];
 
 		table->entries[i] = NULL;
+		table->descriptor_flags[i] = 0;
 		fd_object_put(object);
 	}
 }
@@ -185,6 +207,7 @@ fd_install(struct fd_table *table, struct fd_object *object)
 	for (i = 3; i < FD_TABLE_CAPACITY; i++) {
 		if (table->entries[i] == NULL) {
 			table->entries[i] = object;
+			table->descriptor_flags[i] = 0;
 			return (int)i;
 		}
 	}
@@ -217,6 +240,8 @@ fd_install_pair(struct fd_table *table, struct fd_object *first,
 		return -FD_ERROR_EMFILE;
 	table->entries[first_slot] = first;
 	table->entries[second_slot] = second;
+	table->descriptor_flags[first_slot] = 0;
+	table->descriptor_flags[second_slot] = 0;
 	*first_descriptor = first_slot;
 	*second_descriptor = second_slot;
 	return 0;
@@ -228,12 +253,77 @@ fd_object_for_descriptor(struct fd_table *table, uint64_t descriptor)
 	return get_object(table, descriptor);
 }
 
+int
+fd_get_descriptor_flags(struct fd_table *table, uint64_t descriptor,
+	uint32_t *flags)
+{
+	if (table == NULL || flags == NULL || descriptor >= FD_TABLE_CAPACITY ||
+	    table->entries[descriptor] == NULL)
+		return -FD_ERROR_EBADF;
+	*flags = table->descriptor_flags[descriptor];
+	return 0;
+}
+
+int
+fd_set_descriptor_flags(struct fd_table *table, uint64_t descriptor,
+	uint32_t flags)
+{
+	if (table == NULL || descriptor >= FD_TABLE_CAPACITY ||
+	    table->entries[descriptor] == NULL)
+		return -FD_ERROR_EBADF;
+	if ((flags & ~FD_DESCRIPTOR_CLOEXEC) != 0)
+		return -FD_ERROR_EINVAL;
+	table->descriptor_flags[descriptor] = flags;
+	return 0;
+}
+
+void
+fd_table_close_on_exec(struct fd_table *table)
+{
+	unsigned int i;
+	if (table == NULL)
+		return;
+	for (i = 0; i < FD_TABLE_CAPACITY; i++)
+		if ((table->descriptor_flags[i] & FD_DESCRIPTOR_CLOEXEC) != 0)
+			(void)fd_close(table, i);
+}
+
 bool
 fd_object_is_terminal(const struct fd_object *object)
 {
 	return object != NULL && object->operations != NULL &&
 	    object->operations->is_terminal != NULL &&
 	    object->operations->is_terminal(object->context);
+}
+
+uint32_t
+fd_object_poll(struct fd_object *object, uint32_t events)
+{
+	uint32_t ready = 0;
+	if (object == NULL || object->operations == NULL)
+		return 0;
+	if (object->operations->poll != NULL)
+		return object->operations->poll(object->context, events) & events;
+	if ((events & FD_POLL_READ) != 0) {
+		if (fd_object_is_terminal(object)) {
+			if (terminal_input_available())
+				ready |= FD_POLL_READ;
+		} else if (object->operations->read != NULL ||
+		    object->operations->readdir != NULL) {
+			ready |= FD_POLL_READ;
+		}
+	}
+	if ((events & FD_POLL_WRITE) != 0 &&
+	    object->operations->write != NULL)
+		ready |= FD_POLL_WRITE;
+	return ready;
+}
+
+bool
+fd_object_nonblocking(const struct fd_object *object)
+{
+	return object != NULL &&
+	    (object->status_flags & FD_STATUS_NONBLOCK) != 0;
 }
 
 int
@@ -246,8 +336,51 @@ fd_close(struct fd_table *table, uint64_t descriptor)
 		return -FD_ERROR_EBADF;
 	object = table->entries[descriptor];
 	table->entries[descriptor] = NULL;
+	table->descriptor_flags[descriptor] = 0;
 	fd_object_put(object);
 	return 0;
+}
+
+int
+fd_dup(struct fd_table *table, uint64_t source)
+{
+	struct fd_object *object;
+	unsigned int descriptor;
+
+	if (table == NULL || source >= FD_TABLE_CAPACITY ||
+	    table->entries[source] == NULL)
+		return -FD_ERROR_EBADF;
+	for (descriptor = 0; descriptor < FD_TABLE_CAPACITY; descriptor++)
+		if (table->entries[descriptor] == NULL)
+			break;
+	if (descriptor == FD_TABLE_CAPACITY)
+		return -FD_ERROR_EMFILE;
+	object = table->entries[source];
+	fd_object_get(object);
+	table->entries[descriptor] = object;
+	table->descriptor_flags[descriptor] = 0;
+	return (int)descriptor;
+}
+
+int
+fd_dup2(struct fd_table *table, uint64_t source, uint64_t destination)
+{
+	struct fd_object *source_object;
+	struct fd_object *old_destination;
+
+	if (table == NULL || source >= FD_TABLE_CAPACITY ||
+	    destination >= FD_TABLE_CAPACITY ||
+	    table->entries[source] == NULL)
+		return -FD_ERROR_EBADF;
+	if (source == destination)
+		return (int)destination;
+	source_object = table->entries[source];
+	fd_object_get(source_object);
+	old_destination = table->entries[destination];
+	table->entries[destination] = source_object;
+	table->descriptor_flags[destination] = 0;
+	fd_object_put(old_destination);
+	return (int)destination;
 }
 
 static struct fd_object *

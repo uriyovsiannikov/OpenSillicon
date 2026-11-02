@@ -29,6 +29,7 @@ tty_init(const struct limine_framebuffer *framebuffer)
 	tty_columns = columns;
 	tty_rows = rows;
 	(void)ps2_keyboard_init();
+	(void)ps2_mouse_init();
 	return true;
 }
 

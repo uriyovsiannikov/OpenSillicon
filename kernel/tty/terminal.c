@@ -1,4 +1,5 @@
 #include "kernel/terminal.h"
+#include "kernel/fd.h"
 
 #define TERMINAL_EAGAIN 11
 #define KEY_SHIFT_LEFT 0x2aU
@@ -355,6 +356,7 @@ queue_token(struct terminal_state *terminal, uint16_t token)
 	    TERMINAL_INPUT_CAPACITY;
 	terminal->input[tail] = token;
 	terminal->input_count++;
+	fd_readiness_wake();
 	return true;
 }
 
@@ -386,6 +388,12 @@ terminal_read(char *buffer, size_t length, size_t *read_length)
 	}
 	*read_length = count;
 	return 0;
+}
+
+bool
+terminal_input_available(void)
+{
+	return active_state()->input_count != 0;
 }
 
 void

@@ -36,15 +36,17 @@ static const char *const internal_commands[] = {
 static int
 initialize_shell_tls(const uint64_t *startup_stack)
 {
+	uint64_t argc = startup_stack[0];
+	uint64_t auxv = argc + 3;
 	const struct shell_startup_phdr *headers =
-	    (const struct shell_startup_phdr *)(uintptr_t)startup_stack[4];
+		(const struct shell_startup_phdr *)(uintptr_t)startup_stack[auxv + 1];
 	const struct shell_startup_phdr *tls = 0;
 	uintptr_t thread_pointer = (uintptr_t)&shell_tls_storage[64];
 	uint8_t *destination;
 	const uint8_t *source;
 	uint64_t i;
 
-	for (i = 0; i < startup_stack[8]; i++) {
+	for (i = 0; i < startup_stack[auxv + 5]; i++) {
 		if (headers[i].type == 7) {
 			tls = &headers[i];
 			break;
@@ -591,7 +593,7 @@ read_command_line(char *line)
 		if (amount < 0)
 			return (int)amount;
 		cursor_visible = 1;
-		if (character == '\n') {
+		if (character == '\n' || character == '\r') {
 			line[length] = '\0';
 			/* A blinking cursor is drawn as a literal underscore. Remove it
 			 * from the screen before leaving the editor for command output. */
@@ -753,17 +755,30 @@ user_main(uint64_t argc, char **argv, const uint64_t *startup_stack)
 {
 	char line[LINE_CAPACITY];
 	const struct shell_startup_phdr *phdr;
-	if (argc != 0 || argv == NULL || argv[0] != NULL ||
-	    startup_stack == 0 || ((uintptr_t)startup_stack & 15U) != 0 ||
-	    startup_stack[0] != 0 || startup_stack[1] != 0 ||
-	    startup_stack[2] != 0 || startup_stack[3] != 3 ||
-	    startup_stack[5] != 4 ||
-	    startup_stack[6] != sizeof(*phdr) || startup_stack[7] != 5 ||
-	    startup_stack[9] != 6 || startup_stack[10] != 4096 ||
-	    startup_stack[11] != 9 || startup_stack[13] != 7 ||
-	    startup_stack[14] != 0 || startup_stack[15] != 0 ||
-	    startup_stack[16] != 0 || startup_stack[8] == 0 ||
-	    startup_stack[4] == 0) {
+	uint64_t auxv;
+	if (argc > 1 || argv == NULL || startup_stack == 0 ||
+	    startup_stack[0] != argc || argv != (char **)(startup_stack + 1) ||
+	    (argc == 1 && (argv[0] == NULL || argv[0][0] == '\0')) ||
+	    argv[argc] != NULL || startup_stack[argc + 2] != 0 ||
+	    ((uintptr_t)startup_stack & 15U) != 0) {
+		u_puts("OpenSillicon shell: malformed exec startup stack\n");
+		u_exit(1);
+	}
+	auxv = argc + 3;
+	if (startup_stack[auxv] != 3 ||
+	    startup_stack[auxv + 2] != 4 ||
+	    startup_stack[auxv + 3] != sizeof(*phdr) ||
+	    startup_stack[auxv + 4] != 5 ||
+	    startup_stack[auxv + 6] != 6 ||
+	    startup_stack[auxv + 7] != 4096 ||
+	    startup_stack[auxv + 8] != 9 ||
+	    startup_stack[auxv + 10] != 7 ||
+	    startup_stack[auxv + 11] != 0 ||
+	    startup_stack[auxv + 12] != 0 ||
+	    startup_stack[auxv + 13] != 0 ||
+	    startup_stack[auxv + 1] == 0 ||
+	    startup_stack[auxv + 5] == 0 ||
+	    startup_stack[auxv + 9] == 0) {
 		u_puts("OpenSillicon shell: malformed exec startup stack\n");
 		u_exit(1);
 	}
@@ -771,11 +786,11 @@ user_main(uint64_t argc, char **argv, const uint64_t *startup_stack)
 		u_puts("OpenSillicon shell: exec PT_TLS setup failed\n");
 		u_exit(1);
 	}
-	phdr = (const struct shell_startup_phdr *)(uintptr_t)startup_stack[4];
+	phdr = (const struct shell_startup_phdr *)(uintptr_t)startup_stack[auxv + 1];
 	if (phdr[0].type != 1 || (phdr[0].flags & 4U) == 0 ||
 	    phdr[0].offset != 0 || phdr[0].virtual_address + 64 !=
-	    startup_stack[4] || phdr[0].file_size <
-	    64 + startup_stack[8] * sizeof(*phdr)) {
+	    startup_stack[auxv + 1] || phdr[0].file_size <
+	    64 + startup_stack[auxv + 5] * sizeof(*phdr)) {
 		u_puts("OpenSillicon shell: unreadable AT_PHDR\n");
 		u_exit(1);
 	}

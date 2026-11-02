@@ -6,6 +6,11 @@
 #include <stdint.h>
 
 #define FD_TABLE_CAPACITY 32U
+#define FD_POLL_READ 0x01U
+#define FD_POLL_WRITE 0x02U
+#define FD_POLL_ERROR 0x04U
+#define FD_STATUS_NONBLOCK 0x00000800U
+#define FD_DESCRIPTOR_CLOEXEC 0x00000001U
 
 struct vfs_dirent;
 
@@ -27,6 +32,7 @@ struct fd_operations {
 	int (*stat)(void *context, struct fd_metadata *metadata);
 	int (*get_path)(void *context, char *path, size_t capacity);
 	bool (*is_terminal)(void *context);
+	uint32_t (*poll)(void *context, uint32_t events);
 	void (*close)(void *context);
 };
 
@@ -35,11 +41,13 @@ struct fd_object {
 	void *context;
 	uint64_t offset;
 	uint32_t references;
+	uint32_t status_flags;
 	bool immortal;
 };
 
 struct fd_table {
 	struct fd_object *entries[FD_TABLE_CAPACITY];
+	uint32_t descriptor_flags[FD_TABLE_CAPACITY];
 };
 
 struct fd_object *fd_object_create(const struct fd_operations *operations,
@@ -61,8 +69,19 @@ int fd_install_pair(struct fd_table *table, struct fd_object *first,
 	int *second_descriptor);
 struct fd_object *fd_object_for_descriptor(struct fd_table *table,
 	uint64_t descriptor);
+int fd_get_descriptor_flags(struct fd_table *table, uint64_t descriptor,
+	uint32_t *flags);
+int fd_set_descriptor_flags(struct fd_table *table, uint64_t descriptor,
+	uint32_t flags);
+void fd_table_close_on_exec(struct fd_table *table);
 bool fd_object_is_terminal(const struct fd_object *object);
+uint32_t fd_object_poll(struct fd_object *object, uint32_t events);
+bool fd_object_nonblocking(const struct fd_object *object);
+void fd_readiness_wake(void);
+void *fd_readiness_wait_channel(void);
 int fd_close(struct fd_table *table, uint64_t descriptor);
+int fd_dup(struct fd_table *table, uint64_t source);
+int fd_dup2(struct fd_table *table, uint64_t source, uint64_t destination);
 int fd_read(struct fd_table *table, uint64_t descriptor, void *buffer,
 	size_t length, size_t *read_length);
 int fd_write(struct fd_table *table, uint64_t descriptor, const void *buffer,
