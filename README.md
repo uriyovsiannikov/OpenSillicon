@@ -1,47 +1,63 @@
 <div align="center">
-  <img src="other/logo.png" alt="OpenSillicon logo" width="180">
+  <img src="other/logo.png" alt="OpenSillicon logo" width="88">
   <h1>OpenSillicon</h1>
-  <p><strong>A small x86_64 operating system, built from the ground up.</strong></p>
-  <p>Kernel · framebuffer terminal · shell · userspace</p>
+  <p>A small x86_64 operating system built from the ground up.</p>
+  <img src="other/screenshot1.png" alt="OpenSillicon shell" width="620">
 </div>
 
-<p align="center">
-  <img src="other/screenshot1.png" alt="OpenSillicon running its shell" width="800">
-</p>
+OpenSillicon is an experimental Unix-like operating system with a modular
+monolithic kernel and a native userspace. It boots through Limine on UEFI.
 
-## Features
+## What works
 
-### Kernel and processes
+- Ring 3 processes, ELF loading, `fork`/`exec`/`wait`, preemptive scheduling,
+  virtual memory, shared memory, signals, pipes, and file descriptors.
+- VFS with RAMFS, initramfs, devfs, procfs, and the native SilliconFS.
+- Framebuffer terminal, PS/2 keyboard, interactive shell, and core utilities.
+- Native `libos` runtime and a growing port of musl.
+- TinyX graphical session with `twm`, `xterm`, and `xeyes`.
+- Network stack components for Ethernet, ARP, IPv4, ICMP, UDP, and TCP.
 
-- Limine boot on x86_64 UEFI systems, with ACPI discovery and interrupt-controller support.
-- Ring 3 user processes with ELF loading, `fork`/`exec`/`wait`, preemptive scheduling, and process inspection.
-- Virtual and physical memory management, per-process address spaces, memory mapping and protection, shared memory, and DMA buffers.
-- System calls for process, filesystem, IPC, networking, time, and framebuffer operations.
-- Pipes and signal handling for basic inter-process communication and process control.
+## Build and run
 
-### Storage and filesystems
+On a Linux x86_64 host, install GCC, GNU binutils, GNU Make, Python 3, QEMU,
+OVMF, and `xorriso`, then run:
 
-- VFS with initramfs, RAMFS, `devfs`, and `procfs`.
-- SilliconFS with block-device support and an AHCI storage driver.
-- File and directory operations, file descriptors, metadata, and vectored I/O.
+```sh
+make
+make run       # UEFI QEMU, serial console
+make run-gui   # UEFI QEMU, graphical display
+```
 
-### Console and userspace
+The normal boot profile requires a supported AHCI controller and a disk with
+SilliconFS as its root filesystem. The QEMU network profile uses the Intel
+82540EM (`8086:100e`). Real hardware support is evolving; successful QEMU boot
+does not imply compatibility with a particular PC. Back up disks before
+experimenting with storage drivers.
 
-- Framebuffer text terminal, PS/2 keyboard input, and a command-line shell.
-- Shell conveniences including command history, path handling, and executable discovery/completion.
-- A small C runtime and libc-style `libos` for user programs.
-- Core utilities such as `ls`, `cat`, `pwd`, `ps`, `stat`, `uname`, `wc`, `sleep`, and `ping`.
+Useful checks:
 
-### Networking and hardware
+```sh
+make devfs-procfs-test
+make pty-test
+make libos-qemu-test
+make tinyx-qemu-test
+```
 
-- IPv4 networking with ARP, ICMP Echo, UDP sockets, and TCP protocol/runtime components.
-- Intel e1000 network adapter driver, PCI enumeration, and DMA-backed device rings.
-- Entropy sources including CPU RDSEED, TPM 2.0, and virtio RNG support.
+## Source map
 
-OpenSillicon is an experimental operating system, and hardware support is evolving.
-For a quick start, run `make run` on a Linux host with the required build tools,
-QEMU, OVMF, and ISO utilities installed.
+- `kernel/` — kernel, architecture code, drivers, filesystems, and networking.
+- `user/` — init, shell, utilities, `libos`, and X.Org components.
+- `include/` — kernel and userspace ABI headers.
+- `tests/` — host and QEMU test harnesses.
+- `tools/` — image and filesystem build tools.
+- `docs/` — architecture, design decisions, security assessments, and roadmap.
+
+See [Architecture and Design](docs/DESIGN.md), [Development Roadmap](docs/ROADMAP.md),
+[Open ADRs](docs/OPEN_ADRS.md), and the relevant subsystem README files for
+implementation details and current limitations.
 
 ## License
 
-Project code is provided under the [BSD 2-Clause License](LICENSE). Third-party components retain their respective licenses.
+Project code is available under the [BSD 2-Clause License](LICENSE). Vendored
+and third-party components retain their respective licenses.
