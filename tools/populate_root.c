@@ -130,10 +130,12 @@ main(int argc, char **argv)
 		coreutils_start = 9;
 	else if (argc >= 10 && strcmp(argv[9], "--coreutils") == 0)
 		coreutils_start = 10;
+	else if (argc >= 11 && strcmp(argv[10], "--coreutils") == 0)
+		coreutils_start = 11;
 	if (coreutils_start != 0)
 		coreutils_count = argc - coreutils_start;
-	if (argc < 5 || (argc > 10 && coreutils_start == 0)) {
-		fprintf(stderr, "usage: %s image init-elf shell-elf probe-elf [musl-hello-elf [musl-alloc-elf [musl-stdio-elf [musl-clock-elf [musl-nanosleep-elf]]]]] [--coreutils coreutils... ]\n",
+	if (argc < 5 || (argc > 11 && coreutils_start == 0)) {
+		fprintf(stderr, "usage: %s image init-elf shell-elf probe-elf [musl-hello-elf [musl-alloc-elf [musl-stdio-elf [musl-clock-elf [musl-nanosleep-elf [musl-fd-elf]]]]]] [--coreutils coreutils... ]\n",
 		    argv[0]);
 		return 2;
 	}
@@ -204,6 +206,13 @@ main(int argc, char **argv)
 	if (argc >= 10 && strcmp(argv[5], "--coreutils") != 0 &&
 	    (error = add_file("/bin/musl_nanosleep", argv[9], 0755)) != 0) {
 		fprintf(stderr, "SilliconFS musl nanosleep test population failed: %d\n",
+		    error);
+		fclose(image);
+		return 1;
+	}
+	if (argc >= 11 && strcmp(argv[5], "--coreutils") != 0 &&
+	    (error = add_file("/bin/musl_fd_seekstat", argv[10], 0755)) != 0) {
+		fprintf(stderr, "SilliconFS musl file operation test population failed: %d\n",
 		    error);
 		fclose(image);
 		return 1;

@@ -16,6 +16,7 @@ MUSL_ALLOC_QEMU_BUILD_DIR ?= build/musl-alloc-qemu
 MUSL_STDIO_QEMU_BUILD_DIR ?= build/musl-stdio-qemu
 MUSL_CLOCK_QEMU_BUILD_DIR ?= build/musl-clock-qemu
 MUSL_NANOSLEEP_QEMU_BUILD_DIR ?= build/musl-nanosleep-qemu
+MUSL_FD_QEMU_BUILD_DIR ?= build/musl-fd-qemu
 TIMER_TEST_TIMEOUT ?= 15s
 MUSL_SYSROOT := $(MUSL_BUILD_DIR)/sysroot
 MUSL_HELLO := $(MUSL_BUILD_DIR)/musl_hello.elf
@@ -23,6 +24,7 @@ MUSL_ALLOC := $(MUSL_BUILD_DIR)/musl_alloc.elf
 MUSL_STDIO := $(MUSL_BUILD_DIR)/musl_stdio.elf
 MUSL_CLOCK := $(MUSL_BUILD_DIR)/musl_clock.elf
 MUSL_NANOSLEEP := $(MUSL_BUILD_DIR)/musl_nanosleep.elf
+MUSL_FD := $(MUSL_BUILD_DIR)/musl_fd_seekstat.elf
 
 KERNEL_CFLAGS := -std=c11 -O2 -g -ffreestanding -fno-stack-protector \
 	-fno-pic -fno-pie -m64 -mno-red-zone -mcmodel=kernel \
@@ -90,7 +92,8 @@ endif
 	native-musl-alloc native-musl-inspect native-musl-qemu-test \
 	native-musl-alloc-qemu-test native-musl-stdio native-musl-stdio-qemu-test \
 	native-musl-clock native-musl-clock-qemu-test native-musl-nanosleep \
-	native-musl-nanosleep-qemu-test
+	native-musl-nanosleep-qemu-test native-musl-fd-seekstat \
+	native-musl-fd-seekstat-qemu-test
 
 all: kernel
 
@@ -730,8 +733,27 @@ $(MUSL_NANOSLEEP): tests/musl_nanosleep.c user/c_linker.ld Makefile \
 native-musl-nanosleep: native-musl-build
 	$(MAKE) $(MUSL_NANOSLEEP)
 
-native-musl-inspect: native-musl-hello native-musl-alloc native-musl-stdio native-musl-clock native-musl-nanosleep
-	@set -e; for elf in $(MUSL_HELLO) $(MUSL_ALLOC) $(MUSL_STDIO) $(MUSL_CLOCK) $(MUSL_NANOSLEEP); do \
+$(MUSL_FD): tests/musl_fd_seekstat.c user/c_linker.ld Makefile \
+		$(MUSL_BUILD_DIR)/build-info.json $(MUSL_SYSROOT)/usr/lib/libc.a
+	$(MUSL_CLANG) --target=x86_64-unknown-none-elf -std=c11 -O2 -Wall -Wextra -Werror \
+		-ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
+		-mno-red-zone -mno-mmx -mno-sse -mno-sse2 -msoft-float \
+		-ftls-model=local-exec -nostdinc \
+		-isystem $(MUSL_SYSROOT)/usr/include -c tests/musl_fd_seekstat.c \
+		-o $(MUSL_BUILD_DIR)/musl_fd_seekstat.o
+	PATH="$(dir $(MUSL_LLD)):$$PATH" $(MUSL_CLANG) --target=x86_64-unknown-none-elf -std=c11 -O2 -Wall -Wextra -Werror \
+		-nostdlib -static -fuse-ld=lld -B$(dir $(MUSL_LLD)) \
+		-no-pie -Wl,-z,noexecstack -Wl,--build-id=none \
+		-Wl,-T,user/c_linker.ld $(MUSL_SYSROOT)/usr/lib/crt1.o \
+		$(MUSL_SYSROOT)/usr/lib/crti.o $(MUSL_BUILD_DIR)/musl_fd_seekstat.o \
+		-L$(MUSL_SYSROOT)/usr/lib -lc $(MUSL_SYSROOT)/usr/lib/crtn.o \
+		-o $(MUSL_FD)
+
+native-musl-fd-seekstat: native-musl-build
+	$(MAKE) $(MUSL_FD)
+
+native-musl-inspect: native-musl-hello native-musl-alloc native-musl-stdio native-musl-clock native-musl-nanosleep native-musl-fd-seekstat
+	@set -e; for elf in $(MUSL_HELLO) $(MUSL_ALLOC) $(MUSL_STDIO) $(MUSL_CLOCK) $(MUSL_NANOSLEEP) $(MUSL_FD); do \
 		echo "Inspecting $$elf"; \
 		readelf -h -l -S -r -d $$elf; \
 		! readelf -l $$elf | grep -E 'INTERP|DYNAMIC'; \
@@ -846,6 +868,28 @@ native-musl-nanosleep-qemu-test: native-musl-nanosleep
 		-no-reboot -no-shutdown; status=$$?; test $$status -eq 124
 	grep -F 'OpenSillicon: native musl nanosleep and error paths passed' \
 		$(MUSL_NANOSLEEP_QEMU_BUILD_DIR)/serial.log
+
+$(MUSL_FD_QEMU_BUILD_DIR)/musl-fd-root.img: $(BUILD_DIR)/init.elf \
+		$(BUILD_DIR)/shell.elf $(BUILD_DIR)/probe.elf $(BUILD_DIR)/populate_root \
+		$(MUSL_HELLO) $(MUSL_ALLOC) $(MUSL_STDIO) $(MUSL_CLOCK) \
+		$(MUSL_NANOSLEEP) $(MUSL_FD) tools/mksilliconfs.py | $(BUILD_DIR)
+	python3 tools/mksilliconfs.py $@ --blocks 32768 --inodes 1024
+	$(BUILD_DIR)/populate_root $@ $(BUILD_DIR)/init.elf \
+		$(BUILD_DIR)/shell.elf $(BUILD_DIR)/probe.elf $(MUSL_HELLO) \
+		$(MUSL_ALLOC) $(MUSL_STDIO) $(MUSL_CLOCK) $(MUSL_NANOSLEEP) $(MUSL_FD)
+
+native-musl-fd-seekstat-qemu-test: native-musl-fd-seekstat
+	CCACHE_DISABLE=1 $(MAKE) BUILD_DIR=$(MUSL_FD_QEMU_BUILD_DIR) \
+		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DKERNEL_TEST_NATIVE_MUSL_FD' \
+		iso $(MUSL_FD_QEMU_BUILD_DIR)/musl-fd-root.img
+	@set +e; timeout 45s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \
+		-cdrom $(MUSL_FD_QEMU_BUILD_DIR)/opensillicon.iso \
+		-drive file=$(MUSL_FD_QEMU_BUILD_DIR)/musl-fd-root.img,if=none,id=rootdisk,format=raw \
+		-device ide-hd,drive=rootdisk,bus=ide.0 \
+		-serial file:$(MUSL_FD_QEMU_BUILD_DIR)/serial.log -display none \
+		-no-reboot -no-shutdown; status=$$?; test $$status -eq 124
+	grep -F 'OpenSillicon: native musl lseek and fstat passed' \
+		$(MUSL_FD_QEMU_BUILD_DIR)/serial.log
 
 native-musl-clock-qemu-test: native-musl-clock
 	CCACHE_DISABLE=1 $(MAKE) BUILD_DIR=$(MUSL_CLOCK_QEMU_BUILD_DIR) \

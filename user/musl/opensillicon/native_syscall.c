@@ -4,8 +4,10 @@
  * the kernel receives only OpenSillicon syscall numbers.
  */
 #include <errno.h>
+#include <stddef.h>
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 
 #define OS_SYSCALL_EXIT 1
@@ -23,6 +25,8 @@
 #define OS_SYSCALL_IOCTL 26
 #define OS_SYSCALL_CLOCK_GETTIME 34
 #define OS_SYSCALL_NANOSLEEP 35
+#define OS_SYSCALL_LSEEK 36
+#define OS_SYSCALL_FSTAT 37
 
 static long
 unsupported(void)
@@ -67,6 +71,12 @@ __opensillicon_syscall(long number, long a1, long a2, long a3, long a4,
 		break;
 	case SYS_nanosleep:
 		native_number = OS_SYSCALL_NANOSLEEP;
+		break;
+	case SYS_lseek:
+		native_number = OS_SYSCALL_LSEEK;
+		break;
+	case SYS_fstat:
+		native_number = OS_SYSCALL_FSTAT;
 		break;
 	case SYS_close:
 		native_number = OS_SYSCALL_CLOSE;
@@ -139,4 +149,24 @@ __opensillicon_syscall(long number, long a1, long a2, long a3, long a4,
 		return -error;
 	}
 	return result;
+}
+
+/* The native kernel stat record is layout-compatible with musl 1.2.6 on this
+ * x86_64 target. Passing the caller buffer directly lets the kernel validate
+ * it and return EFAULT instead of having musl copy from an intermediate kstat. */
+_Static_assert(sizeof(struct stat) == 144, "native musl stat ABI size mismatch");
+_Static_assert(offsetof(struct stat, st_size) == 48,
+    "native musl stat size offset mismatch");
+
+int
+fstat(int fd, struct stat *buffer)
+{
+    long result = __opensillicon_syscall(SYS_fstat, fd, (long)buffer,
+        0, 0, 0, 0);
+
+    if (result < 0) {
+        errno = (int)-result;
+        return -1;
+    }
+    return (int)result;
 }

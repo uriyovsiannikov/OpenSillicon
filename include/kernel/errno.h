@@ -14,6 +14,7 @@
 #define EMFILE 24
 #define ENOSPC 28
 #define EPIPE 32
+#define ESPIPE 29
 #define EOVERFLOW 75
 #define EOPNOTSUPP 95
 #define ETIMEDOUT 110

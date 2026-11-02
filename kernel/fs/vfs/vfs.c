@@ -9,13 +9,19 @@
 #define VFS_EBUSY 16
 #define VFS_EEXIST 17
 #define VFS_EIO 5
+#define VFS_EOVERFLOW 75
 #define VFS_EINVAL 22
 #define VFS_EISDIR 21
 #define VFS_ENAMETOOLONG 36
 #define VFS_ENOENT 2
 #define VFS_ENOMEM 12
 #define VFS_ENOTDIR 20
+#define VFS_ESPIPE 29
 #define VFS_EROFS 30
+
+#define VFS_SEEK_SET 0
+#define VFS_SEEK_CUR 1
+#define VFS_SEEK_END 2
 
 struct vfs_mount {
 	char path[VFS_PATH_MAX];
@@ -377,6 +383,62 @@ file_readdir(void *context, uint64_t index, struct vfs_dirent *entry)
 	return file->node->operations->readdir(file->node, index, entry);
 }
 
+static int
+file_seek(void *context, uint64_t current, int64_t offset, int whence,
+	uint64_t *result)
+{
+	struct vfs_file_context *file = context;
+	uint64_t base;
+	uint64_t target;
+
+	if (file->node->type != VNODE_REGULAR)
+		return -VFS_ESPIPE;
+	switch (whence) {
+	case VFS_SEEK_SET:
+		base = 0;
+		break;
+	case VFS_SEEK_CUR:
+		base = current;
+		break;
+	case VFS_SEEK_END:
+		base = file->node->size;
+		break;
+	default:
+		return -VFS_EINVAL;
+	}
+	if (offset < 0) {
+		uint64_t magnitude = (uint64_t)(-(offset + 1)) + 1U;
+		if (magnitude > base)
+			return -VFS_EINVAL;
+		target = base - magnitude;
+	} else {
+		if ((uint64_t)offset > UINT64_MAX - base)
+			return -VFS_EOVERFLOW;
+		target = base + (uint64_t)offset;
+	}
+	if (target > INT64_MAX)
+		return -VFS_EOVERFLOW;
+	*result = target;
+	return 0;
+}
+
+static int
+file_stat(void *context, struct fd_metadata *metadata)
+{
+	struct vfs_file_context *file = context;
+	struct vnode *node = file->node;
+
+	if (node->type != VNODE_REGULAR && node->type != VNODE_DIRECTORY)
+		return -VFS_EINVAL;
+	*metadata = (struct fd_metadata){
+		.size = node->size,
+		.inode = node->inode,
+		.mode = node->mode,
+		.type = (uint32_t)node->type
+	};
+	return 0;
+}
+
 static void
 file_close(void *context)
 {
@@ -390,6 +452,8 @@ static const struct fd_operations vfs_file_operations = {
 	.read = file_read,
 	.write = file_write,
 	.readdir = file_readdir,
+	.seek = file_seek,
+	.stat = file_stat,
 	.close = file_close
 };
 

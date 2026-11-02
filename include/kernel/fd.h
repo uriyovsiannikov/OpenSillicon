@@ -9,12 +9,22 @@
 
 struct vfs_dirent;
 
+struct fd_metadata {
+	uint64_t size;
+	uint64_t inode;
+	uint32_t mode;
+	uint32_t type;
+};
+
 struct fd_operations {
 	int (*read)(void *context, uint64_t offset, void *buffer, size_t length,
 	    size_t *read_length);
 	int (*write)(void *context, uint64_t offset, const void *buffer,
 	    size_t length, size_t *write_length);
 	int (*readdir)(void *context, uint64_t index, struct vfs_dirent *entry);
+	int (*seek)(void *context, uint64_t current, int64_t offset,
+	    int whence, uint64_t *result);
+	int (*stat)(void *context, struct fd_metadata *metadata);
 	bool (*is_terminal)(void *context);
 	void (*close)(void *context);
 };
@@ -58,6 +68,11 @@ int fd_write(struct fd_table *table, uint64_t descriptor, const void *buffer,
 	size_t length, size_t *write_length);
 int fd_readdir(struct fd_table *table, uint64_t descriptor,
 	struct vfs_dirent *entry);
+int fd_object_seek(struct fd_object *object, int64_t offset, int whence,
+	uint64_t *result);
+int fd_seek(struct fd_table *table, uint64_t descriptor, int64_t offset,
+	int whence, uint64_t *result);
+int fd_object_stat(struct fd_object *object, struct fd_metadata *metadata);
 uint64_t fd_get_offset(const struct fd_table *table, uint64_t descriptor);
 bool fd_set_offset(struct fd_table *table, uint64_t descriptor,
 	uint64_t offset);

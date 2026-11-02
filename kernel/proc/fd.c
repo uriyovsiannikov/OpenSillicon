@@ -8,9 +8,11 @@
 
 #define FD_ERROR_EBADF 9
 #define FD_ERROR_EINVAL 22
+#define FD_ERROR_ESPIPE 29
 #define FD_ERROR_EOVERFLOW 75
 #define FD_ERROR_EIO 5
 #define FD_ERROR_EMFILE 24
+#define FD_ERROR_EOPNOTSUPP 95
 
 static struct fd_object *get_object(struct fd_table *table,
 	uint64_t descriptor);
@@ -344,6 +346,48 @@ fd_readdir(struct fd_table *table, uint64_t descriptor,
 		object->offset++;
 	}
 	return result;
+}
+
+int
+fd_object_seek(struct fd_object *object, int64_t offset, int whence,
+	uint64_t *result)
+{
+	uint64_t new_offset;
+	int error;
+
+	if (object == NULL)
+		return -FD_ERROR_EBADF;
+	if (result == NULL)
+		return -FD_ERROR_EINVAL;
+	if (object->operations->seek == NULL)
+		return -FD_ERROR_ESPIPE;
+	error = object->operations->seek(object->context, object->offset,
+	    offset, whence, &new_offset);
+	if (error != 0)
+		return error;
+	object->offset = new_offset;
+	*result = new_offset;
+	return 0;
+}
+
+int
+fd_seek(struct fd_table *table, uint64_t descriptor, int64_t offset,
+	int whence, uint64_t *result)
+{
+	return fd_object_seek(get_object(table, descriptor), offset, whence,
+	    result);
+}
+
+int
+fd_object_stat(struct fd_object *object, struct fd_metadata *metadata)
+{
+	if (object == NULL)
+		return -FD_ERROR_EBADF;
+	if (metadata == NULL)
+		return -FD_ERROR_EINVAL;
+	if (object->operations->stat == NULL)
+		return -FD_ERROR_EOPNOTSUPP;
+	return object->operations->stat(object->context, metadata);
 }
 
 uint64_t

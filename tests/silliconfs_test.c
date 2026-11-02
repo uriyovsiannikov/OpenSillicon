@@ -305,6 +305,7 @@ test_vfs_disk_image(const char *path, uint8_t *disk, size_t size,
 	struct vnode *created;
 	struct fd_object *file;
 	struct vfs_stat status;
+	struct fd_metadata metadata;
 	struct vfs_dirent entry;
 	uint8_t *buffer;
 	size_t amount;
@@ -334,6 +335,21 @@ test_vfs_disk_image(const char *path, uint8_t *disk, size_t size,
 	assert(created->mode == 0640);
 	vnode_put(created);
 	assert(vfs_open("/docs/data", VFS_O_RDWR, 0, &file) == 0);
+	{
+		uint64_t position = UINT64_MAX;
+		assert(fd_object_seek(file, 0, SEEK_CUR, &position) == 0 &&
+		    position == 0);
+		assert(fd_object_stat(file, &metadata) == 0 && metadata.size == 0 &&
+		    metadata.inode != 0 && metadata.mode == 0640 &&
+		    metadata.type == VNODE_REGULAR);
+		assert(fd_object_seek(file, INT64_MAX, SEEK_SET, &position) == 0 &&
+		    position == INT64_MAX);
+		assert(fd_object_seek(file, 1, SEEK_CUR, &position) == -75 &&
+		    fd_get_offset(&(struct fd_table){ .entries = { [3] = file } }, 3) ==
+		    INT64_MAX);
+		assert(fd_object_seek(file, 0, SEEK_SET, &position) == 0 &&
+		    position == 0);
+	}
 	assert(fd_object_write(file, payload, sizeof(payload), &amount) == 0);
 	assert(amount == sizeof(payload));
 	file->offset = indirect_offset;
@@ -361,6 +377,9 @@ test_vfs_disk_image(const char *path, uint8_t *disk, size_t size,
 	assert(status.size == SILLICONFS_MAX_FILE_SIZE);
 	fd_object_put(file);
 	assert(vfs_open("/docs", VFS_O_RDONLY | VFS_O_DIRECTORY, 0, &file) == 0);
+	assert(fd_object_seek(file, 0, SEEK_SET, &indirect_offset) == -29);
+	assert(fd_object_stat(file, &metadata) == 0 &&
+	    metadata.type == VNODE_DIRECTORY && metadata.inode != 0);
 	assert(fd_readdir(&(struct fd_table){ .entries = { [3] = file } }, 3,
 	    &entry) == 1);
 	assert(strcmp(entry.name, ".") == 0);

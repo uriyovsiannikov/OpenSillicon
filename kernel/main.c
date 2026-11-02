@@ -1112,6 +1112,22 @@ run_native_musl_nanosleep_test(void)
 }
 #endif
 
+#ifdef KERNEL_TEST_NATIVE_MUSL_FD
+static void
+run_native_musl_fd_test(void)
+{
+	uint64_t status = process_run_path("/bin/musl_fd_seekstat", true);
+
+	if (status != 0) {
+		klog("OpenSillicon: native musl lseek/fstat executable failed, status ");
+		klog_u64(status);
+		klog("\n");
+		kernel_halt();
+	}
+	klog("OpenSillicon: native musl lseek and fstat passed\n");
+}
+#endif
+
 #ifdef KERNEL_TEST_SHM_FORK_FAILURE
 static void
 run_shm_fork_failure_test(void)
@@ -1799,6 +1815,9 @@ virtio_rng_probe_done:
 #endif
 #ifdef KERNEL_TEST_NATIVE_MUSL_NANOSLEEP
 	run_native_musl_nanosleep_test();
+#endif
+#ifdef KERNEL_TEST_NATIVE_MUSL_FD
+	run_native_musl_fd_test();
 #endif
 #ifdef KERNEL_TEST_UDP_SOCKET
 	run_udp_socket_test();

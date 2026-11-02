@@ -154,6 +154,7 @@ make native-musl-alloc-qemu-test
 make native-musl-stdio-qemu-test
 make native-musl-clock-qemu-test
 make native-musl-nanosleep-qemu-test
+make native-musl-fd-seekstat-qemu-test
 ```
 
 All generated paths can be isolated. For example, after copying the pinned
@@ -164,7 +165,7 @@ targets, `native-musl-inspect`, and all QEMU recipes honor those locations.
 The Make targets do not clear the configured QEMU directories before use;
 choose empty paths for a clean run.
 
-`native-musl-inspect` checks all five fixtures for static ELF output, no
+`native-musl-inspect` checks all six fixtures for static ELF output, no
 `PT_INTERP`/`PT_DYNAMIC`, and no unresolved strong symbols. Each QEMU target
 keeps the guest running after its musl harness reports success, so the host
 `timeout` is expected to return 124. The target then requires the guest
@@ -289,6 +290,47 @@ elapsed time, invalid requests and pointers, `rem == NULL`, and signal-driven
 `EINTR` with a bounded normalized remainder. The fixture uses existing native
 fork, kill, wait, and signal syscalls only to orchestrate interruption; these
 selectors are not added to the musl adapter.
+
+### `lseek()` and `fstat()` support
+
+OpenSillicon syscall 36 implements `lseek(fd, offset, whence)` and syscall 37
+implements descriptor `fstat(fd, stat_pointer)`. The adapter maps musl's
+`SYS_lseek` and `SYS_fstat` selectors directly to these operations. Arguments
+use the existing `int 0x80` register ABI (`RDI`, `RSI`, `RDX`); offsets and
+results are signed 64-bit values. `off_t` is 64 bits in this x86_64 musl
+profile. The kernel stat wire record is 144 bytes and matches musl 1.2.6
+x86_64 `struct kstat`/public `struct stat`: `st_dev` 0, `st_ino` 8,
+`st_nlink` 16, `st_mode` 24, `st_uid` 28, `st_gid` 32, `st_rdev` 40,
+`st_size` 48, `st_blksize` 56, `st_blocks` 64, and atime/mtime/ctime
+seconds and nanoseconds at 72/80, 88/96, and 104/112. The remaining 24 bytes
+are zero. The fixture has compile-time assertions for the size and key offsets.
+
+The VFS stores the current byte offset in the shared `fd_object`, which is the
+open-file-description object; reads, writes, and seeks therefore use the same
+offset. Descriptor-table clones share this object. Regular VFS files support
+`SEEK_SET`, `SEEK_CUR`, and `SEEK_END`; negative resulting offsets return
+`EINVAL`, signed overflow returns `EOVERFLOW`, and failed seeks preserve the
+old offset. Directories, standard streams, and other descriptors without a
+regular-file seek operation return `ESPIPE`. The VFS currently represents
+regular files and directories; directory seeking is deliberately unsupported.
+
+`fstat()` reports the VFS node's real inode, size, permission bits, and regular
+or directory type. The returned size is the same node size used by `SEEK_END`.
+The VFS does not track device IDs, link counts, ownership, allocation blocks,
+block size, or timestamps; those fields are zero and documented as unavailable,
+not measurements. The native adapter provides a strong `fstat()` wrapper that passes the
+caller's public `struct stat` buffer directly to syscall 37. Its layout is
+compile-time checked against the kernel wire record, so the kernel validates
+the real output pointer and returns `EFAULT` safely. The pinned upstream
+`fstatat()` implementation still uses its own temporary `kstat` conversion.
+Path-based `stat()`, `fstatat()`, and related interfaces remain unsupported.
+
+`make native-musl-fd-seekstat-qemu-test` builds the dedicated static fixture,
+includes it in ELF inspection, populates a fresh SilliconFS image, and checks
+`lseek`, `fstat`, consistency, error behavior, and the syscall pointer guard.
+As with other QEMU fixtures, the host intentionally stops QEMU after the guest
+returns zero; the Make target requires both timeout status 124 and the distinct
+kernel success marker.
 
 ### Clean verification procedure
 

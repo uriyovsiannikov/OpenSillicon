@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <stddef.h>
 
 #include "arch/x86_64/interrupts.h"
 #include "arch/x86_64/user.h"
@@ -38,11 +39,43 @@
 #define CLOCK_MONOTONIC_ID 1U
 #define MONOTONIC_TICK_HZ 100U
 #define MONOTONIC_TICK_NS (1000000000ULL / MONOTONIC_TICK_HZ)
+#define NATIVE_S_IFREG 0100000U
+#define NATIVE_S_IFDIR 0040000U
 
 struct native_timespec {
 	int64_t tv_sec;
 	int64_t tv_nsec;
 };
+
+/* musl 1.2.6 x86_64 arch/x86_64/kstat.h, also layout-compatible with its
+ * public struct stat: timestamps are stored as sec/nsec pairs. */
+struct native_kstat {
+	uint64_t st_dev;
+	uint64_t st_ino;
+	uint64_t st_nlink;
+	uint32_t st_mode;
+	uint32_t st_uid;
+	uint32_t st_gid;
+	uint32_t pad0;
+	uint64_t st_rdev;
+	int64_t st_size;
+	int64_t st_blksize;
+	int64_t st_blocks;
+	int64_t st_atime_sec;
+	int64_t st_atime_nsec;
+	int64_t st_mtime_sec;
+	int64_t st_mtime_nsec;
+	int64_t st_ctime_sec;
+	int64_t st_ctime_nsec;
+	int64_t unused[3];
+};
+
+_Static_assert(sizeof(struct native_kstat) == 144,
+	"musl x86_64 kstat ABI size mismatch");
+_Static_assert(offsetof(struct native_kstat, st_size) == 48,
+	"musl x86_64 kstat st_size offset mismatch");
+_Static_assert(offsetof(struct native_kstat, st_atime_sec) == 72,
+	"musl x86_64 kstat timestamp offset mismatch");
 
 struct syscall_iovec {
 	uint64_t base;
@@ -949,6 +982,62 @@ syscall_interrupt(struct interrupt_frame *frame)
 				syscall_error(frame, errno_from_kernel(result));
 			else
 				frame->rax = 0;
+		}
+		break;
+	case SYSCALL_LSEEK:
+		{
+			uint64_t position;
+			int result;
+
+			if (frame->rdx > 2U) {
+				syscall_error(frame, ERRNO_EINVAL);
+				break;
+			}
+			result = fd_seek(current_fd_table(), frame->rdi,
+			    (int64_t)frame->rsi, (int)frame->rdx, &position);
+			if (result != 0)
+				syscall_error(frame, errno_from_kernel(result));
+			else
+				frame->rax = position;
+		}
+		break;
+	case SYSCALL_FSTAT:
+		{
+			struct fd_metadata metadata;
+			struct native_kstat value = {0};
+			int result = fd_object_stat(fd_object_for_descriptor(
+			    current_fd_table(), frame->rdi), &metadata);
+
+			if (result != 0) {
+				syscall_error(frame, errno_from_kernel(result));
+				break;
+			}
+			if (metadata.size > INT64_MAX) {
+				syscall_error(frame, EOVERFLOW);
+				break;
+			}
+			if (!vmm_validate_user_write(vmm_active_address_space(),
+			    frame->rsi, sizeof(value))) {
+				syscall_error(frame, EFAULT);
+				break;
+			}
+			value.st_ino = metadata.inode;
+			value.st_size = (int64_t)metadata.size;
+			value.st_mode = metadata.mode & 07777U;
+			if (metadata.type == VNODE_REGULAR)
+				value.st_mode |= NATIVE_S_IFREG;
+			else if (metadata.type == VNODE_DIRECTORY)
+				value.st_mode |= NATIVE_S_IFDIR;
+			else {
+				syscall_error(frame, EOPNOTSUPP);
+				break;
+			}
+			if (!vmm_copy_to_user(vmm_active_address_space(), frame->rsi,
+			    &value, sizeof(value))) {
+				syscall_error(frame, EFAULT);
+				break;
+			}
+			frame->rax = 0;
 		}
 		break;
 	case SYSCALL_READ:

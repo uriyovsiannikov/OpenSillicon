@@ -285,8 +285,16 @@ def main() -> int:
         cwd=REPO, env=env)
     run([tools["llvm-nm"]["path"], "-u", str(adapter_object)], cwd=REPO, env=env,
         log=output / "adapter-undefined.log")
-    if (output / "adapter-undefined.log").read_text().strip():
-        raise ValueError("native syscall adapter has unresolved symbols")
+    undefined = {
+        line.split()[-1]
+        for line in (output / "adapter-undefined.log").read_text().splitlines()
+        if line.split()
+    }
+    # The direct fstat wrapper sets errno through musl's TLS accessor. This is
+    # supplied by libc; reject every other unresolved adapter reference.
+    if undefined - {"__errno_location"}:
+        raise ValueError("native syscall adapter has unexpected unresolved symbols: "
+                         + ", ".join(sorted(undefined)))
 
     license_dir = sysroot / "usr" / "share" / "licenses" / "musl"
     license_dir.mkdir(parents=True)
