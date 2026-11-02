@@ -27,6 +27,8 @@
 #include "kernel/elf.h"
 #include "kernel/process.h"
 #include "kernel/vfs.h"
+#include "kernel/devfs.h"
+#include "kernel/procfs.h"
 #include "kernel/block.h"
 #include "kernel/block_silliconfs.h"
 #include "kernel/silliconfs.h"
@@ -744,6 +746,40 @@ switch_root_to_silliconfs(void)
 	vnode_put(temporary_directory);
 	klog_status("SilliconFS", true, NULL);
 	klog("OpenSillicon: SilliconFS mounted as /; initramfs retained at /init\n");
+	{
+		const char *paths[] = { "/dev", "/proc" };
+		const char *labels[] = { "devfs", "procfs" };
+		int (*mount_functions[])(const char *) = { devfs_mount, procfs_mount };
+
+		for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+			struct vnode *mountpoint = NULL;
+
+			error = vfs_create_path(paths[i], VNODE_DIRECTORY, 0755,
+			    &mountpoint);
+			if (error == -MAIN_EEXIST) {
+				error = vfs_lookup(paths[i], &mountpoint);
+				if (error == 0 && mountpoint->type != VNODE_DIRECTORY) {
+					vnode_put(mountpoint);
+					mountpoint = NULL;
+					error = -MAIN_ENOTDIR;
+				}
+			}
+			vnode_put(mountpoint);
+			if (error == 0)
+				error = mount_functions[i](paths[i]);
+			if (error == 0) {
+				klog_status(labels[i], true, NULL);
+			} else {
+				klog_status(labels[i], false,
+				    "mount failed; boot continues with mountpoint unchanged");
+				klog("OpenSillicon: ");
+				klog(labels[i]);
+				klog(" error ");
+				klog_u64((uint64_t)(-error));
+				klog("\n");
+			}
+		}
+	}
 }
 
 static volatile uint64_t scheduler_test_order[SCHEDULER_TEST_STEPS * 2];

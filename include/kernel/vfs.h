@@ -21,7 +21,8 @@ struct vnode;
 
 enum vnode_type {
 	VNODE_REGULAR = 1,
-	VNODE_DIRECTORY = 2
+	VNODE_DIRECTORY = 2,
+	VNODE_DEVICE = 3
 };
 
 struct vfs_stat {

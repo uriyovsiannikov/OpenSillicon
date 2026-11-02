@@ -566,6 +566,26 @@ Initial filesystems
 - initramfs.
 - RAMFS.
 - SilliconFS.
+- devfs at `/dev` and procfs at `/proc`.
+
+After SilliconFS becomes the root filesystem, the kernel creates `/dev` and
+`/proc` mountpoint directories and mounts devfs and procfs before launching
+`/sbin/init`. Mount errors are logged; boot continues with the affected
+mountpoint left intact. Existing non-directory paths are not replaced.
+
+devfs exposes only implemented interfaces: `/dev/console` reads from the TTY
+input path and writes to both TTY output and serial; `/dev/null` returns EOF
+and discards writes; `/dev/zero` supplies zero bytes and discards writes.
+Device nodes are character devices. Seek is unsupported. No hardware device
+nodes are published until a corresponding usable driver interface exists.
+
+procfs currently exposes `/proc/self`, a per-open snapshot containing the
+current process PID, parent PID, scheduler state, and exit status, plus
+`/proc/uptime`, a per-open snapshot of timer ticks formatted in seconds to
+hundredths. These values come from existing process structures and the 100 Hz
+timer. Process enumeration, process names, command lines, memory maps, and
+per-process directories are unavailable because the kernel does not yet
+provide the necessary stable enumeration and metadata interfaces.
 
 Phase 10 uses Limine's RSDP to initialize pinned ACPICA with an OpenSillicon
 OSL. PCI enumeration is read-only, using configuration mechanism 1 as a

@@ -34,6 +34,7 @@ $(BUILD_DIR)/main.o: kernel/main.c include/kernel/boot.h include/kernel/log.h \
 	include/kernel/virtio_rng.h \
 		include/arch/x86_64/ahci.h include/kernel/block.h \
 		include/kernel/block_silliconfs.h include/kernel/silliconfs.h \
+		include/kernel/devfs.h include/kernel/procfs.h \
 		include/arch/x86_64/fpu.h \
 		include/kernel/tty.h \
 		limine/limine.h | $(BUILD_DIR)
@@ -125,6 +126,16 @@ $(BUILD_DIR)/string.o: kernel/core/lib/string.c | $(BUILD_DIR)
 
 $(BUILD_DIR)/vfs.o: kernel/fs/vfs/vfs.c include/kernel/vfs.h \
 		include/kernel/fd.h include/kernel/heap.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/devfs.o: kernel/fs/devfs/devfs.c include/kernel/devfs.h \
+		include/kernel/vfs.h include/kernel/fd.h include/kernel/heap.h \
+		include/kernel/tty.h include/kernel/log.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/procfs.o: kernel/fs/procfs/procfs.c include/kernel/procfs.h \
+		include/kernel/vfs.h include/kernel/process.h include/kernel/timer.h \
+		include/kernel/heap.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/ramfs.o: kernel/fs/ramfs/ramfs.c include/kernel/vfs.h \
@@ -338,6 +349,7 @@ KERNEL_OBJECTS := $(BUILD_DIR)/main.o $(BUILD_DIR)/boot.o $(BUILD_DIR)/boot_entr
 	$(BUILD_DIR)/signal_state.o \
 	$(BUILD_DIR)/string.o $(BUILD_DIR)/vfs.o $(BUILD_DIR)/ramfs.o \
 	$(BUILD_DIR)/initramfs.o $(BUILD_DIR)/silliconfs.o \
+	$(BUILD_DIR)/devfs.o $(BUILD_DIR)/procfs.o \
 	$(ACPICA_OBJECTS)
 
 $(BUILD_DIR)/kernel.elf: $(KERNEL_OBJECTS) kernel/arch/x86_64/boot/linker.ld

@@ -465,7 +465,8 @@ file_stat(void *context, struct fd_metadata *metadata)
 	struct vfs_file_context *file = context;
 	struct vnode *node = file->node;
 
-	if (node->type != VNODE_REGULAR && node->type != VNODE_DIRECTORY)
+	if (node->type != VNODE_REGULAR && node->type != VNODE_DIRECTORY &&
+	    node->type != VNODE_DEVICE)
 		return -VFS_EINVAL;
 	*metadata = (struct fd_metadata){
 		.size = node->size,

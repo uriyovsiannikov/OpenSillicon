@@ -43,13 +43,6 @@
 #define PROCESS_USER_BASE 0x10000ULL
 #define PROCESS_USER_END 0x00007ffffffff000ULL
 
-enum process_state {
-	PROCESS_READY,
-	PROCESS_RUNNING,
-	PROCESS_BLOCKED,
-	PROCESS_ZOMBIE
-};
-
 enum process_block_reason {
 	PROCESS_BLOCK_NONE,
 	PROCESS_BLOCK_WAIT,
@@ -601,6 +594,33 @@ uint64_t
 process_current_pid(void)
 {
 	return current_process == NULL ? 1 : current_process->id;
+}
+
+int
+process_current_snapshot(struct process_snapshot_entry *entry)
+{
+	struct process *process;
+	uint64_t flags;
+	int result = 0;
+
+	if (entry == NULL)
+		return -(int)PROCESS_ERROR_EINVAL;
+	__asm__ volatile ("pushfq; popq %0; cli" : "=r" (flags) : : "memory");
+	process = current_process;
+	if (process == NULL) {
+		result = -(int)PROCESS_ERROR_ESRCH;
+	} else {
+		*entry = (struct process_snapshot_entry){
+			.pid = process->id,
+			.parent_pid = process->parent == NULL ? 0 : process->parent->id,
+			.state = (uint32_t)process->state,
+			.exit_status = process->exit_status,
+			.reserved = { 0, 0, 0 }
+		};
+	}
+	if ((flags & (1ULL << 9)) != 0)
+		__asm__ volatile ("sti" : : : "memory");
+	return result;
 }
 
 int

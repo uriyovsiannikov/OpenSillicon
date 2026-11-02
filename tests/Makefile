@@ -10,6 +10,20 @@ endif
 __dispatch:
 	+$(MAKE) -C $(ROOT_DIR) -f Makefile $(if $(strip $(MAKECMDGOALS)),$(MAKECMDGOALS),libos-qemu-test)
 else
+$(BUILD_DIR)/devfs_procfs_test: tests/devfs_procfs_test.c \
+		kernel/fs/vfs/vfs.c kernel/fs/ramfs/ramfs.c \
+		kernel/fs/devfs/devfs.c kernel/fs/procfs/procfs.c \
+		kernel/proc/fd.c include/kernel/vfs.h include/kernel/devfs.h \
+		include/kernel/procfs.h include/kernel/process.h | $(BUILD_DIR)
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Iinclude -Ilimine \
+		tests/devfs_procfs_test.c kernel/fs/vfs/vfs.c \
+		kernel/fs/ramfs/ramfs.c kernel/fs/devfs/devfs.c \
+		kernel/fs/procfs/procfs.c kernel/proc/fd.c -o $@
+
+.PHONY: devfs-procfs-test
+devfs-procfs-test: $(BUILD_DIR)/devfs_procfs_test
+	$(BUILD_DIR)/devfs_procfs_test
+
 $(BUILD_DIR)/initramfs.cpio: $(shell find initramfs -type f -o -type d) \
 		tools/mkinitramfs.py | $(BUILD_DIR)
 	python3 tools/mkinitramfs.py initramfs $@
