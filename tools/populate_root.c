@@ -121,28 +121,28 @@ main(int argc, char **argv)
 	int error;
 	int coreutils_start = 0;
 	int coreutils_count = 0;
+	const char *libos_path = NULL;
+	int arg;
 
-	if (argc >= 6 && strcmp(argv[5], "--coreutils") == 0)
-		coreutils_start = 6;
-	else if (argc >= 7 && strcmp(argv[6], "--coreutils") == 0)
-		coreutils_start = 7;
-	else if (argc >= 9 && strcmp(argv[8], "--coreutils") == 0)
-		coreutils_start = 9;
-	else if (argc >= 10 && strcmp(argv[9], "--coreutils") == 0)
-		coreutils_start = 10;
-	else if (argc >= 11 && strcmp(argv[10], "--coreutils") == 0)
-		coreutils_start = 11;
-	else if (argc >= 12 && strcmp(argv[11], "--coreutils") == 0)
-		coreutils_start = 12;
-	else if (argc >= 13 && strcmp(argv[12], "--coreutils") == 0)
-		coreutils_start = 13;
-	if (coreutils_start != 0)
-		coreutils_count = argc - coreutils_start;
-	if (argc < 5 || (argc > 13 && coreutils_start == 0)) {
-		fprintf(stderr, "usage: %s image init-elf shell-elf probe-elf [musl-hello-elf [musl-alloc-elf [musl-stdio-elf [musl-clock-elf [musl-nanosleep-elf [musl-fd-elf [musl-getdents-elf]]]]]]] [--coreutils coreutils... ]\n",
-		    argv[0]);
+	if (argc < 5) {
+		fprintf(stderr, "usage: %s image init-elf shell-elf probe-elf [--libos elf] [--coreutils coreutils...]\n", argv[0]);
 		return 2;
 	}
+	for (arg = 5; arg < argc; arg++) {
+		if (strcmp(argv[arg], "--libos") == 0 && arg + 1 < argc) {
+			if (libos_path != NULL) return 2;
+			libos_path = argv[++arg];
+		} else if (strcmp(argv[arg], "--coreutils") == 0) {
+			if (coreutils_start != 0) return 2;
+			coreutils_start = arg + 1;
+			break;
+		} else {
+			fprintf(stderr, "unexpected argument: %s\n", argv[arg]);
+			return 2;
+		}
+	}
+	if (coreutils_start != 0)
+		coreutils_count = argc - coreutils_start;
 	image = fopen(argv[1], "r+b");
 	if (image == NULL) {
 		perror(argv[1]);
@@ -175,68 +175,9 @@ main(int argc, char **argv)
 		fclose(image);
 		return 1;
 	}
-	if (argc >= 12 && strcmp(argv[11], "--coreutils") != 0) {
-		if ((error = add_directory("/musl-getdents", 0755)) != 0 ||
-		    (error = add_data("/musl-getdents/musl_dir_alpha", "alpha\n", 6,
-		    0644)) != 0 ||
-		    (error = add_data("/musl-getdents/musl_dir_beta", "beta\n", 5,
-		    0644)) != 0) {
-			fprintf(stderr, "SilliconFS getdents fixture population failed: %d\n",
-			    error);
-			fclose(image);
-			return 1;
-		}
-	}
-	if (argc >= 6 && strcmp(argv[5], "--coreutils") != 0 &&
-	    (error = add_file("/bin/musl_hello", argv[5], 0755)) != 0) {
-		fprintf(stderr, "SilliconFS musl test population failed: %d\n", error);
-		fclose(image);
-		return 1;
-	}
-	if (argc >= 7 && strcmp(argv[5], "--coreutils") != 0 &&
-	    strcmp(argv[6], "--coreutils") != 0 &&
-	    (error = add_file("/bin/musl_alloc", argv[6], 0755)) != 0) {
-		fprintf(stderr, "SilliconFS musl allocation test population failed: %d\n",
-		    error);
-		fclose(image);
-		return 1;
-	}
-	if (argc >= 8 && strcmp(argv[5], "--coreutils") != 0 &&
-	    strcmp(argv[6], "--coreutils") != 0 &&
-	    (error = add_file("/bin/musl_stdio", argv[7], 0755)) != 0) {
-		fprintf(stderr, "SilliconFS musl stdio test population failed: %d\n",
-		    error);
-		fclose(image);
-		return 1;
-	}
-	if (argc >= 9 && strcmp(argv[5], "--coreutils") != 0 &&
-	    strcmp(argv[6], "--coreutils") != 0 &&
-	    strcmp(argv[7], "--coreutils") != 0 &&
-	    strcmp(argv[8], "--coreutils") != 0 &&
-	    (error = add_file("/bin/musl_clock", argv[8], 0755)) != 0) {
-		fprintf(stderr, "SilliconFS musl clock test population failed: %d\n",
-		    error);
-		fclose(image);
-		return 1;
-	}
-	if (argc >= 10 && strcmp(argv[5], "--coreutils") != 0 &&
-	    (error = add_file("/bin/musl_nanosleep", argv[9], 0755)) != 0) {
-		fprintf(stderr, "SilliconFS musl nanosleep test population failed: %d\n",
-		    error);
-		fclose(image);
-		return 1;
-	}
-	if (argc >= 11 && strcmp(argv[5], "--coreutils") != 0 &&
-	    (error = add_file("/bin/musl_fd_seekstat", argv[10], 0755)) != 0) {
-		fprintf(stderr, "SilliconFS musl file operation test population failed: %d\n",
-		    error);
-		fclose(image);
-		return 1;
-	}
-	if (argc >= 12 && strcmp(argv[11], "--coreutils") != 0 &&
-	    (error = add_file("/bin/musl_getdents", argv[11], 0755)) != 0) {
-		fprintf(stderr, "SilliconFS musl getdents test population failed: %d\n",
-		    error);
+	if (libos_path != NULL &&
+	    (error = add_file("/bin/libos-test", libos_path, 0755)) != 0) {
+		fprintf(stderr, "SilliconFS libos fixture population failed: %d\n", error);
 		fclose(image);
 		return 1;
 	}

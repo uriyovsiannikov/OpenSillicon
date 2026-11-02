@@ -4416,3 +4416,33 @@ timeout tests remain to be added. TCP, DHCP, IPv6, VLAN, IP forwarding,
 fragmentation, routing/gateways, retransmission policy, socket options,
 multithreading, SMP synchronization, and broad POSIX/BSD/Linux compatibility
 remain out of scope. Phase 15 is incomplete.
+
+## ADR-042 — Replace the Active musl Port with Native libos
+
+Date: 2026-11-02
+
+Status: Accepted
+
+Decision
+
+The active static userspace C library will be OpenSillicon's own minimal
+`libos`, not musl. Retire musl-specific build scripts, overlays, adapter,
+fixture wiring, and active port documentation. Keep the pinned upstream musl
+archive and old fixtures/ADRs as historical evidence; do not treat those
+artifacts as current supported behavior.
+
+The initial libos target is static x86_64 ELF using the existing OpenSillicon
+`int 0x80` syscall ABI. It does not promise Linux syscall compatibility,
+dynamic linking, shared libraries, TLS, threads, signals, or broad POSIX
+conformance. Supported interfaces are limited to those implemented and tested
+in `user/libos`; unsupported operations must fail rather than claim success.
+No kernel syscall numbers or semantics are changed by this transition.
+
+Consequences
+
+The native C library and its static fixture build without downloading,
+configuring, or compiling musl. CRT startup follows the kernel's actual initial
+stack and existing ELF loader contract. The first verification fixture covers
+the documented memory/string, allocation, basic I/O, metadata, and directory
+surface. Broader conformance, robustness testing, allocator reuse, and further
+runtime APIs require separate decisions and tests.

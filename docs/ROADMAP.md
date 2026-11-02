@@ -609,7 +609,17 @@ and POSIX shared-memory compatibility remain deferred.
 
 ---
 
-Phase 14 — musl and Static Userspace
+Phase 14 — Static Userspace (libos replaces the musl integration)
+
+Status update (2026-11-02): the musl integration described below is historical
+and is no longer an active build or runtime dependency. The pinned musl source
+archive and historical fixtures remain in the repository for provenance; the
+active `user/musl` adapter, scripts, and build/test wiring have been retired.
+The current implementation is `user/libos`, a native, static, single-threaded
+x86_64 runtime with a deliberately small API. Its supported surface and current
+verification are documented in `user/libos/README.md`. The earlier musl
+milestones below record what was built and tested at that time, not current
+support or a compatibility promise.
 
 Goal
 

@@ -1032,115 +1032,19 @@ run_shm_lifecycle_test(void)
 	klog("OpenSillicon: shared-memory process lifecycle passed\n");
 }
 
-#ifdef KERNEL_TEST_NATIVE_MUSL
+#ifdef KERNEL_TEST_LIBOS
 static void
-run_native_musl_test(void)
+run_libos_test(void)
 {
-	uint64_t status = process_run_path("/bin/musl_hello", true);
+	uint64_t status = process_run_path("/bin/libos-test", true);
 
 	if (status != 0) {
-		klog("OpenSillicon: native musl executable failed, status ");
+		klog("OpenSillicon: libos fixture failed, status ");
 		klog_u64(status);
 		klog("\n");
 		kernel_halt();
 	}
-	klog("OpenSillicon: native musl 1.2.6 CRT, TLS, errno, write, and exit passed\n");
-}
-#endif
-
-#ifdef KERNEL_TEST_NATIVE_MUSL_ALLOC
-static void
-run_native_musl_alloc_test(void)
-{
-	uint64_t status = process_run_path("/bin/musl_alloc", true);
-
-	if (status != 0) {
-		klog("OpenSillicon: native musl allocation executable failed, status ");
-		klog_u64(status);
-		klog("\n");
-		kernel_halt();
-	}
-	klog("OpenSillicon: native musl malloc, mmap, mprotect, munmap, TLS, and exit passed\n");
-}
-#endif
-
-#ifdef KERNEL_TEST_NATIVE_MUSL_STDIO
-static void
-run_native_musl_stdio_test(void)
-{
-	uint64_t status = process_run_path("/bin/musl_stdio", true);
-
-	if (status != 0) {
-		klog("OpenSillicon: native musl stdio executable failed, status ");
-		klog_u64(status);
-		klog("\n");
-		kernel_halt();
-	}
-	klog("OpenSillicon: native musl stdio QEMU fixture exited with status zero\n");
-}
-#endif
-
-#ifdef KERNEL_TEST_NATIVE_MUSL_CLOCK
-static void
-run_native_musl_clock_test(void)
-{
-	uint64_t status = process_run_path("/bin/musl_clock", true);
-
-	if (status != 0) {
-		klog("OpenSillicon: native musl clock executable failed, status ");
-		klog_u64(status);
-		klog("\n");
-		kernel_halt();
-	}
-	klog("OpenSillicon: native musl CLOCK_MONOTONIC and error paths passed\n");
-}
-#endif
-
-#ifdef KERNEL_TEST_NATIVE_MUSL_NANOSLEEP
-static void
-run_native_musl_nanosleep_test(void)
-{
-	uint64_t status = process_run_path("/bin/musl_nanosleep", true);
-
-	if (status != 0) {
-		klog("OpenSillicon: native musl nanosleep executable failed, status ");
-		klog_u64(status);
-		klog("\n");
-		kernel_halt();
-	}
-	klog("OpenSillicon: native musl nanosleep and error paths passed\n");
-}
-#endif
-
-#ifdef KERNEL_TEST_NATIVE_MUSL_FD
-static void
-run_native_musl_fd_test(void)
-{
-	uint64_t status = process_run_path("/bin/musl_fd_seekstat", true);
-
-	if (status != 0) {
-		klog("OpenSillicon: native musl file metadata executable failed, status ");
-		klog_u64(status);
-		klog("\n");
-		kernel_halt();
-	}
-	klog("OpenSillicon: native musl lseek, fstat, stat, and fstatat passed\n");
-}
-#endif
-
-#ifdef KERNEL_TEST_NATIVE_MUSL_GETDENTS
-static void
-run_native_musl_getdents_test(void)
-{
-	uint64_t status = process_run_path("/bin/musl_getdents", true);
-
-	if (status != 0) {
-		klog("OpenSillicon: native musl getdents executable failed, status ");
-		klog_u64(status);
-		klog("\n");
-		kernel_halt();
-	}
-	klog("OpenSillicon: native musl getdents and readdir passed\n");
+	klog("OpenSillicon: libos fixture exited with status zero\n");
 }
 #endif
 
@@ -1817,26 +1721,8 @@ virtio_rng_probe_done:
 		klog("OpenSillicon: root block flush failed\n");
 		kernel_halt();
 	}
-#ifdef KERNEL_TEST_NATIVE_MUSL
-	run_native_musl_test();
-#endif
-#ifdef KERNEL_TEST_NATIVE_MUSL_ALLOC
-	run_native_musl_alloc_test();
-#endif
-#ifdef KERNEL_TEST_NATIVE_MUSL_STDIO
-	run_native_musl_stdio_test();
-#endif
-#ifdef KERNEL_TEST_NATIVE_MUSL_CLOCK
-	run_native_musl_clock_test();
-#endif
-#ifdef KERNEL_TEST_NATIVE_MUSL_NANOSLEEP
-	run_native_musl_nanosleep_test();
-#endif
-#ifdef KERNEL_TEST_NATIVE_MUSL_FD
-	run_native_musl_fd_test();
-#endif
-#ifdef KERNEL_TEST_NATIVE_MUSL_GETDENTS
-	run_native_musl_getdents_test();
+#ifdef KERNEL_TEST_LIBOS
+	run_libos_test();
 #endif
 #ifdef KERNEL_TEST_UDP_SOCKET
 	run_udp_socket_test();

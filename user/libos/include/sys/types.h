@@ -1,0 +1,8 @@
+#ifndef LIBOS_SYS_TYPES_H
+#define LIBOS_SYS_TYPES_H
+typedef long ssize_t;
+typedef unsigned long size_t;
+typedef long off_t;
+typedef int pid_t;
+typedef unsigned long ino_t;
+#endif
