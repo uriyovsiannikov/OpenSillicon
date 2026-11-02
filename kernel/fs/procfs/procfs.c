@@ -4,6 +4,7 @@
 
 #include "kernel/heap.h"
 #include "kernel/process.h"
+#include "kernel/pmm.h"
 #include "kernel/procfs.h"
 #include "kernel/timer.h"
 
@@ -17,7 +18,8 @@
 enum procfs_entry {
 	PROCFS_ROOT,
 	PROCFS_SELF,
-	PROCFS_UPTIME
+	PROCFS_UPTIME,
+	PROCFS_MEMINFO
 };
 
 struct procfs_node {
@@ -26,6 +28,7 @@ struct procfs_node {
 	size_t content_length;
 	uint64_t self_inode;
 	uint64_t uptime_inode;
+	uint64_t meminfo_inode;
 	char name[16];
 	char content[PROCFS_CONTENT_MAX];
 };
@@ -168,6 +171,28 @@ procfs_make_uptime(uint64_t inode, struct procfs_node **result)
 }
 
 static int
+procfs_make_meminfo(uint64_t inode, struct procfs_node **result)
+{
+	struct procfs_node *node = procfs_allocate("meminfo", PROCFS_MEMINFO,
+	    VNODE_REGULAR, inode);
+	uint64_t total = pmm_usable_pages();
+	uint64_t free = pmm_free_pages();
+
+	if (node == NULL)
+		return -PROCFS_ENOMEM;
+	/* PMM frames are 4096 bytes; report KiB in one immutable snapshot. */
+	if (!append_text(node, "MemTotal: ") || !append_u64(node, total * 4U) ||
+	    !append_text(node, " kB\nMemFree: ") ||
+	    !append_u64(node, free * 4U) || !append_text(node, " kB\n")) {
+		vnode_put(&node->vnode);
+		return -PROCFS_EINVAL;
+	}
+	node->vnode.size = node->content_length;
+	*result = node;
+	return 0;
+}
+
+static int
 procfs_lookup(struct vnode *directory, const char *name, size_t name_length,
 	struct vnode **result)
 {
@@ -196,6 +221,14 @@ procfs_lookup(struct vnode *directory, const char *name, size_t name_length,
 		error = procfs_make_uptime(node->uptime_inode, &uptime);
 		if (error == 0)
 			*result = &uptime->vnode;
+		return error;
+	}
+	if (name_length == 7 && memcmp(name, "meminfo", 7) == 0) {
+		struct procfs_node *meminfo;
+
+		error = procfs_make_meminfo(node->meminfo_inode, &meminfo);
+		if (error == 0)
+			*result = &meminfo->vnode;
 		return error;
 	}
 	return -PROCFS_ENOENT;
@@ -230,18 +263,19 @@ static int
 procfs_readdir(struct vnode *directory, uint64_t index,
 	struct vfs_dirent *entry)
 {
-	static const char *const names[] = { "self", "uptime" };
+	static const char *const names[] = { "self", "uptime", "meminfo" };
 	struct procfs_node *node;
 
 	if (directory == NULL || directory->type != VNODE_DIRECTORY)
 		return -PROCFS_ENOTDIR;
 	if (entry == NULL)
 		return -PROCFS_EINVAL;
-	if (index >= 2)
+	if (index >= sizeof(names) / sizeof(names[0]))
 		return 0;
 	node = procfs_from_vnode(directory);
 	memset(entry, 0, sizeof(*entry));
-	entry->inode = index == 0 ? node->self_inode : node->uptime_inode;
+	entry->inode = index == 0 ? node->self_inode :
+	    index == 1 ? node->uptime_inode : node->meminfo_inode;
 	entry->mode = 0444U;
 	entry->type = VNODE_REGULAR;
 	memcpy(entry->name, names[index], strlen(names[index]) + 1U);
@@ -265,7 +299,9 @@ procfs_mount(const char *path)
 		return -PROCFS_ENOMEM;
 	root->self_inode = vfs_allocate_inode();
 	root->uptime_inode = vfs_allocate_inode();
-	if (root->self_inode == 0 || root->uptime_inode == 0) {
+	root->meminfo_inode = vfs_allocate_inode();
+	if (root->self_inode == 0 || root->uptime_inode == 0 ||
+	    root->meminfo_inode == 0) {
 		vnode_put(&root->vnode);
 		return -PROCFS_ENOMEM;
 	}

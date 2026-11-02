@@ -70,6 +70,8 @@ ac_cv_func_arc4random_buf=no ac_cv_func_getentropy=no \
 ac_cv_func_uuid_create=no build_autotools libSM
 build_autotools libXt
 build_autotools libXmu
+build_autotools libXfixes-6.0.2
+build_autotools libXi-1.8.4
 
 mkdir -p "$root/build/x11/libXpm"
 cd "$root/build/x11/libXpm"
@@ -111,3 +113,18 @@ CPPFLAGS="$xterm_cpp" CFLAGS="$common_c" LDFLAGS="$xterm_ld" \
 	--with-app-defaults=/etc/X11/app-defaults
 rm -f xterm
 make -j2 LIBS="-Wl,--start-group $root/build/libos/liblibos.a $prefix/lib/libi18n.a -lXaw7 -lXmu -lXt -lSM -lICE -lXext -lX11 -lxcb -lXau -lXpm -Wl,--end-group"
+
+# xeyes uses Xt and the X Input extension library. Keep optional Xrender and
+# Present paths disabled because this server does not implement them.
+mkdir -p "$root/build/x11/xeyes"
+cd "$root/build/x11/xeyes"
+export CFLAGS="$common_c -DOPEN_SILLICON -nostdinc -I$gcc_include -I$root/user/libos/include -I$prefix/include -I$root/user/xorg/deps/libX11/include -I$root/build/x11/libX11/include -I$root/user/xorg/deps/libxtrans -idirafter /usr/include"
+export LDFLAGS="-L$prefix/lib -nostdlib -static -no-pie -Wl,--build-id=none -Wl,-z,noexecstack -Wl,-T,$root/user/c_linker.ld $root/build/libos/crt0.o $root/build/libos/liblibos.a $prefix/lib/libi18n.a"
+if [ -f build.ninja ]; then
+	meson setup --reconfigure . "$root/user/xorg/xeyes-1.3.1" \
+		--prefix="$prefix" --buildtype=release -Dxrender=disabled -Dpresent=disabled
+else
+	meson setup . "$root/user/xorg/xeyes-1.3.1" --prefix="$prefix" \
+		--buildtype=release -Dxrender=disabled -Dpresent=disabled
+fi
+meson compile -C .

@@ -277,7 +277,7 @@ print_help_commands(void)
 }
 
 static void
-command_external(size_t argc, const char *const argv[])
+command_external(size_t argc, const char *const argv[], int background)
 {
 	char path[PATH_CAPACITY];
 	const char *command = argv[0];
@@ -318,15 +318,17 @@ command_external(size_t argc, const char *const argv[])
 		print_error("exec", path);
 		u_exit(127);
 	}
-	do {
-		wait_result = u_waitpid((uint64_t)child, &status);
-	} while (wait_result == -4);
-	if (wait_result < 0)
-		print_error("waitpid", command);
-	else if (status != 0) {
+	if (!background) {
+		do {
+			wait_result = u_waitpid((uint64_t)child, &status);
+		} while (wait_result == -4);
+		if (wait_result < 0)
+			print_error("waitpid", command);
+		else if (status != 0) {
 		u_puts("sh: command exited status ");
 		u_put_u64(status);
 		u_puts("\n");
+		}
 	}
 resume_editor:
 	if (u_ioctl(0, U_TIOCSRAW, 0) < 0) {
@@ -705,6 +707,7 @@ run_command(char *line)
 	char *arguments[ARGUMENT_CAPACITY + 1];
 	char *cursor = line;
 	size_t count = 0;
+	int background = 0;
 
 	while (*cursor != '\0') {
 		while (*cursor == ' ' || *cursor == '\t' || *cursor == '\r' ||
@@ -718,6 +721,17 @@ run_command(char *line)
 		while (*cursor != '\0' && *cursor != ' ' && *cursor != '\t' &&
 		    *cursor != '\r' && *cursor != '\n') cursor++;
 		if (*cursor != '\0') *cursor++ = '\0';
+	}
+	if (count == 0)
+		return 1;
+	if (u_streq(arguments[count - 1], "&")) {
+		arguments[--count] = NULL;
+		background = 1;
+	}
+	if (count != 0 && u_streq(arguments[0], "exec")) {
+		for (size_t i = 1; i < count; i++)
+			arguments[i - 1] = arguments[i];
+		count--;
 	}
 	if (count == 0)
 		return 1;
@@ -745,7 +759,7 @@ run_command(char *line)
 		return 0;
 	} else {
 		arguments[count] = 0;
-		command_external(count, (const char *const *)arguments);
+		command_external(count, (const char *const *)arguments, background);
 	}
 	return 1;
 }
@@ -756,12 +770,16 @@ user_main(uint64_t argc, char **argv, const uint64_t *startup_stack)
 	char line[LINE_CAPACITY];
 	const struct shell_startup_phdr *phdr;
 	uint64_t auxv;
-	if (argc > 1 || argv == NULL || startup_stack == 0 ||
+	if (argc > ARGUMENT_CAPACITY || argv == NULL || startup_stack == 0 ||
 	    startup_stack[0] != argc || argv != (char **)(startup_stack + 1) ||
 	    (argc == 1 && (argv[0] == NULL || argv[0][0] == '\0')) ||
 	    argv[argc] != NULL || startup_stack[argc + 2] != 0 ||
 	    ((uintptr_t)startup_stack & 15U) != 0) {
-		u_puts("OpenSillicon shell: malformed exec startup stack\n");
+		u_puts("OpenSillicon shell: invalid exec arguments (argc ");
+		u_put_u64(argc);
+		u_puts(", stack argc ");
+		u_put_u64(startup_stack == 0 ? UINT64_MAX : startup_stack[0]);
+		u_puts(")\n");
 		u_exit(1);
 	}
 	auxv = argc + 3;
@@ -779,7 +797,7 @@ user_main(uint64_t argc, char **argv, const uint64_t *startup_stack)
 	    startup_stack[auxv + 1] == 0 ||
 	    startup_stack[auxv + 5] == 0 ||
 	    startup_stack[auxv + 9] == 0) {
-		u_puts("OpenSillicon shell: malformed exec startup stack\n");
+		u_puts("OpenSillicon shell: invalid exec auxiliary vector\n");
 		u_exit(1);
 	}
 	if (!initialize_shell_tls(startup_stack)) {
@@ -793,6 +811,14 @@ user_main(uint64_t argc, char **argv, const uint64_t *startup_stack)
 	    64 + startup_stack[auxv + 5] * sizeof(*phdr)) {
 		u_puts("OpenSillicon shell: unreadable AT_PHDR\n");
 		u_exit(1);
+	}
+	if (argc == 3 && u_streq(argv[1], "-c")) {
+		(void)run_command(argv[2]);
+		u_exit(0);
+	}
+	if (argc > 1) {
+		u_puts("usage: sh [-c command]\n");
+		u_exit(2);
 	}
 	if (u_ioctl(0, U_TIOCSRAW, 0) < 0) {
 		u_puts("OpenSillicon shell: cannot enable interactive input mode\n");

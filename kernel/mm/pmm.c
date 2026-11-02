@@ -9,6 +9,7 @@ struct pmm_state {
 	uint8_t *used;
 	uint64_t frame_count;
 	uint64_t free_count;
+	uint64_t usable_count;
 	uint64_t search_hint;
 	uint64_t metadata_start;
 	uint64_t metadata_end;
@@ -171,6 +172,7 @@ pmm_init(const struct boot_info *info, struct bootstrap_allocator *bootstrap)
 		}
 	}
 
+	pmm.usable_count = pmm.free_count;
 	if (!bitmap_phys_range(pmm.used, bitmap_bytes, info->hhdm_offset,
 	    &start_a, &end_a)) {
 		pmm = (struct pmm_state){0};
@@ -340,6 +342,12 @@ uint64_t
 pmm_total_pages(void)
 {
 	return pmm.initialized ? pmm.frame_count : 0;
+}
+
+uint64_t
+pmm_usable_pages(void)
+{
+	return pmm.initialized ? pmm.usable_count : 0;
 }
 
 uint64_t

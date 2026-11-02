@@ -80,7 +80,7 @@ menu "defops"
 "Show Iconmgr"	f.showiconmgr
 "Hide Iconmgr"	f.hideiconmgr
 ""		f.nop
-"Xterm"		f.exec "exec xterm &"
+"Xterm"		f.exec "exec xterm -display :0 &"
 ""		f.nop
 "Kill"		f.destroy
 "Delete"	f.delete

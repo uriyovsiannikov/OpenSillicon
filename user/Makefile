@@ -268,7 +268,8 @@ $(BUILD_DIR)/root.img: $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.elf \
 	$(BUILD_DIR)/populate_root $@ $(BUILD_DIR)/init.elf \
 		$(BUILD_DIR)/shell.elf --tinyx $(TINYX_BINARY) \
 		--startx $(BUILD_DIR)/startx.elf \
-		--twm $(BUILD_DIR)/x11/twm/src/twm --xterm $(BUILD_DIR)/x11/xterm/xterm --coreutils \
+		--twm $(BUILD_DIR)/x11/twm/src/twm --xterm $(BUILD_DIR)/x11/xterm/xterm \
+		--xeyes $(BUILD_DIR)/x11/xeyes/xeyes --coreutils \
 		$(BUILD_DIR)/coreutils/ls.elf $(BUILD_DIR)/coreutils/cat.elf \
 		$(BUILD_DIR)/coreutils/echo.elf $(BUILD_DIR)/coreutils/pwd.elf \
 		$(BUILD_DIR)/coreutils/true.elf $(BUILD_DIR)/coreutils/false.elf \
@@ -283,7 +284,8 @@ $(BUILD_DIR)/root.img: $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.elf \
 
 X11_APP_SOURCES := $(shell find user/xorg/deps/libXau user/xorg/deps/libxcb user/xorg/deps/libX11 user/xorg/deps/libXext \
 	user/xorg/deps/libICE user/xorg/deps/libSM user/xorg/deps/libXt user/xorg/deps/libXmu user/xorg/deps/libXpm user/xorg/deps/libXaw \
-	user/xorg/deps/libxtrans user/xorg/deps/xcb-proto user/xorg/twm user/xorg/xterm -type f -print 2>/dev/null)
+	user/xorg/deps/libxtrans user/xorg/deps/xcb-proto user/xorg/deps/libXfixes-6.0.2 \
+	user/xorg/deps/libXi-1.8.4 user/xorg/twm user/xorg/xterm user/xorg/xeyes-1.3.1 -type f -print 2>/dev/null)
 
 $(BUILD_DIR)/x11/.apps-built: tools/build_x11_apps.sh $(X11_APP_SOURCES) \
 		$(LIBOS_ARCHIVE) $(TINYX_BINARY) | $(BUILD_DIR)

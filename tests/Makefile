@@ -14,7 +14,7 @@ $(BUILD_DIR)/devfs_procfs_test: tests/devfs_procfs_test.c \
 		kernel/fs/vfs/vfs.c kernel/fs/ramfs/ramfs.c \
 		kernel/fs/devfs/devfs.c kernel/fs/procfs/procfs.c \
 		kernel/proc/fd.c include/kernel/vfs.h include/kernel/devfs.h \
-		include/kernel/procfs.h include/kernel/process.h | $(BUILD_DIR)
+		include/kernel/procfs.h include/kernel/process.h include/kernel/pmm.h | $(BUILD_DIR)
 	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Iinclude -Ilimine \
 		tests/devfs_procfs_test.c kernel/fs/vfs/vfs.c \
 		kernel/fs/ramfs/ramfs.c kernel/fs/devfs/devfs.c \

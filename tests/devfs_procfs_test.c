@@ -11,7 +11,9 @@
 #include "kernel/log.h"
 #include "kernel/process.h"
 #include "kernel/procfs.h"
+#include "kernel/pmm.h"
 #include "kernel/timer.h"
+#include "kernel/terminal.h"
 #include "kernel/tty.h"
 #include "kernel/vfs.h"
 
@@ -23,6 +25,11 @@ static struct process_snapshot_entry test_process = {
 };
 static int test_process_error;
 static uint64_t test_ticks;
+static uint64_t test_free_pages = 128;
+
+uint64_t pmm_usable_pages(void) { return 256; }
+uint64_t pmm_free_pages(void) { return test_free_pages; }
+
 static char console_output[64];
 static size_t console_output_length;
 static const char console_input[] = "tty input";
@@ -93,6 +100,9 @@ tty_write(const void *buffer, size_t length)
 	console_output_length += length;
 	return true;
 }
+
+bool terminal_input_available(void) { return false; }
+void process_wake_channel(void *channel) { (void)channel; }
 
 int
 process_current_snapshot(struct process_snapshot_entry *entry)
@@ -235,6 +245,11 @@ test_procfs(void)
 	vnode_put(lookup_node);
 	assert(fd_readdir(&table, (uint64_t)directory, &entry) == 1);
 	assert(strcmp(entry.name, "uptime") == 0 && entry.type == VNODE_REGULAR);
+	assert(fd_readdir(&table, (uint64_t)directory, &entry) == 1);
+	assert(strcmp(entry.name, "meminfo") == 0 && entry.type == VNODE_REGULAR);
+	assert(vfs_lookup("/proc/meminfo", &lookup_node) == 0);
+	assert(lookup_node->inode == entry.inode);
+	vnode_put(lookup_node);
 	assert(fd_readdir(&table, (uint64_t)directory, &entry) == 0);
 	assert(fd_close(&table, (uint64_t)directory) == 0);
 
@@ -249,6 +264,23 @@ test_procfs(void)
 	assert(fd_seek(&table, (uint64_t)descriptor, 0, 0, &amount) == 0 &&
 	    amount == 0);
 	assert(fd_close(&table, (uint64_t)descriptor) == 0);
+
+	descriptor = open_fd(&table, "/proc/meminfo", VFS_O_RDONLY);
+	assert(fd_read(&table, (uint64_t)descriptor, content, 3, &amount) == 0);
+	assert(amount == 3);
+	test_free_pages = 64;
+	length = read_to_end(&table, descriptor, content + 3, sizeof(content) - 3);
+	assert(length + 3 == strlen("MemTotal: 1024 kB\nMemFree: 512 kB\n"));
+	assert(memcmp(content, "MemTotal: 1024 kB\nMemFree: 512 kB\n", length + 3) == 0);
+	assert(fd_read(&table, (uint64_t)descriptor, content, sizeof(content),
+	    &amount) == 0 && amount == 0);
+	assert(fd_close(&table, (uint64_t)descriptor) == 0);
+	descriptor = open_fd(&table, "/proc/meminfo", VFS_O_RDONLY);
+	length = read_to_end(&table, descriptor, content, sizeof(content));
+	assert(contains(content, length, "MemFree: 256 kB\n"));
+	assert(fd_close(&table, (uint64_t)descriptor) == 0);
+	assert(vfs_open("/proc/meminfo", VFS_O_WRONLY, 0,
+	    &(struct fd_object *){0}) == -30);
 
 	descriptor = open_fd(&table, "/proc/self", VFS_O_RDONLY);
 	length = read_to_end(&table, descriptor, content, sizeof(content));

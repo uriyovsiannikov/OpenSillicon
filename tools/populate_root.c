@@ -128,10 +128,11 @@ main(int argc, char **argv)
 	const char *startx_path = NULL;
 	const char *twm_path = NULL;
 	const char *xterm_path = NULL;
+	const char *xeyes_path = NULL;
 	int arg;
 
 	if (argc < 4) {
-		fprintf(stderr, "usage: %s image init-elf shell-elf [--libos elf] [--tinyx elf] [--startx elf] [--twm elf] [--xterm elf] [--coreutils coreutils...]\n", argv[0]);
+		fprintf(stderr, "usage: %s image init-elf shell-elf [--libos elf] [--tinyx elf] [--startx elf] [--twm elf] [--xterm elf] [--xeyes elf] [--coreutils coreutils...]\n", argv[0]);
 		return 2;
 	}
 	for (arg = 4; arg < argc; arg++) {
@@ -150,6 +151,9 @@ main(int argc, char **argv)
 		} else if (strcmp(argv[arg], "--xterm") == 0 && arg + 1 < argc) {
 			if (xterm_path != NULL) return 2;
 			xterm_path = argv[++arg];
+		} else if (strcmp(argv[arg], "--xeyes") == 0 && arg + 1 < argc) {
+			if (xeyes_path != NULL) return 2;
+			xeyes_path = argv[++arg];
 		} else if (strcmp(argv[arg], "--coreutils") == 0) {
 			if (coreutils_start != 0) return 2;
 			coreutils_start = arg + 1;
@@ -219,6 +223,12 @@ main(int argc, char **argv)
 	if (xterm_path != NULL &&
 	    (error = add_file("/bin/xterm", xterm_path, 0755)) != 0) {
 		fprintf(stderr, "SilliconFS xterm population failed: %d\n", error);
+		fclose(image);
+		return 1;
+	}
+	if (xeyes_path != NULL &&
+	    (error = add_file("/bin/xeyes", xeyes_path, 0755)) != 0) {
+		fprintf(stderr, "SilliconFS xeyes population failed: %d\n", error);
 		fclose(image);
 		return 1;
 	}

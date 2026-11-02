@@ -149,7 +149,7 @@ $(BUILD_DIR)/devfs.o: kernel/fs/devfs/devfs.c include/kernel/devfs.h \
 
 $(BUILD_DIR)/procfs.o: kernel/fs/procfs/procfs.c include/kernel/procfs.h \
 		include/kernel/vfs.h include/kernel/process.h include/kernel/timer.h \
-		include/kernel/heap.h | $(BUILD_DIR)
+		include/kernel/heap.h include/kernel/pmm.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/ramfs.o: kernel/fs/ramfs/ramfs.c include/kernel/vfs.h \

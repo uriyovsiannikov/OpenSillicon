@@ -16,6 +16,8 @@ bool pmm_alloc_contiguous(size_t page_count, size_t alignment_pages,
 	uint64_t maximum_address_exclusive, uint64_t *physical_address);
 bool pmm_free_contiguous(uint64_t physical_address, size_t page_count);
 uint64_t pmm_total_pages(void);
+/* Full usable frames, excluding reserved memory and physical address holes. */
+uint64_t pmm_usable_pages(void);
 uint64_t pmm_free_pages(void);
 #if defined(KERNEL_TEST_PRIVATE_MAPPING_LIFECYCLE) || \
 	defined(KERNEL_TEST_PRIVATE_MAPPING_PROTECTION)

@@ -583,7 +583,12 @@ procfs currently exposes `/proc/self`, a per-open snapshot containing the
 current process PID, parent PID, scheduler state, and exit status, plus
 `/proc/uptime`, a per-open snapshot of timer ticks formatted in seconds to
 hundredths. These values come from existing process structures and the 100 Hz
-timer. Process enumeration, process names, command lines, memory maps, and
+timer. `/proc/meminfo` reports `MemTotal` and `MemFree` in KiB from PMM
+usable and free frame counts. Each open captures one snapshot. The total
+excludes reserved regions and address holes; used memory includes allocated
+frames and PMM metadata, without a per-process or cache breakdown. `fetch`
+displays uptime and used/total memory from these procfs files.
+Process enumeration, process names, command lines, memory maps, and
 per-process directories are unavailable because the kernel does not yet
 provide the necessary stable enumeration and metadata interfaces.
 
