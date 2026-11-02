@@ -484,9 +484,11 @@ build_initial_stack(const struct elf_loaded_image *image, uint64_t physical,
 		string_bytes += length + 1;
 	}
 	byte_count = (argc + 17U) * sizeof(uint64_t);
-	if (byte_count > top || string_bytes > PROCESS_STACK_SIZE - byte_count - 15)
+	if (byte_count > PROCESS_STACK_SIZE ||
+	    string_bytes > PROCESS_STACK_SIZE - byte_count - 15)
 		return false;
-	rsp = (top - byte_count) & ~15ULL;
+	/* Keep argv/env/auxv words and their strings in disjoint stack ranges. */
+	rsp = (top - byte_count - string_bytes) & ~15ULL;
 	if (rsp < PROCESS_STACK_PAGE || rsp > top ||
 	    byte_count > top - rsp || hhdm > UINT64_MAX - physical ||
 	    PROCESS_STACK_SIZE - 1 > UINT64_MAX - (hhdm + physical))
@@ -500,7 +502,7 @@ build_initial_stack(const struct elf_loaded_image *image, uint64_t physical,
 	    PROCESS_STACK_SIZE / sizeof(uint64_t) - offset)
 		return false;
 	words[0] = argc;
-	string_cursor = top - string_bytes;
+	string_cursor = rsp + byte_count;
 	for (i = 0; i < argc; i++) {
 		uint64_t j = 0;
 		words[1 + i] = string_cursor;

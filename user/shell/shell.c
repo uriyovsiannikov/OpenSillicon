@@ -22,6 +22,12 @@ static uint64_t shell_tls_storage[128] __attribute__((aligned(16)));
 #define HELP_NAME_CAPACITY 256U
 #define HELP_COLUMN_WIDTH 22U
 #define HISTORY_CAPACITY 16U
+#define COMPLETION_LIMIT 64U
+
+struct completion_candidate {
+	char name[HELP_NAME_CAPACITY];
+	int is_directory;
+};
 
 static const char *const internal_commands[] = {
 	"help", "cd", "exit", "history"
@@ -371,6 +377,201 @@ load_history_line(char *line, size_t *length, size_t *cursor)
 }
 
 static int
+has_prefix(const char *text, const char *prefix)
+{
+	size_t index = 0;
+	while (prefix[index] != '\0' && text[index] == prefix[index])
+		index++;
+	return prefix[index] == '\0';
+}
+
+static void
+add_completion(struct completion_candidate *candidates, size_t *count,
+	const char *name, int is_directory, const char *prefix)
+{
+	size_t length = u_strlen(name);
+	if (!has_prefix(name, prefix) || length >= HELP_NAME_CAPACITY ||
+	    *count == COMPLETION_LIMIT)
+		return;
+	for (size_t i = 0; i < *count; i++)
+		if (u_streq(candidates[i].name, name))
+			return;
+	for (size_t i = 0; i <= length; i++)
+		candidates[*count].name[i] = name[i];
+	candidates[*count].is_directory = is_directory;
+	(*count)++;
+}
+
+static size_t
+completion_common_prefix(const struct completion_candidate *candidates,
+	size_t count)
+{
+	size_t length = u_strlen(candidates[0].name);
+	for (size_t i = 1; i < count; i++) {
+		size_t j = 0;
+		while (j < length && candidates[i].name[j] != '\0' &&
+		    candidates[0].name[j] == candidates[i].name[j])
+			j++;
+		length = j;
+	}
+	return length;
+}
+
+static void
+insert_completion(char *line, size_t *length, size_t *cursor,
+	const char *text, size_t text_length)
+{
+	if (text_length > LINE_CAPACITY - 1 - *length)
+		text_length = LINE_CAPACITY - 1 - *length;
+	if (text_length == 0)
+		return;
+	for (size_t i = *length; i > *cursor; i--)
+		line[i + text_length - 1] = line[i - 1];
+	for (size_t i = 0; i < text_length; i++)
+		line[*cursor + i] = text[i];
+	*length += text_length;
+	*cursor += text_length;
+	line[*length] = '\0';
+}
+
+static void
+complete_line(char *line, size_t *length, size_t *cursor)
+{
+	/* The process user stack is one page; keep this scratch table in BSS. */
+	static struct completion_candidate candidates[COMPLETION_LIMIT];
+	char word[LINE_CAPACITY];
+	char directory[PATH_CAPACITY];
+	char directory_path[PATH_CAPACITY];
+	size_t start = *cursor;
+	size_t word_length;
+	size_t slash = (size_t)-1;
+	size_t count = 0;
+	int command_position = 1;
+	long descriptor;
+	long result;
+	struct u_dirent entry;
+
+	while (start != 0 && line[start - 1] != ' ' && line[start - 1] != '\t')
+		start--;
+	for (size_t i = 0; i < start; i++)
+		if (line[i] != ' ' && line[i] != '\t')
+			command_position = 0;
+	word_length = *cursor - start;
+	if (word_length >= sizeof(word))
+		return;
+	for (size_t i = 0; i < word_length; i++) {
+		word[i] = line[start + i];
+		if (word[i] == '/')
+			slash = i;
+	}
+	word[word_length] = '\0';
+	if (command_position && slash == (size_t)-1) {
+		for (size_t i = 0; i < sizeof(internal_commands) /
+		    sizeof(internal_commands[0]); i++)
+			add_completion(candidates, &count, internal_commands[i], 0, word);
+		descriptor = u_open("/bin", U_O_RDONLY | U_O_DIRECTORY);
+		if (descriptor >= 0) {
+			while ((result = u_readdir((uint64_t)descriptor, &entry)) > 0)
+				if (is_executable_entry(&entry))
+					add_completion(candidates, &count, entry.name, 0, word);
+			(void)u_close((uint64_t)descriptor);
+		}
+	} else {
+		size_t prefix_length = slash == (size_t)-1 ? 0 : slash + 1;
+		if (slash == (size_t)-1) {
+			if (!resolve(".", directory_path))
+				return;
+		} else {
+			if (prefix_length >= sizeof(directory))
+				return;
+			for (size_t i = 0; i < prefix_length; i++)
+				directory[i] = word[i];
+			directory[prefix_length] = '\0';
+			if (prefix_length == 1 && directory[0] == '/') {
+				directory[0] = '/';
+				directory[1] = '\0';
+			} else {
+				directory[prefix_length - 1] = '\0';
+				if (directory[0] == '\0')
+					directory[0] = '.', directory[1] = '\0';
+			}
+			if (!resolve(directory, directory_path))
+				return;
+		}
+		descriptor = u_open(directory_path, U_O_RDONLY | U_O_DIRECTORY);
+		if (descriptor < 0)
+			return;
+		while ((result = u_readdir((uint64_t)descriptor, &entry)) > 0) {
+			if (u_streq(entry.name, ".") || u_streq(entry.name, ".."))
+				continue;
+			if (has_prefix(entry.name, word + prefix_length))
+				add_completion(candidates, &count, entry.name,
+				    entry.type == 2, word + prefix_length);
+		}
+		(void)u_close((uint64_t)descriptor);
+		if (result < 0)
+			count = 0;
+		if (count != 0) {
+			char replacement[PATH_CAPACITY];
+			size_t replacement_length = 0;
+			size_t common_length =
+			    completion_common_prefix(candidates, count);
+			size_t extra = count == 1 && candidates[0].is_directory ? 1U :
+			    count == 1 && *cursor == *length ? 1U : 0U;
+			if (prefix_length + common_length + extra >=
+			    sizeof(replacement)) {
+				redraw_line(line, *length, *cursor);
+				return;
+			}
+			for (size_t i = 0; i < prefix_length; i++)
+				replacement[replacement_length++] = word[i];
+			for (size_t i = 0; i < common_length; i++)
+				replacement[replacement_length++] = candidates[0].name[i];
+			if (count == 1 && candidates[0].is_directory)
+				replacement[replacement_length++] = '/';
+			else if (count == 1 && *cursor == *length)
+				replacement[replacement_length++] = ' ';
+			if (replacement_length > word_length)
+				insert_completion(line, length, cursor,
+				    replacement + word_length,
+				    replacement_length - word_length);
+		}
+		if (count > 1) {
+			u_puts("\r\n");
+			for (size_t i = 0; i < count; i++) {
+				u_puts(candidates[i].name);
+				if (candidates[i].is_directory)
+					u_puts("/");
+				u_puts("  ");
+			}
+			u_puts("\r\n");
+		}
+		redraw_line(line, *length, *cursor);
+		return;
+	}
+	if (count == 0)
+		return;
+	if (count > 1) {
+		size_t common_length = completion_common_prefix(candidates, count);
+		if (common_length > word_length)
+			insert_completion(line, length, cursor,
+			    candidates[0].name + word_length,
+			    common_length - word_length);
+	}
+	if (count == 1 && *cursor == *length)
+		insert_completion(line, length, cursor, " ", 1);
+	if (count > 1) {
+		u_puts("\r\n");
+		for (size_t i = 0; i < count; i++) {
+			u_puts(candidates[i].name);
+			u_puts("  ");
+		}
+		u_puts("\r\n");
+	}
+	redraw_line(line, *length, *cursor);
+}
+
+static int
 read_command_line(char *line)
 {
 	size_t length = 0;
@@ -445,8 +646,10 @@ read_command_line(char *line)
 			}
 			continue;
 		}
-		if (character == '\t')
-			character = ' ';
+		if (character == '\t') {
+			complete_line(line, &length, &cursor);
+			continue;
+		}
 		if (character == '\b' || (uint8_t)character == 0x7fU) {
 			if (cursor != 0) {
 				size_t i;
