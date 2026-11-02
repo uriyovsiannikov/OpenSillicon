@@ -1,7 +1,7 @@
 <div align="center">
   <img src="other/logo.png" alt="OpenSillicon logo" width="88">
   <h1>OpenSillicon</h1>
-  <p>A small x86_64 operating system built from the ground up.</p>
+  <p>a small x86_64 operating system built from the ground up.</p>
   <img src="other/screenshot1.png" alt="OpenSillicon shell" width="620">
 </div>
 
@@ -10,13 +10,13 @@ monolithic kernel and a native userspace.
 
 ## What works
 
-- Ring 3 processes, ELF loading, `fork`/`exec`/`wait`, preemptive scheduling,
+- Ring 3 processes, elf loading, `fork`/`exec`/`wait`, preemptive scheduling,
   virtual mem, shared mem, signals, pipes, and file descriptors.
 - VFS with RAMFS, initramfs, devfs, procfs, and the native SilliconFS.
-- F/b terminal, PS/2 keyboard, shell, and core utilities.
+- F/b terminal, ps/2 keyboard, shell, and core utilities.
 - Native `libos` runtime.
 - TinyX session with `twm`, `xterm`, and `xeyes`.
-- Network stack components for Ethernet, ARP, IPv4, ICMP, UDP, and TCP.
+- Network stack components for ethernet, arp, ipv4, icmp, udp, and tcp.
 
 ## Build and run
 
@@ -28,12 +28,6 @@ make
 make run       # UEFI QEMU, serial console
 make run-gui   # UEFI QEMU, graphical display
 ```
-
-The normal boot profile requires a supported AHCI controller and a disk with
-SilliconFS as its root filesystem. The QEMU network profile uses the Intel
-82540EM (`8086:100e`). Real hardware support is evolving; successful QEMU boot
-does not imply compatibility with a particular PC. Back up disks before
-experimenting with storage drivers.
 
 ## Source map
 
