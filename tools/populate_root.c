@@ -124,11 +124,11 @@ main(int argc, char **argv)
 	const char *libos_path = NULL;
 	int arg;
 
-	if (argc < 5) {
-		fprintf(stderr, "usage: %s image init-elf shell-elf probe-elf [--libos elf] [--coreutils coreutils...]\n", argv[0]);
+	if (argc < 4) {
+		fprintf(stderr, "usage: %s image init-elf shell-elf [--libos elf] [--coreutils coreutils...]\n", argv[0]);
 		return 2;
 	}
-	for (arg = 5; arg < argc; arg++) {
+	for (arg = 4; arg < argc; arg++) {
 		if (strcmp(argv[arg], "--libos") == 0 && arg + 1 < argc) {
 			if (libos_path != NULL) return 2;
 			libos_path = argv[++arg];
@@ -169,8 +169,7 @@ main(int argc, char **argv)
 	    (error = add_directory("/etc", 0755)) != 0 ||
 	    (error = add_directory("/tmp", 01777)) != 0 ||
 	    (error = add_file("/sbin/init", argv[2], 0755)) != 0 ||
-	    (error = add_file("/bin/sh", argv[3], 0755)) != 0 ||
-	    (error = add_file("/bin/probe", argv[4], 0755)) != 0) {
+	    (error = add_file("/bin/sh", argv[3], 0755)) != 0) {
 		fprintf(stderr, "SilliconFS population failed: %d\n", error);
 		fclose(image);
 		return 1;

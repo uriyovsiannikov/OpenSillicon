@@ -299,13 +299,6 @@ $(BUILD_DIR)/user_entry.o: kernel/arch/x86_64/context/user_entry.S | $(BUILD_DIR
 $(BUILD_DIR)/user_entry_c.o: kernel/arch/x86_64/context/user_entry.c | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/udp_socket_test_blob.o: $(BUILD_DIR)/udp_socket_test.elf
-	cd $(BUILD_DIR) && objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
-		--rename-section .data=.rodata,alloc,load,readonly,data,contents \
-		--redefine-sym _binary_udp_socket_test_elf_start=_binary_udp_socket_test_bin_start \
-		--redefine-sym _binary_udp_socket_test_elf_end=_binary_udp_socket_test_bin_end \
-		udp_socket_test.elf udp_socket_test_blob.o
-
 $(BUILD_DIR)/acpica/%.o: $(ACPICA_ROOT)/%.c \
 		$(ACPICA_ROOT)/include/platform/acenv.h \
 		$(ACPICA_ROOT)/include/platform/acopensillicon.h \
@@ -314,31 +307,6 @@ $(BUILD_DIR)/acpica/%.o: $(ACPICA_ROOT)/%.c \
 	$(CC) $(ACPICA_CFLAGS) -c $< -o $@
 
 acpica-check: $(ACPICA_OBJECTS)
-
-$(BUILD_DIR)/user_test_blob.o: $(BUILD_DIR)/user_test.bin
-	cd $(BUILD_DIR) && objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
-		--rename-section .data=.rodata,alloc,load,readonly,data,contents \
-		user_test.bin user_test_blob.o
-
-$(BUILD_DIR)/elf_test_blob.o: $(BUILD_DIR)/elf_test_user.elf
-	cd $(BUILD_DIR) && objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
-		--rename-section .data=.rodata,alloc,load,readonly,data,contents \
-		--redefine-sym _binary_elf_test_user_elf_start=_binary_elf_test_bin_start \
-		--redefine-sym _binary_elf_test_user_elf_end=_binary_elf_test_bin_end \
-		elf_test_user.elf elf_test_blob.o
-
-$(BUILD_DIR)/private_mapping_lifecycle_blob.o: \
-		$(BUILD_DIR)/private_mapping_lifecycle_test.elf
-	cd $(BUILD_DIR) && objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
-		--rename-section .data=.rodata,alloc,load,readonly,data,contents \
-		private_mapping_lifecycle_test.elf private_mapping_lifecycle_blob.o
-
-$(BUILD_DIR)/vfs_test_blob.o: $(BUILD_DIR)/vfs_test_user.elf
-	cd $(BUILD_DIR) && objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
-		--rename-section .data=.rodata,alloc,load,readonly,data,contents \
-		--redefine-sym _binary_vfs_test_user_elf_start=_binary_vfs_test_bin_start \
-		--redefine-sym _binary_vfs_test_user_elf_end=_binary_vfs_test_bin_end \
-		vfs_test_user.elf vfs_test_blob.o
 
 KERNEL_OBJECTS := $(BUILD_DIR)/main.o $(BUILD_DIR)/boot.o $(BUILD_DIR)/boot_entropy.o $(BUILD_DIR)/entropy.o $(BUILD_DIR)/random.o $(BUILD_DIR)/rdseed.o $(BUILD_DIR)/pmm.o \
 	$(BUILD_DIR)/virtio_rng.o \
@@ -362,13 +330,13 @@ KERNEL_OBJECTS := $(BUILD_DIR)/main.o $(BUILD_DIR)/boot.o $(BUILD_DIR)/boot_entr
 	$(BUILD_DIR)/ps2_keyboard.o \
 	$(BUILD_DIR)/syscall.o $(BUILD_DIR)/pipe.o $(BUILD_DIR)/pipe_buffer.o \
 	$(BUILD_DIR)/user_entry.o \
-	$(BUILD_DIR)/user_entry_c.o $(BUILD_DIR)/user_test_blob.o \
-	$(BUILD_DIR)/elf.o $(BUILD_DIR)/elf_test_blob.o \
-	$(PRIVATE_MAPPING_TEST_OBJECTS) $(BUILD_DIR)/process.o \
+	$(BUILD_DIR)/user_entry_c.o \
+	$(BUILD_DIR)/elf.o \
+	$(BUILD_DIR)/process.o \
 	$(BUILD_DIR)/signal_state.o \
 	$(BUILD_DIR)/string.o $(BUILD_DIR)/vfs.o $(BUILD_DIR)/ramfs.o \
 	$(BUILD_DIR)/initramfs.o $(BUILD_DIR)/silliconfs.o \
-	$(BUILD_DIR)/vfs_test_blob.o $(UDP_SOCKET_TEST_OBJECTS) $(ACPICA_OBJECTS)
+	$(ACPICA_OBJECTS)
 
 $(BUILD_DIR)/kernel.elf: $(KERNEL_OBJECTS) kernel/arch/x86_64/boot/linker.ld
 	$(LD) $(KERNEL_LDFLAGS) $(KERNEL_OBJECTS) -o $@

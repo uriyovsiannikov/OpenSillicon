@@ -41,24 +41,6 @@
 #include "arch/x86_64/interrupts.h"
 #include "arch/x86_64/ps2_keyboard.h"
 
-#ifdef KERNEL_TEST_FPU_CONTEXT
-static void
-run_fpu_context_test(void)
-{
-	uint64_t preemptions_before = process_user_preemptions();
-	uint64_t status = process_run_path("/init/bin/fpu_context_test", false);
-
-	if (status != 0 || process_user_preemptions() <= preemptions_before) {
-		klog("OpenSillicon: Ring3 FPU/SSE context test failed, status ");
-		klog_u64(status);
-		klog(" preemptions ");
-		klog_u64(process_user_preemptions() - preemptions_before);
-		klog("\n");
-		kernel_halt();
-	}
-	klog("OpenSillicon: eager per-process FXSAVE/FXRSTOR context test passed\n");
-}
-#endif
 
 #define SCHEDULER_TEST_STEPS 4U
 #define USER_TEST_CODE 0x400000ULL
@@ -69,47 +51,9 @@ run_fpu_context_test(void)
 #define MAIN_EEXIST 17
 #define MAIN_ENOTDIR 20
 
-static struct fd_table user_descriptors;
 static struct pci_device_info ahci_device;
 static struct block_device ahci_block_device;
 static struct block_silliconfs_adapter root_adapter;
-
-#ifdef KERNEL_TEST_UDP_SOCKET
-extern const uint8_t _binary_udp_socket_test_bin_start[];
-extern const uint8_t _binary_udp_socket_test_bin_end[];
-
-static void
-run_udp_socket_test(void)
-{
-	uint64_t image_size = (uintptr_t)_binary_udp_socket_test_bin_end -
-	    (uintptr_t)_binary_udp_socket_test_bin_start;
-	uint64_t status;
-	struct network_service_result service_result;
-
-	status = process_run_elf(_binary_udp_socket_test_bin_start,
-	    (size_t)image_size);
-	if (!tcp_runtime_shutdown() ||
-	    !network_service_request(NETWORK_SERVICE_POLL_RX) ||
-	    udp_socket_system_shutdown() ||
-	    !network_service_run(1, &service_result) ||
-	    service_result.events_processed != 1 ||
-	    !udp_socket_system_shutdown() || e1000_state() != E1000_STATE_STOPPED) {
-		klog("OpenSillicon: UDP test could not confirm safe e1000 shutdown\n");
-		kernel_halt();
-	}
-	if (status != 0) {
-		klog("OpenSillicon: user UDP socket test failed, status ");
-		klog_u64(status);
-		klog("\n");
-		kernel_halt();
-	}
-#ifdef KERNEL_TEST_ICMP_PING
-	klog("OpenSillicon: userspace ICMP ping passed; e1000 stopped\n");
-#else
-	klog("OpenSillicon: user UDP socket send/receive/close passed; e1000 stopped\n");
-#endif
-}
-#endif
 
 #ifdef KERNEL_TEST_E1000_ICMP_SMOKE
 #define NETSTACK_TEST_POLLS 10000000U
@@ -243,10 +187,6 @@ run_e1000_icmp_smoke_test(void)
 	return true;
 }
 #endif
-#ifdef KERNEL_TEST_PRIVATE_MAPPING_LIFECYCLE
-extern uint8_t _binary_private_mapping_lifecycle_test_elf_start[];
-extern uint8_t _binary_private_mapping_lifecycle_test_elf_end[];
-#endif
 
 static void
 run_dma_allocation_smoke_test(void)
@@ -327,94 +267,6 @@ run_mmio_memmap_smoke_test(const struct boot_info *info)
 	    "reserved ranges accepted; usable HHDM RAM rejected");
 }
 
-static void
-run_user_test(void)
-{
-	struct address_space space;
-	uint64_t code_page;
-	uint64_t stack_page;
-	uint64_t data_page;
-	uint64_t collision_page;
-	uint64_t image_size = (uintptr_t)_binary_user_test_bin_end -
-	    (uintptr_t)_binary_user_test_bin_start;
-	uint64_t status;
-	uint64_t unmapped;
-	uint64_t free_pages = pmm_free_pages();
-	uint8_t *code;
-	uint64_t i;
-
-	if (image_size == 0 || image_size > PAGE_SIZE ||
-	    !pmm_alloc_page(&code_page) || !pmm_alloc_page(&stack_page) ||
-	    !pmm_alloc_page(&data_page) || !pmm_alloc_page(&collision_page) ||
-	    !address_space_create(&space)) {
-		klog("OpenSillicon: user test allocation failed\n");
-		kernel_halt();
-	}
-	code = (uint8_t *)(uintptr_t)(vmm_hhdm_offset() + code_page);
-	for (i = 0; i < image_size; i++)
-		code[i] = _binary_user_test_bin_start[i];
-	*(volatile uint64_t *)(uintptr_t)(vmm_hhdm_offset() + data_page) = 0;
-	if (!vmm_map_page(&space, USER_TEST_CODE, code_page,
-	    VMM_USER | VMM_EXEC) || !vmm_map_page(&space, USER_TEST_STACK,
-	    stack_page, VMM_USER | VMM_WRITE) ||
-	    !vmm_map_page(&space, USER_TEST_CODE + PAGE_SIZE, data_page,
-	    VMM_USER | VMM_WRITE) ||
-	    !vmm_map_page(&space, SHM_ARENA_START + 2 * SHM_PAGE_SIZE,
-	    collision_page, VMM_USER | VMM_WRITE) ||
-	    !vmm_validate_user_exec(&space, USER_TEST_CODE, 1) ||
-	    vmm_validate_user_exec(&space, USER_TEST_STACK, 1) ||
-	    vmm_validate_user_exec(&space, USER_TEST_CODE + PAGE_SIZE - 1, 2) ||
-	    vmm_validate_user_exec(&space, 0xffffffff80000000ULL, 1) ||
-	    vmm_validate_user_exec(&space, USER_TEST_END - 1, 2) ||
-	    !address_space_activate(&space)) {
-		klog("OpenSillicon: user test mapping failed\n");
-		kernel_halt();
-	}
-	fd_table_init_standard(&user_descriptors);
-	syscall_init(&user_descriptors);
-	status = user_enter(USER_TEST_CODE, USER_TEST_STACK + PAGE_SIZE);
-	if (status != 0 || !vmm_unmap_page(&space,
-	    SHM_ARENA_START + 2 * SHM_PAGE_SIZE, &unmapped) ||
-	    unmapped != collision_page || !vmm_unmap_shared_object(&space,
-	    SHM_ARENA_START + SHM_PAGE_SIZE) || !pmm_free_page(collision_page)) {
-		klog("OpenSillicon: shared syscall failure rollback test failed, status ");
-		klog_u64(status);
-		klog("\n");
-		kernel_halt();
-	}
-	{
-		uint64_t phase = 1;
-
-		if (!vmm_copy_to_user(&space, USER_TEST_CODE + PAGE_SIZE,
-		    &phase, sizeof(phase))) {
-			klog("OpenSillicon: shared syscall test phase setup failed\n");
-			kernel_halt();
-		}
-	}
-	status = user_enter(USER_TEST_CODE, USER_TEST_STACK + PAGE_SIZE);
-	if (status != 0) {
-		klog("OpenSillicon: shared syscall success test failed, status ");
-		klog_u64(status);
-		klog("\n");
-		kernel_halt();
-	}
-	status = user_enter(USER_TEST_FAULT, USER_TEST_STACK + PAGE_SIZE);
-	if (status != 0x10eU ||
-	    !address_space_activate(vmm_kernel_address_space()) ||
-	    !vmm_unmap_page(&space, USER_TEST_CODE, &unmapped) ||
-	    unmapped != code_page ||
-	    !vmm_unmap_page(&space, USER_TEST_CODE + PAGE_SIZE, &unmapped) ||
-	    unmapped != data_page || !vmm_unmap_page(&space, USER_TEST_STACK,
-	    &unmapped) || unmapped != stack_page || !address_space_destroy(&space) ||
-	    !pmm_free_page(code_page) || !pmm_free_page(data_page) ||
-	    !pmm_free_page(stack_page) || pmm_free_pages() != free_pages) {
-		klog("OpenSillicon: user test failed, status ");
-		klog_u64(status);
-		klog("\n");
-		kernel_halt();
-	}
-	klog("OpenSillicon: Ring 3 and shared-memory syscall tests passed\n");
-}
 
 static void
 run_vmm_shared_test(void)
@@ -493,142 +345,6 @@ fail:
 	kernel_halt();
 }
 
-static void
-run_vmm_private_mapping_test(void)
-{
-	const uint64_t initial = 0x706172656e743031ULL;
-	const uint64_t parent_update = 0x706172656e743032ULL;
-	const uint64_t child_update = 0x6368696c643031ULL;
-	struct address_space parent;
-	struct address_space child;
-	struct elf_loaded_image replacement;
-	uint64_t base;
-	uint64_t next;
-	uint64_t fork_base;
-	uint64_t value;
-	uint8_t last_byte;
-	uint64_t free_pages = pmm_free_pages();
-	uint64_t image_size = (uintptr_t)_binary_elf_test_bin_end -
-	    (uintptr_t)_binary_elf_test_bin_start;
-	unsigned int step = 1;
-
-	if (!address_space_create(&parent) ||
-	    vmm_private_map(&parent, 0, &base) != -EINVAL ||
-	    vmm_private_map(&parent, UINT64_MAX, &base) != -EINVAL ||
-	    vmm_private_map(&parent, PRIVATE_MAP_USABLE_END -
-	    PRIVATE_MAP_USABLE_START + PAGE_SIZE, &base) == 0 ||
-	    vmm_private_unmap(&parent, PRIVATE_MAP_ARENA_START, PAGE_SIZE) !=
-	    -EINVAL ||
-	    vmm_map_page(&parent, PRIVATE_MAP_ARENA_START, 0,
-	    VMM_USER | VMM_WRITE))
-		goto fail;
-	step++;
-#ifdef KERNEL_TEST_PRIVATE_MAPPING_FAILURE
-	{
-		uint64_t cursor = parent.private_map_cursor;
-		uint64_t collision_base = 0;
-
-		if (!vmm_test_install_private_collision(&parent) ||
-		    vmm_private_map(&parent, PAGE_SIZE, &collision_base) != -ENOMEM ||
-		    collision_base != 0 || parent.private_map_cursor != cursor ||
-		    !vmm_test_remove_private_collision(&parent))
-			goto fail;
-	}
-#endif
-	if (vmm_private_map(&parent, PAGE_SIZE + 1, &base) != 0 ||
-	    base != PRIVATE_MAP_USABLE_START || (base & (PAGE_SIZE - 1)) != 0 ||
-	    !vmm_copy_from_user(&parent, &value, base, sizeof(value)) || value != 0 ||
-	    !vmm_copy_from_user(&parent, &last_byte,
-	    base + 2 * PAGE_SIZE - 1, sizeof(last_byte)) || last_byte != 0 ||
-	    !vmm_validate_user_write(&parent, base, PAGE_SIZE + 1) ||
-	    vmm_validate_user_exec(&parent, base, 1) ||
-	    !vmm_copy_to_user(&parent, base, &initial, sizeof(initial)))
-		goto fail;
-	step++;
-	if (vmm_private_map(&parent, PAGE_SIZE, &next) != 0 ||
-	    next != base + 2 * PAGE_SIZE ||
-	    vmm_private_unmap(&parent, base, PAGE_SIZE) != -EINVAL ||
-	    vmm_private_unmap(&parent, base + 1, PAGE_SIZE + 1) != -EINVAL ||
-	    vmm_private_unmap(&parent, base, PAGE_SIZE + 1) != 0 ||
-	    vmm_private_unmap(&parent, base, PAGE_SIZE + 1) != -EINVAL ||
-	    vmm_private_map(&parent, PAGE_SIZE, &fork_base) != 0 ||
-	    fork_base <= next)
-		goto fail;
-	step++;
-	if (!vmm_copy_to_user(&parent, fork_base, &initial, sizeof(initial)))
-		goto fail;
-	step = 41;
-	if (!address_space_clone(&parent, &child))
-		goto fail;
-	step = 42;
-	if (child.private_mappings == NULL || parent.private_mappings == NULL ||
-	    child.private_mappings->physical_pages[0] ==
-	    parent.private_mappings->physical_pages[0])
-		goto fail;
-	step++;
-	if (!vmm_copy_to_user(&parent, fork_base, &parent_update,
-	    sizeof(parent_update)) ||
-	    !vmm_copy_from_user(&child, &value, fork_base, sizeof(value)) ||
-	    value != initial ||
-	    !vmm_copy_to_user(&child, fork_base, &child_update,
-	    sizeof(child_update)) ||
-	    !vmm_copy_from_user(&parent, &value, fork_base, sizeof(value)) ||
-	    value != parent_update || !address_space_destroy_with_pages(&child))
-		goto fail;
-	step++;
-#ifdef KERNEL_TEST_PRIVATE_MAPPING_FAILURE
-	{
-		uint64_t failed_base = 0;
-		uint64_t cursor = parent.private_map_cursor;
-
-		vmm_test_arm_private_metadata_failure(1);
-		if (vmm_private_map(&parent, PAGE_SIZE, &failed_base) != -ENOMEM ||
-		    failed_base != 0 || parent.private_map_cursor != cursor)
-			goto fail;
-		vmm_test_arm_private_metadata_failure(2);
-		if (vmm_private_map(&parent, PAGE_SIZE, &failed_base) != -ENOMEM ||
-		    failed_base != 0 || parent.private_map_cursor != cursor)
-			goto fail;
-		vmm_test_arm_private_metadata_failure(3);
-		if (vmm_private_map(&parent, PAGE_SIZE, &failed_base) != -ENOMEM ||
-		    failed_base != 0 || parent.private_map_cursor != cursor)
-			goto fail;
-		vmm_test_arm_private_map_failure(1);
-		if (vmm_private_map(&parent, 2 * PAGE_SIZE, &failed_base) != -ENOMEM ||
-		    failed_base != 0 || parent.private_map_cursor != cursor)
-			goto fail;
-		if (vmm_private_map(&parent, PAGE_SIZE, &failed_base) != 0 ||
-		    failed_base != cursor ||
-		    vmm_private_unmap(&parent, failed_base, PAGE_SIZE) != 0)
-			goto fail;
-		vmm_test_arm_private_fork_failure(1);
-		if (address_space_clone(&parent, &child) ||
-		    !vmm_copy_from_user(&parent, &value, fork_base, sizeof(value)) ||
-		    value != parent_update)
-			goto fail;
-	}
-#endif
-	if (elf_image_load(NULL, 0, &replacement) ||
-	    !vmm_copy_from_user(&parent, &value, fork_base, sizeof(value)) ||
-	    value != parent_update || image_size == 0 ||
-	    !elf_image_load(_binary_elf_test_bin_start, (size_t)image_size,
-	    &replacement) || !address_space_activate(&replacement.address_space) ||
-	    !address_space_destroy_with_pages(&parent) ||
-	    !address_space_activate(vmm_kernel_address_space()) ||
-	    !elf_image_unload(&replacement) || pmm_free_pages() != free_pages)
-		goto fail;
-	klog("OpenSillicon: private mapping zero-fill, RW/NX, exact unmap, fork isolation, exec replacement, and teardown passed\n");
-#ifdef KERNEL_TEST_PRIVATE_MAPPING_FAILURE
-	klog("OpenSillicon: private mapping metadata, page, and fork rollback injection passed\n");
-#endif
-	return;
-
-fail:
-	klog("OpenSillicon: private mapping test failed at step ");
-	klog_u64(step);
-	klog("\n");
-	kernel_halt();
-}
 
 #ifdef KERNEL_TEST_PRIVATE_MAPPING_PROTECTION
 static void
@@ -916,121 +632,11 @@ fail:
 }
 #endif
 
-#ifdef KERNEL_TEST_PRIVATE_MAPPING_LIFECYCLE
-static void
-run_private_mapping_lifecycle_test(void)
-{
-	uint64_t size = (uintptr_t)_binary_private_mapping_lifecycle_test_elf_end -
-	    (uintptr_t)_binary_private_mapping_lifecycle_test_elf_start;
-	uint64_t status = process_test_private_mapping_lifecycle(
-	    _binary_private_mapping_lifecycle_test_elf_start, (size_t)size);
 
-	if (status != 0) {
-		klog("OpenSillicon: private mapping NX exit/reap test failed, status ");
-		klog_u64(status);
-		klog("\n");
-		kernel_halt();
-	}
-	klog("OpenSillicon: private mapping NX instruction fault, zombie retention, and reap cleanup passed\n");
-}
-#endif
 
-static void
-run_elf_test(void)
-{
-	uint64_t image_size = (uintptr_t)_binary_elf_test_bin_end -
-	    (uintptr_t)_binary_elf_test_bin_start;
-	uint64_t status;
 
-	status = process_run_elf(_binary_elf_test_bin_start, (size_t)image_size);
-	if (status != 0 || process_user_preemptions() == 0) {
-		klog("OpenSillicon: ELF process smoke test failed, status ");
-		klog_u64(status);
-		klog(" preemptions ");
-		klog_u64(process_user_preemptions());
-		klog("\n");
-		kernel_halt();
-	}
-	klog("OpenSillicon: user timer preemptions ");
-	klog_u64(process_user_preemptions());
-	klog("\n");
-	klog("OpenSillicon: ELF64 process, fork, wait, and cleanup passed\n");
-}
 
-static void
-run_vfs_test(void)
-{
-	uint64_t image_size = (uintptr_t)_binary_vfs_test_bin_end -
-	    (uintptr_t)_binary_vfs_test_bin_start;
-	uint64_t status = process_run_elf(_binary_vfs_test_bin_start,
-	    (size_t)image_size);
 
-	if (status != 0) {
-		klog("OpenSillicon: VFS userspace test failed, status ");
-		klog_u64(status);
-		klog("\n");
-		kernel_halt();
-	}
-	klog("OpenSillicon: VFS userspace operations passed\n");
-}
-
-static void
-run_pipe_test(void)
-{
-	uint64_t status = process_run_path("/init/bin/pipe_test", false);
-
-	if (status != 0) {
-		klog("OpenSillicon: anonymous pipe userspace test failed, status ");
-		klog_u64(status);
-		klog("\n");
-		kernel_halt();
-	}
-	if (process_pipe_blocked_ticks() == 0) {
-		klog("OpenSillicon: pipe wait did not block through timer ticks\n");
-		kernel_halt();
-	}
-	klog("OpenSillicon: pipe blocked timer ticks ");
-	klog_u64(process_pipe_blocked_ticks());
-	klog("\n");
-	klog("OpenSillicon: anonymous pipe fork, exec, and blocking tests passed\n");
-}
-
-static void
-run_signal_test(void)
-{
-	uint64_t status = process_run_path("/init/bin/signal_test", false);
-
-	if (status != 0) {
-		klog("OpenSillicon: user signal handler test failed, status ");
-		klog_u64(status);
-		klog("\n");
-		kernel_halt();
-	}
-	klog("OpenSillicon: signal delivery, sigreturn, and blocked syscall "
-	    "interruption passed\n");
-}
-
-static void
-run_shm_lifecycle_test(void)
-{
-	uint64_t status = process_run_path("/init/bin/shm_lifecycle_test", false);
-
-	if (status != 0) {
-		klog("OpenSillicon: shared-memory lifecycle test failed, status ");
-		klog_u64(status);
-		klog("\n");
-		kernel_halt();
-	}
-#ifdef KERNEL_TEST_SHM_LIFECYCLE
-	if (shm_test_live_pages() != 0 ||
-	    process_test_shm_reap_releases() == 0 ||
-	    process_test_shm_exec_releases() == 0) {
-		klog("OpenSillicon: shared-memory lifecycle accounting failed\n");
-		kernel_halt();
-	}
-#endif
-	klog("OpenSillicon: shared-memory process lifecycle passed\n");
-}
 
 #ifdef KERNEL_TEST_LIBOS
 static void
@@ -1048,24 +654,6 @@ run_libos_test(void)
 }
 #endif
 
-#ifdef KERNEL_TEST_SHM_FORK_FAILURE
-static void
-run_shm_fork_failure_test(void)
-{
-	uint64_t live_before = shm_test_live_pages();
-	uint64_t status;
-
-	vmm_test_arm_shm_fork_failure();
-	status = process_run_path("/init/bin/shm_fork_failure_test", false);
-	if (status != 0 || shm_test_live_pages() != live_before) {
-		klog("OpenSillicon: shared fork rollback test failed, status ");
-		klog_u64(status);
-		klog("\n");
-		kernel_halt();
-	}
-	klog("OpenSillicon: shared fork mapping rollback and reference cleanup passed\n");
-}
-#endif
 
 static void
 initialize_filesystems(const struct boot_info *info)
@@ -1695,27 +1283,11 @@ virtio_rng_probe_done:
 	}
 	klog("OpenSillicon: address space destroyed\n");
 	run_vmm_shared_test();
-	run_vmm_private_mapping_test();
 #ifdef KERNEL_TEST_PRIVATE_MAPPING_PROTECTION
 	run_vmm_private_protection_test();
 #endif
 #ifdef KERNEL_TEST_PRIVATE_MAPPING_EXHAUSTION
 	run_private_mapping_exhaustion_test();
-#endif
-	run_user_test();
-	run_elf_test();
-#ifdef KERNEL_TEST_PRIVATE_MAPPING_LIFECYCLE
-	run_private_mapping_lifecycle_test();
-#endif
-	run_vfs_test();
-	run_pipe_test();
-	run_signal_test();
-#ifdef KERNEL_TEST_FPU_CONTEXT
-	run_fpu_context_test();
-#endif
-	run_shm_lifecycle_test();
-#ifdef KERNEL_TEST_SHM_FORK_FAILURE
-	run_shm_fork_failure_test();
 #endif
 	if (block_flush(&ahci_block_device) != 0) {
 		klog("OpenSillicon: root block flush failed\n");
@@ -1723,9 +1295,6 @@ virtio_rng_probe_done:
 	}
 #ifdef KERNEL_TEST_LIBOS
 	run_libos_test();
-#endif
-#ifdef KERNEL_TEST_UDP_SOCKET
-	run_udp_socket_test();
 #endif
 	if (!scheduler_init()) {
 		klog_status("scheduler", false, "initialization failed");

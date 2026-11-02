@@ -29,7 +29,7 @@ $(BUILD_DIR)/coreutils/%.o: user/coreutils/%.c user/include/os.h | $(BUILD_DIR)
 	mkdir -p $(@D)
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/coreutils/fetch.o: user/fetch.c user/include/os.h | $(BUILD_DIR)
+$(BUILD_DIR)/coreutils/fetch.o: user/fetch/fetch.c user/include/os.h | $(BUILD_DIR)
 	mkdir -p $(@D)
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -84,13 +84,6 @@ $(BUILD_DIR)/shell.elf: $(BUILD_DIR)/user_start.o $(BUILD_DIR)/user_os.o \
 		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
 		$(BUILD_DIR)/user_shell.o -o $@
 
-$(BUILD_DIR)/probe.elf: $(BUILD_DIR)/user_start.o $(BUILD_DIR)/user_os.o \
-		$(BUILD_DIR)/user_path.o \
-		$(BUILD_DIR)/user_probe.o user/c_linker.ld
-	$(LD) $(USER_C_LDFLAGS) $(BUILD_DIR)/user_start.o \
-		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
-		$(BUILD_DIR)/user_probe.o -o $@
-
 $(BUILD_DIR)/populate_root: tools/populate_root.c kernel/fs/vfs/vfs.c \
 		kernel/fs/silliconfs/silliconfs.c kernel/proc/fd.c include/kernel/vfs.h \
 		include/kernel/silliconfs.h
@@ -134,12 +127,12 @@ libos-inspect: libos-build
 	! nm -u $(LIBOS_TEST) | grep .
 
 $(BUILD_DIR)/root.img: $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.elf \
-		$(BUILD_DIR)/probe.elf $(BUILD_DIR)/populate_root \
+		$(BUILD_DIR)/populate_root \
 		$(COREUTILS_ELFS) \
 		tools/mksilliconfs.py | $(BUILD_DIR)
 	python3 tools/mksilliconfs.py $@ --blocks 32768 --inodes 1024
 	$(BUILD_DIR)/populate_root $@ $(BUILD_DIR)/init.elf \
-		$(BUILD_DIR)/shell.elf $(BUILD_DIR)/probe.elf --coreutils \
+		$(BUILD_DIR)/shell.elf --coreutils \
 		$(BUILD_DIR)/coreutils/ls.elf $(BUILD_DIR)/coreutils/cat.elf \
 		$(BUILD_DIR)/coreutils/echo.elf $(BUILD_DIR)/coreutils/pwd.elf \
 		$(BUILD_DIR)/coreutils/true.elf $(BUILD_DIR)/coreutils/false.elf \
