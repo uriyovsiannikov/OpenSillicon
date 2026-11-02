@@ -25,6 +25,7 @@ struct fd_operations {
 	int (*seek)(void *context, uint64_t current, int64_t offset,
 	    int whence, uint64_t *result);
 	int (*stat)(void *context, struct fd_metadata *metadata);
+	int (*get_path)(void *context, char *path, size_t capacity);
 	bool (*is_terminal)(void *context);
 	void (*close)(void *context);
 };
@@ -73,6 +74,7 @@ int fd_object_seek(struct fd_object *object, int64_t offset, int whence,
 int fd_seek(struct fd_table *table, uint64_t descriptor, int64_t offset,
 	int whence, uint64_t *result);
 int fd_object_stat(struct fd_object *object, struct fd_metadata *metadata);
+int fd_object_get_path(struct fd_object *object, char *path, size_t capacity);
 uint64_t fd_get_offset(const struct fd_table *table, uint64_t descriptor);
 bool fd_set_offset(struct fd_table *table, uint64_t descriptor,
 	uint64_t offset);

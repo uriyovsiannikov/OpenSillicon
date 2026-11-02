@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -246,6 +247,39 @@ test_vfs(const uint8_t *archive, size_t archive_size)
 	assert(fd_close(&parent, (uint64_t)descriptor) == 0);
 	assert(fd_read(&child, (uint64_t)descriptor, buffer, sizeof(buffer),
 	    &amount) == 0 && amount == 0);
+	fd_table_destroy(&parent);
+	fd_table_destroy(&child);
+
+	assert(vfs_create_path("/tmp/sequence-a", VNODE_REGULAR, 0644,
+	    &created) == 0);
+	vnode_put(created);
+	assert(vfs_create_path("/tmp/sequence-b", VNODE_REGULAR, 0644,
+	    &created) == 0);
+	vnode_put(created);
+	assert(vfs_lookup_at("/tmp", "sequence-a", &created) == 0);
+	assert(created->type == VNODE_REGULAR && created->size == 0);
+	vnode_put(created);
+	assert(vfs_lookup_at("/tmp", "../tmp/sequence-b", &created) == 0);
+	assert(created->type == VNODE_REGULAR);
+	vnode_put(created);
+	assert(vfs_lookup_at("/tmp", "/tmp/sequence-a", &created) == 0);
+	vnode_put(created);
+	assert(vfs_lookup_at("/tmp", "missing", &created) == -ENOENT);
+	assert(vfs_open("/tmp", VFS_O_RDONLY | VFS_O_DIRECTORY, 0, &file) == 0);
+	fd_table_init_standard(&parent);
+	descriptor = fd_install(&parent, file);
+	assert(descriptor >= 3 && fd_table_clone(&child, &parent));
+	assert(fd_readdir(&parent, (uint64_t)descriptor, &entry) == 1);
+	assert(strcmp(entry.name, "sequence-a") == 0);
+	assert(vfs_create_path("/tmp/sequence-c", VNODE_REGULAR, 0644,
+	    &created) == 0);
+	vnode_put(created);
+	assert(fd_readdir(&child, (uint64_t)descriptor, &entry) == 1);
+	assert(strcmp(entry.name, "sequence-b") == 0);
+	assert(fd_readdir(&parent, (uint64_t)descriptor, &entry) == 1);
+	assert(strcmp(entry.name, "sequence-c") == 0);
+	assert(fd_readdir(&child, (uint64_t)descriptor, &entry) == 0);
+	assert(fd_close(&parent, (uint64_t)descriptor) == 0);
 	fd_table_destroy(&parent);
 	fd_table_destroy(&child);
 

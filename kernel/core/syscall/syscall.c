@@ -41,6 +41,8 @@
 #define MONOTONIC_TICK_NS (1000000000ULL / MONOTONIC_TICK_HZ)
 #define NATIVE_S_IFREG 0100000U
 #define NATIVE_S_IFDIR 0040000U
+#define NATIVE_AT_FDCWD (-100)
+#define NATIVE_AT_SYMLINK_NOFOLLOW 0x100U
 
 struct native_timespec {
 	int64_t tv_sec;
@@ -76,6 +78,27 @@ _Static_assert(offsetof(struct native_kstat, st_size) == 48,
 	"musl x86_64 kstat st_size offset mismatch");
 _Static_assert(offsetof(struct native_kstat, st_atime_sec) == 72,
 	"musl x86_64 kstat timestamp offset mismatch");
+
+static int
+native_kstat_from_metadata(struct native_kstat *value,
+	const struct fd_metadata *metadata)
+{
+	if (value == NULL || metadata == NULL)
+		return -EINVAL;
+	if (metadata->size > INT64_MAX)
+		return -EOVERFLOW;
+	*value = (struct native_kstat){0};
+	value->st_ino = metadata->inode;
+	value->st_size = (int64_t)metadata->size;
+	value->st_mode = metadata->mode & 07777U;
+	if (metadata->type == VNODE_REGULAR)
+		value->st_mode |= NATIVE_S_IFREG;
+	else if (metadata->type == VNODE_DIRECTORY)
+		value->st_mode |= NATIVE_S_IFDIR;
+	else
+		return -EOPNOTSUPP;
+	return 0;
+}
 
 struct syscall_iovec {
 	uint64_t base;
@@ -345,6 +368,123 @@ syscall_readv(struct interrupt_frame *frame)
 partial:
 	(void)total;
 	frame->rax = received;
+	return frame;
+}
+
+struct native_dirent_record {
+	uint64_t inode;
+	int64_t offset;
+	uint16_t record_length;
+	uint8_t type;
+	char name[];
+};
+
+_Static_assert(offsetof(struct native_dirent_record, name) == 19,
+	"native getdents record header ABI mismatch");
+
+#define NATIVE_DT_DIR 4U
+#define NATIVE_DT_REG 8U
+#define SYSCALL_GETDENTS_MAX 4096U
+#define SYSCALL_EIO 5U
+#define SYSCALL_EBADF 9U
+
+static struct interrupt_frame *
+syscall_getdents(struct interrupt_frame *frame)
+{
+	uint64_t records[SYSCALL_GETDENTS_MAX / sizeof(uint64_t)];
+	char *output = (char *)records;
+	struct fd_table *table = current_fd_table();
+	uint64_t descriptor = frame->rdi;
+	uint64_t start_offset;
+	size_t capacity;
+	size_t written = 0;
+	int result;
+
+	if (fd_object_for_descriptor(table, descriptor) == NULL) {
+		syscall_error(frame, SYSCALL_EBADF);
+		return frame;
+	}
+	if (frame->rdx == 0 || frame->rdx > SYSCALL_GETDENTS_MAX) {
+		syscall_error(frame, ERRNO_EINVAL);
+		return frame;
+	}
+	capacity = (size_t)frame->rdx;
+	if (!vmm_validate_user_write(vmm_active_address_space(), frame->rsi,
+	    capacity)) {
+		syscall_error(frame, ERRNO_EFAULT);
+		return frame;
+	}
+	start_offset = fd_get_offset(table, descriptor);
+
+	while (written < capacity) {
+		struct vfs_dirent entry;
+		struct native_dirent_record *record;
+		uint64_t before = fd_get_offset(table, descriptor);
+		uint64_t after;
+		size_t name_length = 0;
+		size_t record_length;
+		size_t index;
+		uint8_t type;
+
+		result = fd_readdir(table, descriptor, &entry);
+		if (result < 0) {
+			if (written == 0)
+				syscall_error(frame, errno_from_kernel(result));
+			break;
+		}
+		if (result == 0)
+			break;
+		after = fd_get_offset(table, descriptor);
+		while (name_length < sizeof(entry.name) &&
+		    entry.name[name_length] != '\0')
+			name_length++;
+		if (before == UINT64_MAX || after != before + 1U || after > INT64_MAX ||
+		    entry.inode == 0 || name_length == 0 ||
+		    name_length == sizeof(entry.name)) {
+			(void)fd_set_offset(table, descriptor, before);
+			if (written == 0)
+				syscall_error(frame, SYSCALL_EIO);
+			break;
+		}
+		if (entry.type == VNODE_DIRECTORY)
+			type = NATIVE_DT_DIR;
+		else if (entry.type == VNODE_REGULAR)
+			type = NATIVE_DT_REG;
+		else {
+			(void)fd_set_offset(table, descriptor, before);
+			if (written == 0)
+				syscall_error(frame, SYSCALL_EIO);
+			break;
+		}
+		record_length = (offsetof(struct native_dirent_record, name) +
+		    name_length + 1U + sizeof(uint64_t) - 1U) &
+		    ~(sizeof(uint64_t) - 1U);
+		if (record_length > UINT16_MAX || record_length > capacity - written) {
+			(void)fd_set_offset(table, descriptor, before);
+			if (written == 0)
+				syscall_error(frame, ERRNO_EINVAL);
+			break;
+		}
+		for (index = 0; index < record_length; index++)
+			output[written + index] = 0;
+		record = (struct native_dirent_record *)(void *)(output + written);
+		record->inode = entry.inode;
+		record->offset = (int64_t)after;
+		record->record_length = (uint16_t)record_length;
+		record->type = type;
+		for (index = 0; index <= name_length; index++)
+			record->name[index] = entry.name[index];
+		written += record_length;
+	}
+	if (written != 0 && !vmm_copy_to_user(vmm_active_address_space(),
+	    frame->rsi, output, written)) {
+		/* The full range was validated above; retain position on any fault. */
+		(void)fd_set_offset(table, descriptor, start_offset);
+		syscall_error(frame, ERRNO_EFAULT);
+		return frame;
+	}
+	if ((frame->rflags & 1U) == 0)
+		frame->rax = written;
 	return frame;
 }
 
@@ -1004,7 +1144,7 @@ syscall_interrupt(struct interrupt_frame *frame)
 	case SYSCALL_FSTAT:
 		{
 			struct fd_metadata metadata;
-			struct native_kstat value = {0};
+			struct native_kstat value;
 			int result = fd_object_stat(fd_object_for_descriptor(
 			    current_fd_table(), frame->rdi), &metadata);
 
@@ -1012,8 +1152,9 @@ syscall_interrupt(struct interrupt_frame *frame)
 				syscall_error(frame, errno_from_kernel(result));
 				break;
 			}
-			if (metadata.size > INT64_MAX) {
-				syscall_error(frame, EOVERFLOW);
+			result = native_kstat_from_metadata(&value, &metadata);
+			if (result != 0) {
+				syscall_error(frame, errno_from_kernel(result));
 				break;
 			}
 			if (!vmm_validate_user_write(vmm_active_address_space(),
@@ -1021,18 +1162,81 @@ syscall_interrupt(struct interrupt_frame *frame)
 				syscall_error(frame, EFAULT);
 				break;
 			}
-			value.st_ino = metadata.inode;
-			value.st_size = (int64_t)metadata.size;
-			value.st_mode = metadata.mode & 07777U;
-			if (metadata.type == VNODE_REGULAR)
-				value.st_mode |= NATIVE_S_IFREG;
-			else if (metadata.type == VNODE_DIRECTORY)
-				value.st_mode |= NATIVE_S_IFDIR;
-			else {
+			if (!vmm_copy_to_user(vmm_active_address_space(), frame->rsi,
+			    &value, sizeof(value))) {
+				syscall_error(frame, EFAULT);
+				break;
+			}
+			frame->rax = 0;
+		}
+		break;
+	case SYSCALL_FSTATAT:
+		{
+			char path[VFS_PATH_MAX];
+			char base_path[VFS_PATH_MAX] = "/";
+			struct fd_object *directory;
+			struct vnode *node = NULL;
+			struct fd_metadata metadata;
+			struct native_kstat value;
+			int64_t directory_fd = (int64_t)frame->rdi;
+			uint32_t flags;
+			int result;
+
+			if (frame->r10 > UINT32_MAX) {
+				syscall_error(frame, ERRNO_EINVAL);
+				break;
+			}
+			flags = (uint32_t)frame->r10;
+			if ((flags & NATIVE_AT_SYMLINK_NOFOLLOW) != 0) {
 				syscall_error(frame, EOPNOTSUPP);
 				break;
 			}
-			if (!vmm_copy_to_user(vmm_active_address_space(), frame->rsi,
+			if (flags != 0) {
+				syscall_error(frame, ERRNO_EINVAL);
+				break;
+			}
+			result = copy_user_string(frame->rsi, path, sizeof(path));
+			if (result != 0) {
+				syscall_error(frame, (uint64_t)(-result));
+				break;
+			}
+			if (path[0] != '/' && directory_fd != NATIVE_AT_FDCWD) {
+				directory = fd_object_for_descriptor(current_fd_table(),
+				    frame->rdi);
+				if (directory == NULL) {
+					syscall_error(frame, EBADF);
+					break;
+				}
+				result = fd_object_get_path(directory, base_path,
+				    sizeof(base_path));
+				if (result != 0) {
+					syscall_error(frame, errno_from_kernel(result));
+					break;
+				}
+			}
+			result = vfs_lookup_at(base_path, path, &node);
+			if (result != 0) {
+				syscall_error(frame, errno_from_kernel(result));
+				break;
+			}
+			metadata = (struct fd_metadata){
+				.size = node->size,
+				.inode = node->inode,
+				.mode = node->mode,
+				.type = (uint32_t)node->type
+			};
+			result = native_kstat_from_metadata(&value, &metadata);
+			vnode_put(node);
+			if (result != 0) {
+				syscall_error(frame, errno_from_kernel(result));
+				break;
+			}
+			if (!vmm_validate_user_write(vmm_active_address_space(),
+			    frame->rdx, sizeof(value))) {
+				syscall_error(frame, EFAULT);
+				break;
+			}
+			if (!vmm_copy_to_user(vmm_active_address_space(), frame->rdx,
 			    &value, sizeof(value))) {
 				syscall_error(frame, EFAULT);
 				break;
@@ -1114,6 +1318,8 @@ syscall_interrupt(struct interrupt_frame *frame)
 			frame->rax = 0;
 		}
 		break;
+	case SYSCALL_GETDENTS:
+		return syscall_getdents(frame);
 	case SYSCALL_READDIR:
 		{
 			struct vfs_dirent entry;

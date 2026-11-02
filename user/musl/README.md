@@ -165,7 +165,7 @@ targets, `native-musl-inspect`, and all QEMU recipes honor those locations.
 The Make targets do not clear the configured QEMU directories before use;
 choose empty paths for a clean run.
 
-`native-musl-inspect` checks all six fixtures for static ELF output, no
+`native-musl-inspect` checks all seven fixtures for static ELF output, no
 `PT_INTERP`/`PT_DYNAMIC`, and no unresolved strong symbols. Each QEMU target
 keeps the guest running after its musl harness reports success, so the host
 `timeout` is expected to return 124. The target then requires the guest
@@ -321,9 +321,49 @@ block size, or timestamps; those fields are zero and documented as unavailable,
 not measurements. The native adapter provides a strong `fstat()` wrapper that passes the
 caller's public `struct stat` buffer directly to syscall 37. Its layout is
 compile-time checked against the kernel wire record, so the kernel validates
-the real output pointer and returns `EFAULT` safely. The pinned upstream
-`fstatat()` implementation still uses its own temporary `kstat` conversion.
-Path-based `stat()`, `fstatat()`, and related interfaces remain unsupported.
+the real output pointer and returns `EFAULT` safely.
+
+### Path-based `stat()` and `fstatat()`
+
+OpenSillicon syscall 39 implements musl 1.2.6 x86_64 `SYS_newfstatat` (262).
+Its arguments are `RDI=dirfd`, `RSI=path`, `RDX=144-byte kstat output`, and
+`R10=flags`. The native ABI retains `int 0x80`, carry-flag errors, and positive
+errno values; the adapter returns musl's expected negative errno. The adapter
+also funnels musl's `SYS_stat` (4) and `SYS_lstat` (6) selectors to syscall 39;
+the latter requests no-follow semantics and is rejected as described below.
+The overlay exports a strong `fstatat()` wrapper which passes the caller's
+`struct stat` buffer directly to syscall 39. This lets the kernel validate the
+actual output pointer and return `EFAULT`; upstream musl's generic wrapper
+would instead receive into a temporary `kstat` and copy to the public pointer
+after the syscall. Musl's `stat(path, buf)` wrapper calls `fstatat(AT_FDCWD,
+path, buf, 0)`, so both public interfaces use this same operation. The
+144-byte wire structure is the same x86_64 `kstat` layout already used by
+`fstat()` and is converted by upstream musl to public `struct stat`.
+
+Absolute paths use the existing VFS mount-aware resolver and ignore `dirfd`.
+Relative paths with a directory descriptor use the canonical path recorded
+when that VFS directory was opened, then pass through the same resolver;
+invalid descriptors return `EBADF` and non-directory descriptors return
+`ENOTDIR`. OpenSillicon has no per-process current-working-directory state or
+`chdir()` interface, so relative paths using `AT_FDCWD` are rooted at `/`.
+VFS canonicalization handles repeated separators, `.` and `..`; symlinks do
+not exist in the VFS.
+
+Only flags zero are supported. `AT_SYMLINK_NOFOLLOW` returns `EOPNOTSUPP`
+because the VFS has no symlink nodes; other nonzero flags return `EINVAL`.
+Empty paths are rejected with `ENOENT` (`AT_EMPTY_PATH` is unsupported).
+Metadata comes from the resolved VFS node, matching `fstat()` for the same
+object. Supported object types are regular files and directories. Device IDs,
+link counts, ownership, block fields, and timestamps remain zero because the
+VFS does not track them. Path-based `stat()` and `fstatat()` are now supported
+within these limits; related interfaces such as `lstat()`, `fstatat()` with
+unsupported flags, and symlink operations are not.
+
+The existing `make native-musl-fd-seekstat-qemu-test` fixture now also checks
+absolute and root-relative `stat()`, `fstatat()` relative to a directory fd,
+metadata equality with `fstat()`, missing paths, invalid pointers, and flag
+errors. It is included in `native-musl-inspect` and the existing static root
+image setup.
 
 `make native-musl-fd-seekstat-qemu-test` builds the dedicated static fixture,
 includes it in ELF inspection, populates a fresh SilliconFS image, and checks
@@ -331,6 +371,53 @@ includes it in ELF inspection, populates a fresh SilliconFS image, and checks
 As with other QEMU fixtures, the host intentionally stops QEMU after the guest
 returns zero; the Make target requires both timeout status 124 and the distinct
 kernel success marker.
+
+### Directory enumeration
+
+Syscall 38 implements the single native directory enumeration ABI consumed by
+the pinned musl 1.2.6 x86_64 `readdir()` implementation: musl selects
+`SYS_getdents64` (selector 217). The native adapter maps that selector to
+syscall 38; it does not enable the older `getdents` selector. Arguments are
+`RDI=fd`, `RSI=buffer`, and `RDX=buffer_length`, using the existing
+`int 0x80` carry-flag/positive-errno convention. Buffers must be between 1
+and 4096 bytes and the complete supplied range must be writable.
+
+Each record starts with the x86_64 musl-compatible fields `uint64_t d_ino`,
+`int64_t d_off`, `uint16_t d_reclen`, and `uint8_t d_type` at byte offsets 0,
+8, 16, and 18, followed by a NUL-terminated name at offset 19. `d_reclen`
+includes the header, name, NUL, and zero padding to an 8-byte boundary.
+`d_off` is a nonnegative directory-entry index continuation cookie after this
+entry; it is not a byte position. Enumeration uses the same shared
+`fd_object` offset as the VFS directory iterator. Separate opens start
+independently; cloned descriptors share their cursor. Failed calls before
+emitting a record leave the cursor unchanged. If the next complete record does
+not fit, the call returns `EINVAL` without consuming that entry; after prior
+complete records it returns those bytes and resumes at the next entry. End of
+directory returns zero. Backend iteration order is preserved but unspecified
+to applications. RAMFS appends children so creating a child does not shift
+existing index cookies. SilliconFS and initramfs use their stored order.
+
+The VFS currently represents only regular files and directories. `d_type` is
+therefore `DT_REG` or `DT_DIR`, and inode numbers come from the actual VFS
+nodes. Directories include `.` and `..` when the selected backend stores those
+records (SilliconFS does; RAMFS and initramfs do not synthesize them). Other
+descriptors return `ENOTDIR`. Directory `lseek()` remains `ESPIPE`, so
+`seekdir()`/`rewinddir()` cannot reposition a stream even though `readdir()`
+and `telldir()` work. Path-based `stat()`/`fstatat()`, old `getdents` selector
+78, and directory mutation or other enumeration interfaces remain unsupported.
+The musl adapter currently strips `O_CLOEXEC` when translating `open()` because
+the native descriptor ABI has no close-on-exec flag; close-on-exec behavior is
+therefore not provided for these directory streams.
+
+`make native-musl-getdents-qemu-test` builds and statically inspects
+`tests/musl_getdents.c`, populates a dedicated `/musl-getdents` directory in a
+fresh SilliconFS image, and checks raw records, buffer/error handling,
+independent streams, EOF, and public `opendir()`/`readdir()` behavior. It
+expects the two fixture files and the stored `.`/`..` records, without relying
+on entries from unrelated kernel tests. As with other QEMU fixtures, the guest
+exits zero before the harness timeout intentionally stops QEMU; both timeout
+status 124 and the marker
+`OpenSillicon: native musl getdents and readdir passed` are required.
 
 ### Clean verification procedure
 
@@ -357,6 +444,11 @@ make MUSL_BOOTSTRAP_DIR="$tmp/bootstrap" MUSL_BUILD_DIR="$tmp/port" \
 make MUSL_BOOTSTRAP_DIR="$tmp/bootstrap" MUSL_BUILD_DIR="$tmp/port" \
   MUSL_NANOSLEEP_QEMU_BUILD_DIR="$tmp/qemu-nanosleep" \
   native-musl-nanosleep-qemu-test
+make MUSL_BOOTSTRAP_DIR="$tmp/bootstrap" MUSL_BUILD_DIR="$tmp/port" \
+  MUSL_FD_QEMU_BUILD_DIR="$tmp/qemu-fd" native-musl-fd-seekstat-qemu-test
+make MUSL_BOOTSTRAP_DIR="$tmp/bootstrap" MUSL_BUILD_DIR="$tmp/port" \
+  MUSL_GETDENTS_QEMU_BUILD_DIR="$tmp/qemu-getdents" \
+  native-musl-getdents-qemu-test
 ```
 
 The native build target bootstraps pristine and confirmed-patched source in

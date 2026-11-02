@@ -33,6 +33,7 @@ struct vfs_mount {
 struct vfs_file_context {
 	struct vnode *node;
 	uint32_t flags;
+	char path[VFS_PATH_MAX];
 };
 
 static struct vfs_mount *mounts;
@@ -273,6 +274,42 @@ vfs_lookup(const char *path, struct vnode **result)
 }
 
 int
+vfs_lookup_at(const char *base_path, const char *path, struct vnode **result)
+{
+	char base[VFS_PATH_MAX];
+	char combined[VFS_PATH_MAX];
+	char canonical[VFS_PATH_MAX];
+	size_t base_length;
+	size_t path_length;
+	int error;
+
+	if (path == NULL || result == NULL)
+		return -VFS_EINVAL;
+	if (path[0] == '/')
+		return vfs_lookup(path, result);
+	if (path[0] == '\0')
+		return -VFS_ENOENT;
+	if (base_path == NULL)
+		return -VFS_EINVAL;
+	error = canonicalize_path(base_path, base);
+	if (error != 0)
+		return error;
+	base_length = strlen(base);
+	path_length = strlen(path);
+	if (base_length + (base_length > 1U ? 1U : 0U) + path_length >=
+	    sizeof(combined))
+		return -VFS_ENAMETOOLONG;
+	memcpy(combined, base, base_length);
+	if (base_length > 1U)
+		combined[base_length++] = '/';
+	memcpy(combined + base_length, path, path_length + 1U);
+	error = canonicalize_path(combined, canonical);
+	if (error != 0)
+		return error;
+	return vfs_lookup(canonical, result);
+}
+
+int
 vfs_create_path(const char *path, enum vnode_type type, uint32_t mode,
 	struct vnode **result)
 {
@@ -439,6 +476,21 @@ file_stat(void *context, struct fd_metadata *metadata)
 	return 0;
 }
 
+static int
+file_get_path(void *context, char *path, size_t capacity)
+{
+	struct vfs_file_context *file = context;
+	size_t length;
+
+	if (file->node->type != VNODE_DIRECTORY)
+		return -VFS_ENOTDIR;
+	length = strlen(file->path) + 1U;
+	if (length > capacity)
+		return -VFS_ENAMETOOLONG;
+	memcpy(path, file->path, length);
+	return 0;
+}
+
 static void
 file_close(void *context)
 {
@@ -454,6 +506,7 @@ static const struct fd_operations vfs_file_operations = {
 	.readdir = file_readdir,
 	.seek = file_seek,
 	.stat = file_stat,
+	.get_path = file_get_path,
 	.close = file_close
 };
 
@@ -466,6 +519,7 @@ vfs_open(const char *path, uint32_t flags, uint32_t mode,
 	struct vfs_file_context *context;
 	struct vnode *node = NULL;
 	struct fd_object *file;
+	char canonical[VFS_PATH_MAX];
 	int error;
 
 	if (result == NULL || (flags & ~allowed) != 0 ||
@@ -476,7 +530,10 @@ vfs_open(const char *path, uint32_t flags, uint32_t mode,
 	    (flags & VFS_O_ACCMODE) == VFS_O_RDONLY))
 		return -VFS_EINVAL;
 	*result = NULL;
-	error = vfs_lookup(path, &node);
+	error = canonicalize_path(path, canonical);
+	if (error != 0)
+		return error;
+	error = vfs_lookup(canonical, &node);
 	if (error == -VFS_ENOENT && (flags & VFS_O_CREAT) != 0)
 		error = vfs_create_path(path, VNODE_REGULAR, mode, &node);
 	if (error != 0)
@@ -516,6 +573,7 @@ vfs_open(const char *path, uint32_t flags, uint32_t mode,
 	}
 	context->node = node;
 	context->flags = flags;
+	memcpy(context->path, canonical, strlen(canonical) + 1U);
 	file = fd_object_create(&vfs_file_operations, context);
 	if (file == NULL) {
 		vnode_put(node);

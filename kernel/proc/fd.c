@@ -9,6 +9,7 @@
 #define FD_ERROR_EBADF 9
 #define FD_ERROR_EINVAL 22
 #define FD_ERROR_ESPIPE 29
+#define FD_ERROR_ENOTDIR 20
 #define FD_ERROR_EOVERFLOW 75
 #define FD_ERROR_EIO 5
 #define FD_ERROR_EMFILE 24
@@ -335,7 +336,7 @@ fd_readdir(struct fd_table *table, uint64_t descriptor,
 	if (object == NULL)
 		return -FD_ERROR_EBADF;
 	if (object->operations->readdir == NULL)
-		return -9;
+		return -FD_ERROR_ENOTDIR;
 	if (entry == NULL)
 		return -FD_ERROR_EINVAL;
 	result = object->operations->readdir(object->context, object->offset,
@@ -388,6 +389,18 @@ fd_object_stat(struct fd_object *object, struct fd_metadata *metadata)
 	if (object->operations->stat == NULL)
 		return -FD_ERROR_EOPNOTSUPP;
 	return object->operations->stat(object->context, metadata);
+}
+
+int
+fd_object_get_path(struct fd_object *object, char *path, size_t capacity)
+{
+	if (object == NULL)
+		return -FD_ERROR_EBADF;
+	if (object->operations->get_path == NULL)
+		return -FD_ERROR_ENOTDIR;
+	if (path == NULL || capacity == 0)
+		return -FD_ERROR_EINVAL;
+	return object->operations->get_path(object->context, path, capacity);
 }
 
 uint64_t

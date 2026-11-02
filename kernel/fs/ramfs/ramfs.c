@@ -16,6 +16,7 @@
 struct ramfs_node {
 	struct vnode vnode;
 	struct ramfs_node *children;
+	struct ramfs_node *last_child;
 	struct ramfs_node *next;
 	size_t capacity;
 	uint8_t *data;
@@ -137,10 +138,23 @@ ramfs_create(struct vnode *directory, const char *name, size_t name_length,
 	child = ramfs_allocate(name, name_length, type, mode);
 	if (child == NULL)
 		return -RAMFS_ENOMEM;
-	child->next = parent->children;
-	parent->children = child;
+	child->next = NULL;
+	if (parent->last_child == NULL)
+		parent->children = child;
+	else
+		parent->last_child->next = child;
+	parent->last_child = child;
 	if (!vnode_get(&child->vnode)) {
-		parent->children = child->next;
+		if (parent->children == child) {
+			parent->children = NULL;
+			parent->last_child = NULL;
+		} else {
+			for (cursor = parent->children; cursor->next != child;
+			    cursor = cursor->next)
+				;
+			cursor->next = NULL;
+			parent->last_child = cursor;
+		}
 		(void)kheap_free(child);
 		return -RAMFS_EINVAL;
 	}

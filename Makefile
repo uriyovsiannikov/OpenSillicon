@@ -17,6 +17,7 @@ MUSL_STDIO_QEMU_BUILD_DIR ?= build/musl-stdio-qemu
 MUSL_CLOCK_QEMU_BUILD_DIR ?= build/musl-clock-qemu
 MUSL_NANOSLEEP_QEMU_BUILD_DIR ?= build/musl-nanosleep-qemu
 MUSL_FD_QEMU_BUILD_DIR ?= build/musl-fd-qemu
+MUSL_GETDENTS_QEMU_BUILD_DIR ?= build/musl-getdents-qemu
 TIMER_TEST_TIMEOUT ?= 15s
 MUSL_SYSROOT := $(MUSL_BUILD_DIR)/sysroot
 MUSL_HELLO := $(MUSL_BUILD_DIR)/musl_hello.elf
@@ -25,6 +26,7 @@ MUSL_STDIO := $(MUSL_BUILD_DIR)/musl_stdio.elf
 MUSL_CLOCK := $(MUSL_BUILD_DIR)/musl_clock.elf
 MUSL_NANOSLEEP := $(MUSL_BUILD_DIR)/musl_nanosleep.elf
 MUSL_FD := $(MUSL_BUILD_DIR)/musl_fd_seekstat.elf
+MUSL_GETDENTS := $(MUSL_BUILD_DIR)/musl_getdents.elf
 
 KERNEL_CFLAGS := -std=c11 -O2 -g -ffreestanding -fno-stack-protector \
 	-fno-pic -fno-pie -m64 -mno-red-zone -mcmodel=kernel \
@@ -93,7 +95,8 @@ endif
 	native-musl-alloc-qemu-test native-musl-stdio native-musl-stdio-qemu-test \
 	native-musl-clock native-musl-clock-qemu-test native-musl-nanosleep \
 	native-musl-nanosleep-qemu-test native-musl-fd-seekstat \
-	native-musl-fd-seekstat-qemu-test
+	native-musl-fd-seekstat-qemu-test native-musl-getdents \
+	native-musl-getdents-qemu-test
 
 all: kernel
 
@@ -752,8 +755,27 @@ $(MUSL_FD): tests/musl_fd_seekstat.c user/c_linker.ld Makefile \
 native-musl-fd-seekstat: native-musl-build
 	$(MAKE) $(MUSL_FD)
 
-native-musl-inspect: native-musl-hello native-musl-alloc native-musl-stdio native-musl-clock native-musl-nanosleep native-musl-fd-seekstat
-	@set -e; for elf in $(MUSL_HELLO) $(MUSL_ALLOC) $(MUSL_STDIO) $(MUSL_CLOCK) $(MUSL_NANOSLEEP) $(MUSL_FD); do \
+$(MUSL_GETDENTS): tests/musl_getdents.c user/c_linker.ld Makefile \
+		$(MUSL_BUILD_DIR)/build-info.json $(MUSL_SYSROOT)/usr/lib/libc.a
+	$(MUSL_CLANG) --target=x86_64-unknown-none-elf -std=c11 -O2 -Wall -Wextra -Werror \
+		-ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
+		-mno-red-zone -mno-mmx -mno-sse -mno-sse2 -msoft-float \
+		-ftls-model=local-exec -nostdinc \
+		-isystem $(MUSL_SYSROOT)/usr/include -c tests/musl_getdents.c \
+		-o $(MUSL_BUILD_DIR)/musl_getdents.o
+	PATH="$(dir $(MUSL_LLD)):$$PATH" $(MUSL_CLANG) --target=x86_64-unknown-none-elf -std=c11 -O2 -Wall -Wextra -Werror \
+		-nostdlib -static -fuse-ld=lld -B$(dir $(MUSL_LLD)) \
+		-no-pie -Wl,-z,noexecstack -Wl,--build-id=none \
+		-Wl,-T,user/c_linker.ld $(MUSL_SYSROOT)/usr/lib/crt1.o \
+		$(MUSL_SYSROOT)/usr/lib/crti.o $(MUSL_BUILD_DIR)/musl_getdents.o \
+		-L$(MUSL_SYSROOT)/usr/lib -lc $(MUSL_SYSROOT)/usr/lib/crtn.o \
+		-o $(MUSL_GETDENTS)
+
+native-musl-getdents: native-musl-build
+	$(MAKE) $(MUSL_GETDENTS)
+
+native-musl-inspect: native-musl-hello native-musl-alloc native-musl-stdio native-musl-clock native-musl-nanosleep native-musl-fd-seekstat native-musl-getdents
+	@set -e; for elf in $(MUSL_HELLO) $(MUSL_ALLOC) $(MUSL_STDIO) $(MUSL_CLOCK) $(MUSL_NANOSLEEP) $(MUSL_FD) $(MUSL_GETDENTS); do \
 		echo "Inspecting $$elf"; \
 		readelf -h -l -S -r -d $$elf; \
 		! readelf -l $$elf | grep -E 'INTERP|DYNAMIC'; \
@@ -888,8 +910,31 @@ native-musl-fd-seekstat-qemu-test: native-musl-fd-seekstat
 		-device ide-hd,drive=rootdisk,bus=ide.0 \
 		-serial file:$(MUSL_FD_QEMU_BUILD_DIR)/serial.log -display none \
 		-no-reboot -no-shutdown; status=$$?; test $$status -eq 124
-	grep -F 'OpenSillicon: native musl lseek and fstat passed' \
+	grep -F 'OpenSillicon: native musl lseek, fstat, stat, and fstatat passed' \
 		$(MUSL_FD_QEMU_BUILD_DIR)/serial.log
+
+$(MUSL_GETDENTS_QEMU_BUILD_DIR)/musl-getdents-root.img: $(BUILD_DIR)/init.elf \
+		$(BUILD_DIR)/shell.elf $(BUILD_DIR)/probe.elf $(BUILD_DIR)/populate_root \
+		$(MUSL_HELLO) $(MUSL_ALLOC) $(MUSL_STDIO) $(MUSL_CLOCK) \
+		$(MUSL_NANOSLEEP) $(MUSL_FD) $(MUSL_GETDENTS) tools/mksilliconfs.py | $(BUILD_DIR)
+	python3 tools/mksilliconfs.py $@ --blocks 32768 --inodes 1024
+	$(BUILD_DIR)/populate_root $@ $(BUILD_DIR)/init.elf \
+		$(BUILD_DIR)/shell.elf $(BUILD_DIR)/probe.elf $(MUSL_HELLO) \
+		$(MUSL_ALLOC) $(MUSL_STDIO) $(MUSL_CLOCK) $(MUSL_NANOSLEEP) \
+		$(MUSL_FD) $(MUSL_GETDENTS)
+
+native-musl-getdents-qemu-test: native-musl-getdents
+	CCACHE_DISABLE=1 $(MAKE) BUILD_DIR=$(MUSL_GETDENTS_QEMU_BUILD_DIR) \
+		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DKERNEL_TEST_NATIVE_MUSL_GETDENTS' \
+		iso $(MUSL_GETDENTS_QEMU_BUILD_DIR)/musl-getdents-root.img
+	@set +e; timeout 45s $(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) \
+		-cdrom $(MUSL_GETDENTS_QEMU_BUILD_DIR)/opensillicon.iso \
+		-drive file=$(MUSL_GETDENTS_QEMU_BUILD_DIR)/musl-getdents-root.img,if=none,id=rootdisk,format=raw \
+		-device ide-hd,drive=rootdisk,bus=ide.0 \
+		-serial file:$(MUSL_GETDENTS_QEMU_BUILD_DIR)/serial.log -display none \
+		-no-reboot -no-shutdown; status=$$?; test $$status -eq 124
+	grep -F 'OpenSillicon: native musl getdents and readdir passed' \
+		$(MUSL_GETDENTS_QEMU_BUILD_DIR)/serial.log
 
 native-musl-clock-qemu-test: native-musl-clock
 	CCACHE_DISABLE=1 $(MAKE) BUILD_DIR=$(MUSL_CLOCK_QEMU_BUILD_DIR) \

@@ -33,6 +33,10 @@ main(int argc, char **argv, char **envp)
 	struct stat first;
 	struct stat second;
 	struct stat directory;
+	struct stat path_status;
+	struct stat relative_status;
+	struct stat fd_relative_status;
+	struct stat directory_path_status;
 	int fd;
 	int dirfd;
 
@@ -76,6 +80,25 @@ main(int argc, char **argv, char **envp)
 	    first.st_mtim.tv_nsec != 0 || first.st_ctim.tv_sec != 0 ||
 	    first.st_ctim.tv_nsec != 0)
 		return fail(30);
+	if (stat("/tmp/musl_seekstat_data", &path_status) != 0)
+		return fail(80 + errno);
+	if (!S_ISREG(path_status.st_mode) || path_status.st_ino != first.st_ino ||
+	    path_status.st_size != first.st_size || path_status.st_mode != first.st_mode)
+		return fail(88);
+	if (stat("tmp/musl_seekstat_data", &relative_status) != 0 ||
+	    relative_status.st_ino != first.st_ino ||
+	    relative_status.st_size != first.st_size ||
+	    relative_status.st_mode != first.st_mode)
+		return fail(39);
+	if (stat("/tmp", &directory_path_status) != 0 ||
+	    !S_ISDIR(directory_path_status.st_mode) ||
+	    directory_path_status.st_ino == 0)
+		return fail(40);
+	if (stat("/tmp/musl_seekstat_missing", &path_status) != -1 ||
+	    errno != ENOENT || stat((const char *)(uintptr_t)1, &path_status) != -1 ||
+	    errno != EFAULT || stat("/tmp/musl_seekstat_data",
+	    (struct stat *)(uintptr_t)1) != -1 || errno != EFAULT)
+		return fail(41);
 	if (lseek(fd, -1, SEEK_SET) != -1 || errno != EINVAL ||
 	    lseek(fd, -17, SEEK_END) != -1 || errno != EINVAL ||
 	    lseek(fd, 0, 99) != -1 || errno != EINVAL)
@@ -97,6 +120,27 @@ main(int argc, char **argv, char **envp)
 	    !S_ISDIR(directory.st_mode) || directory.st_ino == 0 ||
 	    lseek(dirfd, 0, SEEK_SET) != -1 || errno != ESPIPE)
 		return fail(36);
+	if (directory_path_status.st_ino != directory.st_ino ||
+	    directory_path_status.st_size != directory.st_size ||
+	    directory_path_status.st_mode != directory.st_mode)
+		return fail(40);
+	if (fstatat(dirfd, "musl_seekstat_data", &fd_relative_status, 0) != 0 ||
+	    fd_relative_status.st_ino != first.st_ino ||
+	    fd_relative_status.st_size != first.st_size ||
+	    fd_relative_status.st_mode != first.st_mode ||
+	    fstatat(AT_FDCWD, "tmp/musl_seekstat_data", &relative_status, 0) != 0 ||
+	    relative_status.st_ino != first.st_ino ||
+	    fstatat(-1, "/tmp/musl_seekstat_data", &path_status, 0) != 0 ||
+	    path_status.st_ino != first.st_ino)
+		return fail(42);
+	if (fstatat(dirfd, "musl_seekstat_data", &path_status,
+	    AT_SYMLINK_NOFOLLOW) != -1 || errno != EOPNOTSUPP ||
+	    fstatat(dirfd, "musl_seekstat_data", &path_status, 0x40000000) != -1 ||
+	    errno != EINVAL || fstatat(-1, "musl_seekstat_data", &path_status, 0) != -1 ||
+	    errno != EBADF || fstatat(dirfd, "missing", &path_status, 0) != -1 ||
+	    errno != ENOENT || fstatat(dirfd, "musl_seekstat_data",
+	    (struct stat *)(uintptr_t)1, 0) != -1 || errno != EFAULT)
+		return fail(43);
 	if (close(dirfd) != 0 || close(fd) != 0)
 		return fail(37);
 	return 0;

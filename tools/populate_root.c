@@ -132,10 +132,14 @@ main(int argc, char **argv)
 		coreutils_start = 10;
 	else if (argc >= 11 && strcmp(argv[10], "--coreutils") == 0)
 		coreutils_start = 11;
+	else if (argc >= 12 && strcmp(argv[11], "--coreutils") == 0)
+		coreutils_start = 12;
+	else if (argc >= 13 && strcmp(argv[12], "--coreutils") == 0)
+		coreutils_start = 13;
 	if (coreutils_start != 0)
 		coreutils_count = argc - coreutils_start;
-	if (argc < 5 || (argc > 11 && coreutils_start == 0)) {
-		fprintf(stderr, "usage: %s image init-elf shell-elf probe-elf [musl-hello-elf [musl-alloc-elf [musl-stdio-elf [musl-clock-elf [musl-nanosleep-elf [musl-fd-elf]]]]]] [--coreutils coreutils... ]\n",
+	if (argc < 5 || (argc > 13 && coreutils_start == 0)) {
+		fprintf(stderr, "usage: %s image init-elf shell-elf probe-elf [musl-hello-elf [musl-alloc-elf [musl-stdio-elf [musl-clock-elf [musl-nanosleep-elf [musl-fd-elf [musl-getdents-elf]]]]]]] [--coreutils coreutils... ]\n",
 		    argv[0]);
 		return 2;
 	}
@@ -170,6 +174,18 @@ main(int argc, char **argv)
 		fprintf(stderr, "SilliconFS population failed: %d\n", error);
 		fclose(image);
 		return 1;
+	}
+	if (argc >= 12 && strcmp(argv[11], "--coreutils") != 0) {
+		if ((error = add_directory("/musl-getdents", 0755)) != 0 ||
+		    (error = add_data("/musl-getdents/musl_dir_alpha", "alpha\n", 6,
+		    0644)) != 0 ||
+		    (error = add_data("/musl-getdents/musl_dir_beta", "beta\n", 5,
+		    0644)) != 0) {
+			fprintf(stderr, "SilliconFS getdents fixture population failed: %d\n",
+			    error);
+			fclose(image);
+			return 1;
+		}
 	}
 	if (argc >= 6 && strcmp(argv[5], "--coreutils") != 0 &&
 	    (error = add_file("/bin/musl_hello", argv[5], 0755)) != 0) {
@@ -213,6 +229,13 @@ main(int argc, char **argv)
 	if (argc >= 11 && strcmp(argv[5], "--coreutils") != 0 &&
 	    (error = add_file("/bin/musl_fd_seekstat", argv[10], 0755)) != 0) {
 		fprintf(stderr, "SilliconFS musl file operation test population failed: %d\n",
+		    error);
+		fclose(image);
+		return 1;
+	}
+	if (argc >= 12 && strcmp(argv[11], "--coreutils") != 0 &&
+	    (error = add_file("/bin/musl_getdents", argv[11], 0755)) != 0) {
+		fprintf(stderr, "SilliconFS musl getdents test population failed: %d\n",
 		    error);
 		fclose(image);
 		return 1;

@@ -27,6 +27,8 @@
 #define OS_SYSCALL_NANOSLEEP 35
 #define OS_SYSCALL_LSEEK 36
 #define OS_SYSCALL_FSTAT 37
+#define OS_SYSCALL_GETDENTS 38
+#define OS_SYSCALL_FSTATAT 39
 
 static long
 unsupported(void)
@@ -78,11 +80,31 @@ __opensillicon_syscall(long number, long a1, long a2, long a3, long a4,
 	case SYS_fstat:
 		native_number = OS_SYSCALL_FSTAT;
 		break;
+	case SYS_stat:
+		args[0] = AT_FDCWD;
+		args[1] = a1;
+		args[2] = a2;
+		args[3] = 0;
+		native_number = OS_SYSCALL_FSTATAT;
+		break;
+	case SYS_lstat:
+		args[0] = AT_FDCWD;
+		args[1] = a1;
+		args[2] = a2;
+		args[3] = AT_SYMLINK_NOFOLLOW;
+		native_number = OS_SYSCALL_FSTATAT;
+		break;
+	case SYS_newfstatat:
+		native_number = OS_SYSCALL_FSTATAT;
+		break;
+	case SYS_getdents64:
+		native_number = OS_SYSCALL_GETDENTS;
+		break;
 	case SYS_close:
 		native_number = OS_SYSCALL_CLOSE;
 		break;
 	case SYS_open:
-		args[1] &= ~O_LARGEFILE;
+		args[1] &= ~(O_LARGEFILE | O_CLOEXEC);
 		native_number = OS_SYSCALL_OPEN;
 		break;
 	case SYS_openat:
@@ -90,7 +112,7 @@ __opensillicon_syscall(long number, long a1, long a2, long a3, long a4,
 			return unsupported();
 		args[0] = a2;
 		args[1] = a3;
-		args[1] &= ~O_LARGEFILE;
+		args[1] &= ~(O_LARGEFILE | O_CLOEXEC);
 		args[2] = a4;
 		native_number = OS_SYSCALL_OPEN;
 		break;
@@ -169,4 +191,18 @@ fstat(int fd, struct stat *buffer)
         return -1;
     }
     return (int)result;
+}
+
+int
+fstatat(int directory_fd, const char *restrict path,
+	struct stat *restrict buffer, int flags)
+{
+	long result = __opensillicon_syscall(SYS_newfstatat, directory_fd,
+	    (long)path, (long)buffer, flags, 0, 0);
+
+	if (result < 0) {
+		errno = (int)-result;
+		return -1;
+	}
+	return (int)result;
 }
