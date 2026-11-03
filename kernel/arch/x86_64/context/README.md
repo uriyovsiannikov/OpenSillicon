@@ -1,0 +1,1 @@
+The context code saves and restores processor state when execution switches between kernel tasks. Assembly routines handle the low-level register work. User-entry routines prepare the transition into user mode and the return path back to the kernel.

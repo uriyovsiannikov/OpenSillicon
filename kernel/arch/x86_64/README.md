@@ -1,0 +1,1 @@
+The x86_64 platform code prepares processors and connects the kernel to platform hardware. It covers boot layout, CPU and multiprocessor setup, context transitions, interrupt dispatch, timers, interrupt controllers, and ACPI firmware tables.

@@ -1,0 +1,1 @@
+These drivers collect random data from hardware sources. The directory includes support for the CPU RDSEED instruction and the VirtIO random device, which feed entropy into the kernel random subsystem.

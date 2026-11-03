@@ -1,0 +1,1 @@
+The e1000 driver communicates with Intel e1000 network adapters and connects them to the kernel network stack. Its code covers device initialization and reset, transmit and receive descriptor rings, and driver profiling.

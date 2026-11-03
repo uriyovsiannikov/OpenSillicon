@@ -1,0 +1,1 @@
+Firmware support discovers platform information exposed through ACPI and provides access to relevant firmware tables and memory-mapped regions. The acpica subdirectory contains the bundled ACPICA sources, along with their upstream provenance and license information.

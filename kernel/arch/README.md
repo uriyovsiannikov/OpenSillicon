@@ -1,0 +1,1 @@
+Architecture-specific code adapts shared kernel services to the hardware and processor model. The current architecture tree targets x86_64 and contains CPU, interrupt, timer, controller, context, and firmware support.

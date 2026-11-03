@@ -1,0 +1,1 @@
+The interrupt controller code configures the x86_64 local APIC and I/O APIC. The local APIC handles interrupts and processor coordination for an individual CPU, while the I/O APIC routes external device interrupts to CPUs.

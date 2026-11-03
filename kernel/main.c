@@ -36,7 +36,6 @@
 #include "kernel/tty.h"
 #include "kernel/framebuffer_device.h"
 #include "arch/x86_64/ahci.h"
-#include "arch/x86_64/user.h"
 #include "arch/x86_64/fpu.h"
 #include "arch/x86_64/lapic.h"
 #include "arch/x86_64/acpi.h"
@@ -46,618 +45,12 @@
 #include "arch/x86_64/ps2_keyboard.h"
 
 
-#define SCHEDULER_TEST_STEPS 4U
-#define USER_TEST_CODE 0x400000ULL
-#define USER_TEST_FAULT (USER_TEST_CODE + 0x400ULL)
-#define USER_TEST_STACK (0x00007ffffffff000ULL - 0x2000ULL)
-#define USER_TEST_END 0x00007ffffffff000ULL
-#define PAGE_SIZE 4096U
 #define MAIN_EEXIST 17
 #define MAIN_ENOTDIR 20
 
 static struct pci_device_info ahci_device;
 static struct block_device ahci_block_device;
 static struct block_silliconfs_adapter root_adapter;
-
-#ifdef KERNEL_TEST_E1000_ICMP_SMOKE
-#define NETSTACK_TEST_POLLS 10000000U
-#define NETSTACK_TEST_TX_POLLS 1000000U
-#define NETSTACK_TEST_TIMEOUT_TICKS 500U
-
-static bool
-netstack_test_transmit(const uint8_t *frame, size_t length)
-{
-	struct net_device *device = e1000_network_device();
-	struct netbuf_ref packet;
-	uint8_t *buffer;
-	bool sent;
-
-	if (device == NULL || length > NETSTACK_MAX_FRAME ||
-	    !netbuf_alloc(NETBUF_OWNER_CORE, &packet))
-		return false;
-	buffer = netbuf_data(packet, NETBUF_OWNER_CORE);
-	if (buffer == NULL || length > netbuf_capacity(packet, NETBUF_OWNER_CORE)) {
-		(void)netbuf_release(packet, NETBUF_OWNER_CORE);
-		return false;
-	}
-	for (size_t i = 0; i < length; i++)
-		buffer[i] = frame[i];
-	if (!netbuf_set_length(packet, NETBUF_OWNER_CORE, length) ||
-	    net_device_transmit(device, packet) != NET_DEVICE_OK) {
-		if (netbuf_data(packet, NETBUF_OWNER_CORE) != NULL)
-			(void)netbuf_release(packet, NETBUF_OWNER_CORE);
-		return false;
-	}
-	sent = e1000_wait_transmit(packet, NETSTACK_TEST_TX_POLLS);
-	if (sent)
-		(void)netbuf_release(packet, NETBUF_OWNER_CORE);
-	return sent;
-}
-
-static bool
-netstack_test_receive(struct netstack *stack, enum netstack_event wanted,
-	const uint8_t *expected_payload, size_t expected_payload_length)
-{
-	struct net_device *device = e1000_network_device();
-	struct netbuf_ref packet[1];
-	uint64_t start_tick = timer_ticks();
-
-	for (uint32_t poll = 0; poll < NETSTACK_TEST_POLLS; poll++) {
-		size_t count = 0;
-		if (net_device_receive(device, 1, packet, 1, &count) != NET_DEVICE_OK)
-			return false;
-		if (count != 0) {
-			uint8_t response[NETSTACK_MAX_FRAME];
-			uint8_t *data = netbuf_data(packet[0], NETBUF_OWNER_CORE);
-			size_t length = netbuf_length(packet[0], NETBUF_OWNER_CORE);
-			size_t response_length = 0;
-			enum netstack_event event = data == NULL ? NETSTACK_IGNORED :
-			    netstack_process_frame(stack, data, length, timer_ticks(),
-			    response, sizeof(response), &response_length, NULL);
-			bool payload_matches = true;
-			if (event == NETSTACK_ECHO_REPLY) {
-				if (length < 42 + expected_payload_length || data[34] != 0 ||
-				    data[38] != 0x15 || data[39] != 0x3a ||
-			    data[40] != 0 || data[41] != 1 ||
-			    data[6] != 0x52 || data[7] != 0x54 ||
-			    data[8] != 0 || data[9] != 0x15 ||
-			    data[10] != 3 || data[11] != 2 ||
-			    data[26] != 10 || data[27] != 15 ||
-			    data[28] != 3 || data[29] != 2 ||
-			    data[30] != 10 || data[31] != 15 ||
-			    data[32] != 3 || data[33] != 1)
-					payload_matches = false;
-				for (size_t i = 0; payload_matches &&
-				    i < expected_payload_length; i++)
-					if (data[42 + i] != expected_payload[i])
-						payload_matches = false;
-			}
-			(void)netbuf_release(packet[0], NETBUF_OWNER_CORE);
-			if (response_length != 0 &&
-			    !netstack_test_transmit(response, response_length))
-				return false;
-			if (event == wanted && payload_matches) {
-				return true;
-			}
-		}
-		if (timer_ticks() - start_tick >= NETSTACK_TEST_TIMEOUT_TICKS)
-			return false;
-		__asm__ volatile ("pause" : : : "memory");
-	}
-	return false;
-}
-
-static bool
-run_e1000_icmp_smoke_test(void)
-{
-	static const struct netstack_config config = {
-		.mac = {0x52, 0x54, 0x00, 0x15, 0x03, 0x01},
-		.address = {10, 15, 3, 1},
-		.netmask = {255, 255, 255, 0}
-	};
-	static const uint8_t peer_ip[4] = {10, 15, 3, 2};
-	static const uint8_t payload[] = "OS-PHASE15.3A-ECHO";
-	struct netstack stack;
-	uint8_t frame[NETSTACK_MAX_FRAME];
-	uint8_t peer_mac[6];
-	size_t length;
-	bool resolved = false;
-
-	if (!netstack_init(&stack, &config) ||
-	    !netstack_build_arp_request(&stack, peer_ip, frame, sizeof(frame),
-	    &length) || !netstack_test_transmit(frame, length))
-		return false;
-	klog("OpenSillicon: ARP request transmitted for 10.15.3.2\n");
-	(void)netstack_test_receive(&stack, NETSTACK_ARP_RESOLVED, NULL, 0);
-	resolved = netstack_arp_lookup(&stack, peer_ip, timer_ticks(), peer_mac);
-	if (!resolved) {
-		klog("OpenSillicon: ARP resolution timed out\n");
-		return false;
-	}
-	klog("OpenSillicon: ARP peer resolved 10.15.3.2\n");
-	if (!netstack_build_echo_request(&stack, peer_mac, peer_ip, 0x153a, 1,
-	    payload, sizeof(payload) - 1, frame, sizeof(frame), &length) ||
-	    !netstack_test_transmit(frame, length))
-		return false;
-	klog("OpenSillicon: ICMP Echo Request transmitted\n");
-	if (!netstack_test_receive(&stack, NETSTACK_ECHO_REPLY, payload,
-	    sizeof(payload) - 1)) {
-		klog("OpenSillicon: ICMP Echo Reply timed out or mismatched\n");
-		return false;
-	}
-	if (!e1000_shutdown())
-		return false;
-	klog("OpenSillicon: guest ARP/IPv4/ICMP smoke passed\n");
-	return true;
-}
-#endif
-
-static void
-run_dma_allocation_smoke_test(void)
-{
-	struct dma_buffer buffer;
-	struct dma_buffer_info info;
-	uint64_t device_address;
-	volatile uint8_t *bytes;
-
-	if (!dma_alloc(5000, 8192, 32, &buffer) ||
-	    !dma_buffer_query(buffer, &info) || info.page_count != 2 ||
-	    info.allocated_size != 2 * PAGE_SIZE ||
-	    (info.physical_address & (2 * PAGE_SIZE - 1)) != 0 ||
-	    info.device_address != info.physical_address) {
-		klog_status("DMA allocation smoke test", false,
-		    "allocation, alignment, or identity address failed");
-		kernel_halt();
-	}
-	bytes = info.cpu_virtual_address;
-	for (size_t i = 0; i < info.allocated_size; i++) {
-		if (bytes[i] != 0) {
-			klog_status("DMA allocation smoke test", false,
-			    "allocation was not zero-filled");
-			kernel_halt();
-		}
-	}
-	if (!dma_device_acquire(buffer, &device_address) ||
-	    device_address != info.physical_address || dma_free(buffer) ||
-	    !dma_device_complete(buffer) || !dma_free(buffer)) {
-		klog_status("DMA allocation smoke test", false,
-		    "device ownership lifecycle failed");
-		kernel_halt();
-	}
-	klog_status("DMA allocation smoke test", true,
-	    "contiguous, aligned, zero-filled, identity-addressed, ownership checked");
-}
-
-static void
-run_mmio_memmap_smoke_test(const struct boot_info *info)
-{
-	bool reserved_range_found = false;
-	bool reserved_range_accepted = false;
-	bool usable_range_found = false;
-	bool hhdm_range_rejected = false;
-
-	for (uint64_t i = 0; i < info->memmap->entry_count; i++) {
-		const struct limine_memmap_entry *entry = info->memmap->entries[i];
-		uint64_t base;
-
-		if (entry->base > UINT64_MAX - (PAGE_SIZE - 1) ||
-		    entry->base > UINT64_MAX - entry->length)
-			continue;
-		base = (entry->base + PAGE_SIZE - 1) &
-		    ~(uint64_t)(PAGE_SIZE - 1);
-		if (entry->type == LIMINE_MEMMAP_RESERVED &&
-		    base <= entry->base + entry->length &&
-		    PAGE_SIZE <= entry->base + entry->length - base) {
-			reserved_range_found = true;
-			reserved_range_accepted =
-			    vmm_physical_range_mmio_safe(base, PAGE_SIZE);
-			if (!reserved_range_accepted)
-				break;
-		}
-		if (!usable_range_found && entry->type == LIMINE_MEMMAP_USABLE &&
-		    PAGE_SIZE <= entry->length) {
-			usable_range_found = true;
-			hhdm_range_rejected =
-			    !vmm_physical_range_mmio_safe(entry->base, PAGE_SIZE);
-		}
-	}
-	if (!reserved_range_found || !reserved_range_accepted ||
-	    !usable_range_found || !hhdm_range_rejected) {
-		klog_status("MMIO HHDM-alias check", false,
-		    "memory-map range classification failed");
-		kernel_halt();
-	}
-	klog_status("MMIO HHDM-alias check", true,
-	    "reserved ranges accepted; usable HHDM RAM rejected");
-}
-
-
-static void
-run_vmm_shared_test(void)
-{
-	const uint64_t private_address = 0x500000ULL;
-	const uint64_t shared_address = 0x600000ULL;
-	const uint64_t initial_private = 0x5052495641544531ULL;
-	const uint64_t changed_private = 0x5052495641544532ULL;
-	const uint64_t shared_value = 0x5348415245443031ULL;
-	const uint64_t changed_shared = 0x5348415245443032ULL;
-	struct address_space parent;
-	struct address_space child;
-	struct shm_object *object;
-	uint64_t private_page;
-	uint64_t value;
-	unsigned int step = 1;
-
-	if (!pmm_alloc_page(&private_page) || !address_space_create(&parent) ||
-	    !vmm_map_page(&parent, private_address, private_page,
-	    VMM_USER | VMM_WRITE))
-		goto fail;
-	step++;
-	if (!shm_object_create(1, &object) ||
-	    !vmm_map_shared_object(&parent, shared_address, object))
-		goto fail;
-	step++;
-	if (!vmm_copy_to_user(&parent, private_address, &initial_private,
-	    sizeof(initial_private)) ||
-	    !vmm_copy_to_user(&parent, shared_address, &shared_value,
-	    sizeof(shared_value)) || address_space_destroy(&parent))
-		goto fail;
-	if (!vmm_validate_user_write(&parent, shared_address, sizeof(value)) ||
-	    vmm_validate_user_exec(&parent, shared_address, 1))
-		goto fail;
-	step++;
-	if (!address_space_clone(&parent, &child))
-		goto fail;
-	step++;
-	if (!vmm_copy_to_user(&parent, private_address, &changed_private,
-	    sizeof(changed_private)) ||
-	    !vmm_copy_from_user(&child, &value, private_address, sizeof(value)) ||
-	    value != initial_private)
-		goto fail;
-	step++;
-	if (vmm_unmap_page(&child, shared_address, &private_page) ||
-	    !vmm_validate_user_write(&child, shared_address, sizeof(value)) ||
-	    vmm_validate_user_exec(&child, shared_address, 1) ||
-	    !vmm_copy_to_user(&child, shared_address, &changed_shared,
-	    sizeof(changed_shared)) ||
-	    !vmm_copy_from_user(&parent, &value, shared_address, sizeof(value)) ||
-	    value != changed_shared)
-		goto fail;
-	step++;
-	if (!address_space_destroy_with_pages(&child))
-		goto fail;
-	step++;
-	if (!vmm_copy_from_user(&parent, &value, shared_address, sizeof(value)) ||
-	    value != changed_shared)
-		goto fail;
-	step++;
-	if (!vmm_unmap_shared_object(&parent, shared_address))
-		goto fail;
-	step++;
-	if (vmm_copy_from_user(&parent, &value, shared_address, sizeof(value)))
-		goto fail;
-	step++;
-	if (!address_space_destroy_with_pages(&parent))
-		goto fail;
-	klog("OpenSillicon: shared VMM marking, clone, detach, and teardown passed\n");
-	return;
-
-fail:
-	klog("OpenSillicon: shared VMM mapping test failed\n");
-	klog_u64(step);
-	klog("\n");
-	kernel_halt();
-}
-
-
-#ifdef KERNEL_TEST_PRIVATE_MAPPING_PROTECTION
-static void
-install_private_fault_instruction(uint64_t physical, uint64_t target,
-	bool write_access)
-{
-	volatile uint8_t *code = (volatile uint8_t *)(uintptr_t)(
-	    vmm_hhdm_offset() + physical);
-	uint64_t i;
-	size_t offset = 0;
-
-	code[offset++] = 0x48;
-	code[offset++] = 0xb8;
-	for (i = 0; i < sizeof(target); i++)
-		code[offset++] = (uint8_t)(target >> (i * 8));
-	if (write_access) {
-		static const uint8_t write_code[] = {
-			0x48, 0xc7, 0x00, 0x78, 0x56, 0x34, 0x12
-		};
-
-		for (i = 0; i < sizeof(write_code); i++)
-			code[offset++] = write_code[i];
-	} else {
-		static const uint8_t read_code[] = {0x48, 0x8b, 0x00};
-
-		for (i = 0; i < sizeof(read_code); i++)
-			code[offset++] = read_code[i];
-	}
-	code[offset++] = 0x0f;
-	code[offset] = 0x0b;
-}
-
-static bool
-run_private_access_fault(struct address_space *space, uint64_t code_physical,
-	uint64_t target, bool write_access, uint64_t expected_error)
-{
-	uint64_t vector;
-	uint64_t error_code;
-	uint64_t status;
-
-	install_private_fault_instruction(code_physical, target, write_access);
-	if (!address_space_activate(space))
-		return false;
-	process_test_arm_user_fault_capture();
-	status = user_enter(USER_TEST_CODE, USER_TEST_STACK + PAGE_SIZE);
-	if (!address_space_activate(vmm_kernel_address_space()) || status != 0x10eU ||
-	    !process_test_user_fault_capture(&vector, &error_code))
-		return false;
-	return vector == 14 && error_code == expected_error;
-}
-
-static void
-run_vmm_private_protection_test(void)
-{
-	const uint64_t first_value = 0x50524f545f303031ULL;
-	const uint64_t second_value = 0x50524f545f303032ULL;
-	const uint64_t neighbor_value = 0x50524f545f4e4549ULL;
-	const uint64_t child_value = 0x4348494c445f3031ULL;
-	struct address_space parent;
-	struct address_space child;
-	uint64_t base;
-	uint64_t neighbor;
-	uint64_t parent_frames[3];
-	uint64_t child_frames[3];
-	uint64_t code_physical;
-	uint64_t stack_physical;
-	uint64_t value;
-	unsigned int step = 1;
-	size_t i;
-
-	if (!address_space_create(&parent) ||
-	    vmm_private_map(&parent, 2 * PAGE_SIZE, &base) != 0 ||
-	    vmm_private_map(&parent, PAGE_SIZE, &neighbor) != 0 ||
-	    neighbor != base + 2 * PAGE_SIZE ||
-	    !vmm_copy_to_user(&parent, base, &first_value, sizeof(first_value)) ||
-	    !vmm_copy_to_user(&parent, base + PAGE_SIZE, &second_value,
-	    sizeof(second_value)) ||
-	    !vmm_copy_to_user(&parent, neighbor, &neighbor_value,
-	    sizeof(neighbor_value)))
-		goto fail;
-	parent_frames[0] = parent.private_mappings->physical_pages[0];
-	parent_frames[1] = parent.private_mappings->physical_pages[1];
-	parent_frames[2] = parent.private_mappings->next->physical_pages[0];
-	step++;
-	if (vmm_private_protect(&parent, base, PAGE_SIZE + 1,
-	    VMM_PROT_READ) != 0 ||
-	    vmm_validate_user_write(&parent, base, 2 * PAGE_SIZE) ||
-	    !vmm_copy_from_user(&parent, &value, base, sizeof(value)) ||
-	    value != first_value || vmm_validate_user_exec(&parent, base,
-	    2 * PAGE_SIZE) || parent.private_mappings->page_protections[0] !=
-	    VMM_PROT_READ || parent.private_mappings->page_protections[1] !=
-	    VMM_PROT_READ ||
-	    vmm_private_protect(&parent, base, PAGE_SIZE, VMM_PROT_WRITE) != 0 ||
-	    !vmm_validate_user_write(&parent, base, PAGE_SIZE) ||
-	    !vmm_copy_to_user(&parent, base, &first_value, sizeof(first_value)))
-		goto fail;
-	step++;
-	if (vmm_private_protect(&parent, base, PAGE_SIZE, VMM_PROT_NONE) != 0 ||
-	    vmm_validate_user_write(&parent, base, 1) ||
-	    vmm_copy_from_user(&parent, &value, base, sizeof(value)) ||
-	    !pmm_test_page_is_allocated(parent_frames[0]) ||
-	    parent.private_mappings->physical_pages[0] != parent_frames[0] ||
-	    parent.private_mappings->page_protections[0] != VMM_PROT_NONE ||
-	    vmm_validate_user_exec(&parent, base, 1))
-		goto fail;
-	step++;
-	if (vmm_private_protect(&parent, base, 0, VMM_PROT_READ) != -EINVAL ||
-	    vmm_private_protect(&parent, base + 1, 1, VMM_PROT_READ) != -EINVAL ||
-	    vmm_private_protect(&parent, base, 3 * PAGE_SIZE,
-	    VMM_PROT_NONE) != -EINVAL ||
-	    vmm_private_protect(&parent, UINT64_MAX & ~4095ULL, 4097,
-	    VMM_PROT_READ) != -EINVAL ||
-	    vmm_private_protect(&parent, PRIVATE_MAP_USABLE_END - PAGE_SIZE,
-	    PAGE_SIZE, VMM_PROT_READ) != -EINVAL ||
-	    vmm_private_protect(&parent, base, PAGE_SIZE, VMM_PROT_EXEC) !=
-	    -EOPNOTSUPP ||
-	    vmm_private_protect(&parent, base, PAGE_SIZE,
-	    VMM_PROT_READ | 0x80U) != -EINVAL ||
-	    parent.private_mappings->page_protections[0] != VMM_PROT_NONE ||
-	    parent.private_mappings->page_protections[1] != VMM_PROT_READ ||
-	    !vmm_validate_user_write(&parent, neighbor, sizeof(value)))
-		goto fail;
-	step++;
-	if (!pmm_alloc_page(&code_physical) || !pmm_alloc_page(&stack_physical) ||
-	    !vmm_map_page(&parent, USER_TEST_CODE, code_physical,
-	    VMM_USER | VMM_EXEC) ||
-	    !vmm_map_page(&parent, USER_TEST_STACK, stack_physical,
-	    VMM_USER | VMM_WRITE) ||
-	    !run_private_access_fault(&parent, code_physical, base, false, 0x5U) ||
-	    !run_private_access_fault(&parent, code_physical, base, true, 0x7U))
-		goto fail;
-	step++;
-	if (vmm_private_protect(&parent, base, PAGE_SIZE, VMM_PROT_READ) != 0 ||
-	    !vmm_copy_from_user(&parent, &value, base, sizeof(value)) ||
-	    value != first_value || vmm_validate_user_write(&parent, base, 1) ||
-	    vmm_validate_user_exec(&parent, base, 1) ||
-	    !run_private_access_fault(&parent, code_physical, base, true, 0x7U) ||
-	    vmm_private_protect(&parent, base, PAGE_SIZE, VMM_PROT_READ |
-	    VMM_PROT_WRITE) != 0 ||
-	    !vmm_copy_from_user(&parent, &value, base, sizeof(value)) ||
-	    value != first_value)
-		goto fail;
-	step++;
-	if (vmm_private_protect(&parent, base + PAGE_SIZE, 1,
-	    VMM_PROT_READ) != 0 ||
-	    !vmm_validate_user_write(&parent, base, PAGE_SIZE) ||
-	    vmm_validate_user_write(&parent, base + PAGE_SIZE, 1) ||
-	    !vmm_copy_from_user(&parent, &value, base + PAGE_SIZE, sizeof(value)) ||
-	    value != second_value ||
-	    vmm_private_protect(&parent, base, PAGE_SIZE, VMM_PROT_NONE) != 0 ||
-	    !address_space_clone(&parent, &child))
-		goto fail;
-	step++;
-	if (parent.private_mappings->page_protections[0] != VMM_PROT_NONE ||
-	    child.private_mappings->page_protections[0] != VMM_PROT_NONE ||
-	    parent.private_mappings->page_protections[1] != VMM_PROT_READ ||
-	    child.private_mappings->page_protections[1] != VMM_PROT_READ)
-		goto fail;
-	for (i = 0; i < 3; i++) {
-		parent_frames[i] = i < 2 ? parent.private_mappings->physical_pages[i] :
-		    parent.private_mappings->next->physical_pages[0];
-		child_frames[i] = i < 2 ? child.private_mappings->physical_pages[i] :
-		    child.private_mappings->next->physical_pages[0];
-		if (parent_frames[i] == child_frames[i])
-			goto fail;
-	}
-	if (vmm_validate_user_write(&parent, base, 1) ||
-	    vmm_validate_user_write(&child, base, 1) ||
-	    !pmm_test_page_is_allocated(child_frames[0]))
-		goto fail;
-	if (vmm_private_protect(&child, base, PAGE_SIZE, VMM_PROT_WRITE) != 0 ||
-	    !vmm_validate_user_write(&child, base, 1) ||
-	    vmm_validate_user_write(&parent, base, 1) ||
-	    !vmm_copy_from_user(&child, &value, base, sizeof(value)) ||
-	    value != first_value ||
-	    !vmm_copy_to_user(&child, base, &child_value, sizeof(child_value)))
-		goto fail;
-	if (vmm_private_protect(&parent, base + PAGE_SIZE, PAGE_SIZE,
-	    VMM_PROT_WRITE) != 0 ||
-	    !vmm_validate_user_write(&parent, base + PAGE_SIZE, 1) ||
-	    vmm_validate_user_write(&child, base + PAGE_SIZE, 1))
-		goto fail;
-	if (vmm_private_protect(&child, base + PAGE_SIZE, PAGE_SIZE,
-	    VMM_PROT_NONE) != 0 ||
-	    !vmm_validate_user_write(&parent, base + PAGE_SIZE, 1) ||
-	    vmm_validate_user_write(&child, base + PAGE_SIZE, 1) ||
-	    !vmm_copy_from_user(&child, &value, base, sizeof(value)) ||
-	    value != child_value ||
-	    vmm_private_protect(&parent, base, PAGE_SIZE, VMM_PROT_READ) != 0 ||
-	    !vmm_copy_from_user(&parent, &value, base, sizeof(value)) ||
-	    value != first_value)
-		goto fail;
-	step++;
-	if (!address_space_activate(vmm_kernel_address_space()) ||
-	    !address_space_destroy_with_pages(&child) ||
-	    !address_space_destroy_with_pages(&parent))
-		goto fail;
-	for (i = 0; i < 3; i++) {
-		if (pmm_test_page_is_allocated(parent_frames[i]) ||
-		    pmm_test_page_is_allocated(child_frames[i]))
-			goto fail;
-	}
-	if (pmm_test_page_is_allocated(code_physical) ||
-	    pmm_test_page_is_allocated(stack_physical))
-		goto fail;
-	klog("OpenSillicon: private protection modes, range checks, RW/NX faults, fork isolation, and teardown passed\n");
-	return;
-
-fail:
-	klog("OpenSillicon: private protection test failed at step ");
-	klog_u64(step);
-	klog("\n");
-	kernel_halt();
-}
-#endif
-
-#ifdef KERNEL_TEST_PRIVATE_MAPPING_EXHAUSTION
-static void
-run_private_mapping_exhaustion_test(void)
-{
-	struct address_space space;
-	uint64_t neighbor;
-	uint64_t cursor;
-	uint64_t free_before;
-	uint64_t free_after_failure;
-	uint64_t request_pages;
-	uint64_t failed_base = 0;
-	uint64_t retry_base = 0;
-	uint64_t value = 0x504d4d5f4e454947ULL;
-	uint64_t observed = 0;
-	uint64_t scratch_size;
-	void *scratch;
-
-	if (!address_space_create(&space) ||
-	    vmm_private_map(&space, PAGE_SIZE, &neighbor) != 0 ||
-	    !vmm_copy_to_user(&space, neighbor, &value, sizeof(value)))
-		goto fail;
-	if (pmm_free_pages() > (UINT64_MAX - 65536U) / sizeof(uint64_t))
-		goto fail;
-	scratch_size = pmm_free_pages() * sizeof(uint64_t) + 65536U;
-	scratch = kheap_alloc((size_t)scratch_size);
-	if (scratch == NULL || !kheap_free(scratch))
-		goto fail;
-	free_before = pmm_free_pages();
-	cursor = space.private_map_cursor;
-	if (free_before == 0 || free_before >=
-	    (PRIVATE_MAP_USABLE_END - cursor) / PAGE_SIZE ||
-	    free_before == UINT64_MAX)
-		goto fail;
-	request_pages = free_before + 1;
-	if (request_pages > UINT64_MAX / PAGE_SIZE)
-		goto fail;
-	pmm_test_reset_exhaustion_failures();
-	if (vmm_private_map(&space, request_pages * PAGE_SIZE,
-	    &failed_base) != -ENOMEM || failed_base != 0 ||
-	    pmm_test_exhaustion_failures() == 0 ||
-	    pmm_free_pages() != free_before || space.private_map_cursor != cursor ||
-	    space.private_mappings == NULL ||
-	    space.private_mappings->base != neighbor ||
-	    space.private_mappings->next != NULL ||
-	    vmm_validate_user_write(&space, cursor, 1) ||
-	    !vmm_copy_from_user(&space, &observed, neighbor, sizeof(observed)) ||
-	    observed != value)
-		goto fail;
-	free_after_failure = pmm_free_pages();
-	if (vmm_private_map(&space, 2 * PAGE_SIZE, &retry_base) != 0 ||
-	    retry_base != cursor ||
-	    !vmm_validate_user_write(&space, retry_base, 2 * PAGE_SIZE) ||
-	    vmm_private_unmap(&space, retry_base, 2 * PAGE_SIZE) != 0 ||
-	    vmm_private_unmap(&space, neighbor, PAGE_SIZE) != 0 ||
-	    !address_space_destroy_with_pages(&space))
-		goto fail;
-	klog("OpenSillicon: actual PMM exhaustion rollback and retry passed; free pages before/after failure ");
-	klog_u64(free_before);
-	klog(" -> ");
-	klog_u64(free_after_failure);
-	klog("; after teardown ");
-	klog_u64(pmm_free_pages());
-	klog("\n");
-	return;
-
-fail:
-	klog("OpenSillicon: actual PMM exhaustion test failed\n");
-	kernel_halt();
-}
-#endif
-
-
-
-
-
-
-
-#ifdef KERNEL_TEST_LIBOS
-static void
-run_libos_test(void)
-{
-	uint64_t status = process_run_path("/bin/libos-test", true);
-
-	if (status != 0) {
-		klog("OpenSillicon: libos fixture failed, status ");
-		klog_u64(status);
-		klog("\n");
-		kernel_halt();
-	}
-	klog("OpenSillicon: libos fixture exited with status zero\n");
-}
-#endif
-
 
 static void
 initialize_filesystems(const struct boot_info *info)
@@ -784,9 +177,6 @@ switch_root_to_silliconfs(void)
 	}
 }
 
-static volatile uint64_t scheduler_test_order[SCHEDULER_TEST_STEPS * 2];
-static volatile uint64_t scheduler_test_count;
-static volatile uint64_t scheduler_test_finished;
 static uint64_t pci_device_count;
 static bool ahci_controller_found;
 static bool e1000_device_found;
@@ -833,23 +223,6 @@ record_pci_device(const struct pci_device_info *device, void *context)
 		ahci_controller_found = true;
 	}
 	return true;
-}
-
-static void
-scheduler_test_worker(void *argument)
-{
-	uint64_t worker = (uintptr_t)argument;
-	unsigned int i;
-
-	for (i = 0; i < SCHEDULER_TEST_STEPS; i++) {
-		uint64_t index = scheduler_test_count;
-
-		if (index < SCHEDULER_TEST_STEPS * 2)
-			scheduler_test_order[index] = worker;
-		scheduler_test_count = index + 1;
-		thread_yield();
-	}
-	scheduler_test_finished++;
 }
 
 __attribute__((used, section(".limine_requests_start")))
@@ -951,26 +324,11 @@ report_smp_bootstrap(void)
 		klog(" online ");
 		klog_u64(smp_online_count());
 		klog("; APs idle with TLB shootdown IPI enabled\n");
-		if (smp_verify_ap_idle_timers())
-			klog("OpenSillicon: AP idle timer ticks verified\n");
-		else
-			klog("OpenSillicon: AP idle timer tick verification failed\n");
 		if (!smp_tlb_shootdown_all()) {
 			klog("OpenSillicon panic: SMP TLB shootdown acknowledgement timed out\n");
 			kernel_halt();
 		}
 		klog("OpenSillicon: SMP TLB shootdown acknowledged by all online APs\n");
-#if defined(KERNEL_TEST_SMP_TLB_ROUNDS)
-		for (uint64_t round = 1; round < KERNEL_TEST_SMP_TLB_ROUNDS; round++) {
-			if (!smp_tlb_shootdown_all()) {
-				klog("OpenSillicon panic: repeated SMP TLB shootdown failed\n");
-				kernel_halt();
-			}
-		}
-		klog("OpenSillicon: repeated SMP TLB shootdowns acknowledged rounds ");
-		klog_u64(KERNEL_TEST_SMP_TLB_ROUNDS);
-		klog("\n");
-#endif
 		if (smp_online_count() == smp_discovered_count())
 			klog("OpenSillicon: SMP bootstrap verified discovered ");
 		else
@@ -1014,28 +372,6 @@ report_smp_bootstrap(void)
 	}
 }
 
-static void
-snapshot_ap_tlb_acknowledgements(uint64_t *snapshot)
-{
-	for (size_t i = 1; i < smp_discovered_count(); i++) {
-		const struct smp_cpu *cpu = smp_cpu_at(i);
-		snapshot[i] = __atomic_load_n(&cpu->tlb_acknowledged, __ATOMIC_ACQUIRE);
-	}
-}
-
-static void
-verify_ap_tlb_acknowledgements(const uint64_t *snapshot)
-{
-	for (size_t i = 1; i < smp_discovered_count(); i++) {
-		const struct smp_cpu *cpu = smp_cpu_at(i);
-		if (__atomic_load_n(&cpu->tlb_acknowledged, __ATOMIC_ACQUIRE) !=
-		    snapshot[i]) {
-			klog("OpenSillicon panic: user mapping flushed unrelated AP TLB\n");
-			kernel_halt();
-		}
-	}
-}
-
 void
 _start(void)
 {
@@ -1047,13 +383,6 @@ _start(void)
 	uint64_t entropy_values[BOOT_ENTROPY_MAX_VALUES];
 	size_t entropy_value_count;
 	enum boot_entropy_result entropy_result;
-	uint64_t test_page;
-	uint64_t user_page;
-	struct address_space user_space;
-	uint64_t ap_tlb_snapshot[SMP_MAX_CPUS] = { 0 };
-	void *heap_allocation;
-	void *large_heap_allocation;
-	void *coalesced_heap_allocation;
 	enum boot_info_error error;
 	uint64_t loaded_base_revision;
 	bool revision_five_honored;
@@ -1137,21 +466,6 @@ _start(void)
 	else
 		klog_status("RDSEED instruction", false,
 		    "unsupported; boot continues without this candidate provider");
-#ifdef OPEN_SILLICON_RDSEED_QEMU_TEST
-	if (kernel_rdseed_supported()) {
-		uint8_t rdseed_probe[8];
-		enum kernel_rdseed_result probe_result =
-		    kernel_rdseed_bytes(rdseed_probe, sizeof(rdseed_probe));
-		for (size_t i = 0; i < sizeof(rdseed_probe); i++)
-			((volatile uint8_t *)rdseed_probe)[i] = 0;
-		if (probe_result == KERNEL_RDSEED_OK)
-			klog("OpenSillicon: RDSEED QEMU request completed bytes 8; data cleared\n");
-		else
-			klog("OpenSillicon: RDSEED QEMU request temporarily unavailable; boot continues\n");
-	} else {
-		klog("OpenSillicon: RDSEED QEMU feature unsupported; boot continues\n");
-	}
-#endif
 	if (kernel_entropy_init(entropy_result, entropy_values,
 	    entropy_value_count)) {
 		klog_status("kernel entropy manager", true,
@@ -1161,16 +475,6 @@ _start(void)
 		    "source inventory unavailable; boot continues fail closed");
 	}
 	clear_boot_entropy_values(entropy_values);
-#ifdef KERNEL_TEST_INTERRUPT
-	__asm__ volatile ("int $128");
-#endif
-#ifdef KERNEL_TEST_PAGE_FAULT
-	{
-		volatile uintptr_t test_address = 0;
-		__asm__ volatile ("" : "+r" (test_address));
-		*(volatile uint64_t *)test_address = 1;
-	}
-#endif
 	if (!bootstrap_allocator_init(&allocator, &info)) {
 		klog_status("bootstrap allocator", false, "initialization failed");
 		kernel_halt();
@@ -1181,16 +485,11 @@ _start(void)
 		kernel_halt();
 	}
 	klog_status("PMM", true, NULL);
-	if (!pmm_alloc_page(&test_page) || !pmm_free_page(test_page)) {
-		klog("OpenSillicon: physical page allocation smoke test failed\n");
-		kernel_halt();
-	}
 	if (!vmm_init(&info)) {
 		klog_status("VMM", false, "virtual memory initialization failed");
 		kernel_halt();
 	}
 	klog_status("VMM", true, NULL);
-	run_mmio_memmap_smoke_test(&info);
 	if (!dma_init(&validated_dma_contract)) {
 		klog_status("DMA subsystem", false,
 		    "initialization failed");
@@ -1199,29 +498,10 @@ _start(void)
 	if (dma_identity_addressing_available()) {
 		klog_status("DMA address policy", true,
 		    "Limine base revision 5+, identity physical addressing; no IOMMU-preservation request");
-		run_dma_allocation_smoke_test();
 	} else {
 		klog_status("DMA address policy", false,
 		    "unavailable: Limine base revision 5+ IOMMU-disabled contract not established; DMA-dependent drivers disabled");
 	}
-#ifdef KERNEL_TEST_VMM_PROTECTION
-	{
-		struct address_space protected_space;
-		uint64_t protected_page;
-		volatile uint64_t *protected_address = (volatile uint64_t *)0x400000;
-
-		if (!pmm_alloc_page(&protected_page) ||
-		    !address_space_create(&protected_space) ||
-		    !vmm_map_page(&protected_space, 0x400000, protected_page,
-		    VMM_USER) || !address_space_activate(&protected_space)) {
-			klog("OpenSillicon: VMM protection test setup failed\n");
-			kernel_halt();
-		}
-		*protected_address = 1;
-		klog("OpenSillicon: VMM protection test failed\n");
-		kernel_halt();
-	}
-#endif
 	if (!lapic_init()) {
 		klog_status("LAPIC", false, "local APIC initialization failed");
 		kernel_halt();
@@ -1376,18 +656,6 @@ virtio_rng_probe_done:
 						klog("OpenSillicon: inert TCP core table owner initialized; dispatch disabled\n");
 				}
 			}
-			#ifdef KERNEL_TEST_E1000_SMOKE
-			if (!e1000_run_qemu_smoke_test()) {
-				klog("OpenSillicon: guest e1000 TX/RX smoke failed\n");
-				kernel_halt();
-			}
-			#endif
-			#ifdef KERNEL_TEST_E1000_ICMP_SMOKE
-			if (!run_e1000_icmp_smoke_test()) {
-				klog("OpenSillicon: guest ARP/IPv4/ICMP smoke failed\n");
-				kernel_halt();
-			}
-			#endif
 		} else {
 			klog("OpenSillicon: e1000 initialization failed, state ");
 			klog_u64(e1000_state());
@@ -1408,106 +676,16 @@ virtio_rng_probe_done:
 	initialize_filesystems(&info);
 	klog_status("VFS", true, NULL);
 	switch_root_to_silliconfs();
-	klog("OpenSillicon: heap initialized\n");
-	snapshot_ap_tlb_acknowledgements(ap_tlb_snapshot);
-	if (!pmm_alloc_page(&user_page) || !address_space_create(&user_space) ||
-	    vmm_map_page(&user_space, 0x400000, user_page,
-	    VMM_USER | VMM_WRITE | VMM_EXEC) ||
-	    !vmm_map_page(&user_space, 0x400000, user_page, VMM_USER | VMM_WRITE) ||
-	    !address_space_activate(&user_space)) {
-		klog("OpenSillicon: address space setup failed\n");
-		kernel_halt();
-	}
-	klog("OpenSillicon: user address space activated\n");
-	verify_ap_tlb_acknowledgements(ap_tlb_snapshot);
-	klog("OpenSillicon: user mapping preserved unrelated AP TLBs\n");
-	if (address_space_destroy(&user_space) ||
-	    address_space_destroy_with_pages(&user_space)) {
-		klog("OpenSillicon: active address-space destruction was not rejected\n");
-		kernel_halt();
-	}
-	klog("OpenSillicon: active address-space destruction blocked\n");
-	heap_allocation = kheap_alloc(128);
-	if (heap_allocation == NULL) {
-		klog("OpenSillicon: kernel heap allocation failed\n");
-		kernel_halt();
-	}
-	large_heap_allocation = kheap_alloc(9000);
-	if (large_heap_allocation == NULL) {
-		klog("OpenSillicon: multi-page heap allocation failed\n");
-		kernel_halt();
-	}
-	klog("OpenSillicon: heap allocations succeeded\n");
-	((volatile uint64_t *)heap_allocation)[0] = 0x4f70656e53696c6cULL;
-	if (((volatile uint64_t *)heap_allocation)[0] != 0x4f70656e53696c6cULL ||
-	    !kheap_free(heap_allocation) || kheap_free(heap_allocation) ||
-	    !kheap_free(large_heap_allocation)) {
-		klog("OpenSillicon: kernel heap smoke test failed\n");
-		kernel_halt();
-	}
-	coalesced_heap_allocation = kheap_alloc(8000);
-	if (coalesced_heap_allocation == NULL ||
-	    !kheap_free(coalesced_heap_allocation)) {
-		klog("OpenSillicon: kernel heap coalescing test failed\n");
-		kernel_halt();
-	}
-	snapshot_ap_tlb_acknowledgements(ap_tlb_snapshot);
-	*(volatile uint64_t *)(uintptr_t)0x400000 = 0x564d4d7465737421ULL;
-	if (*(volatile uint64_t *)(uintptr_t)0x400000 != 0x564d4d7465737421ULL ||
-	    !vmm_unmap_page(&user_space, 0x400000, &test_page) ||
-	    test_page != user_page || !address_space_activate(
-	    vmm_kernel_address_space()) || !address_space_destroy(&user_space) ||
-	    !pmm_free_page(user_page)) {
-		klog("OpenSillicon: address space smoke test failed\n");
-		kernel_halt();
-	}
-	klog("OpenSillicon: address space destroyed\n");
-	verify_ap_tlb_acknowledgements(ap_tlb_snapshot);
-	klog("OpenSillicon: user unmapping preserved unrelated AP TLBs\n");
-	run_vmm_shared_test();
-#ifdef KERNEL_TEST_PRIVATE_MAPPING_PROTECTION
-	run_vmm_private_protection_test();
-#endif
-#ifdef KERNEL_TEST_PRIVATE_MAPPING_EXHAUSTION
-	run_private_mapping_exhaustion_test();
-#endif
 	if (block_flush(&ahci_block_device) != 0) {
 		klog("OpenSillicon: root block flush failed\n");
 		kernel_halt();
 	}
-#ifdef KERNEL_TEST_LIBOS
-	run_libos_test();
-#endif
 	if (!scheduler_init()) {
 		klog_status("scheduler", false, "initialization failed");
 		kernel_halt();
 	}
 	klog_status("scheduler", true, NULL);
-	if (!thread_create(scheduler_test_worker, (void *)(uintptr_t)0) ||
-	    !thread_create(scheduler_test_worker, (void *)(uintptr_t)1)) {
-		klog("OpenSillicon: scheduler test worker creation failed\n");
-		kernel_halt();
-	}
 	__asm__ volatile ("sti" : : : "memory");
-	while (scheduler_test_finished < 2)
-		thread_yield();
-	thread_yield();
-	if (scheduler_test_count != SCHEDULER_TEST_STEPS * 2) {
-		klog("OpenSillicon: scheduler lost a thread step\n");
-		kernel_halt();
-	}
-	for (uint64_t i = 0; i < SCHEDULER_TEST_STEPS * 2; i++) {
-		if (scheduler_test_order[i] != i % 2) {
-			klog("OpenSillicon: Round Robin order test failed\n");
-			kernel_halt();
-		}
-	}
-	while (timer_ticks() < 5)
-		__asm__ volatile ("hlt" : : : "memory");
-	klog("OpenSillicon: Round Robin scheduler passed\n");
-	klog("OpenSillicon: timer tick count ");
-	klog_u64(timer_ticks());
-	klog("\n");
 	klog("OpenSillicon: UEFI boot information parsed\n");
 	klog("OpenSillicon: memory map entries ");
 	klog_u64(info.memmap->entry_count);

@@ -1,0 +1,1 @@
+This code prepares x86_64 processors for kernel execution. It sets up the Global Descriptor Table, manages floating-point state, discovers processor topology, and starts secondary CPUs for multiprocessor operation.
