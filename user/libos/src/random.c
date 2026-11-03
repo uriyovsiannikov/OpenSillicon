@@ -15,3 +15,5 @@ rand(void)
 	random_state = (1103515245UL * random_state + 12345UL) & RAND_MAX;
 	return (int)random_state;
 }
+long random(void) { return rand(); }
+void srandom(unsigned int seed) { srand(seed); }

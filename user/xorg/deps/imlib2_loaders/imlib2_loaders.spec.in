@@ -1,0 +1,43 @@
+Summary:	Additional image loaders for Imlib2
+Name:		@PACKAGE@
+Version:	@VERSION@
+Release:	@RPM_RELEASE@
+License:	Mixed
+Group:		System Environment/Libraries
+URL:		http://www.enlightenment.org
+Source:		%{name}-%{version}.tar.gz
+Vendor:		The Enlightenment Project (http://www.enlightenment.org/)
+BuildRoot:	%{_tmppath}/%{name}-%{version}-root
+
+%description
+This package contains additional image loaders for Imlib2 which for
+some reason (such as license issues) are not distributed with Imlib2
+directly.
+
+%prep
+%setup -q
+
+%conf
+%configure
+
+%build
+make %{?_smp_mflags}
+
+%install
+rm -rf $RPM_BUILD_ROOT
+make install DESTDIR=$RPM_BUILD_ROOT
+rm -f $RPM_BUILD_ROOT%{_libdir}/imlib2/loaders/*.la
+
+%clean
+rm -rf $RPM_BUILD_ROOT
+
+%post
+/sbin/ldconfig
+
+%postun
+/sbin/ldconfig
+
+%files
+%{_libdir}/imlib2/loaders/*
+
+%changelog

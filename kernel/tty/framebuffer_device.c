@@ -82,3 +82,67 @@ framebuffer_device_present(uint64_t user_address, size_t length)
 	}
 	return 0;
 }
+
+int
+framebuffer_device_present_rect(const struct os_framebuffer_rect *rect)
+{
+	uint32_t staging[FRAMEBUFFER_COPY_CHUNK / sizeof(uint32_t)];
+	uint8_t *destination;
+	struct address_space *space = vmm_active_address_space();
+	uint64_t x_offset, row_bytes;
+
+	if (active_framebuffer == NULL || space == NULL)
+		return -FRAMEBUFFER_DEVICE_ENODEV;
+	if (rect == NULL || rect->width == 0 || rect->height == 0 ||
+	    rect->x > active_framebuffer->width ||
+	    rect->width > active_framebuffer->width - rect->x ||
+	    rect->y > active_framebuffer->height ||
+	    rect->height > active_framebuffer->height - rect->y)
+		return -FRAMEBUFFER_DEVICE_EINVAL;
+	if (active_framebuffer->bpp != 32)
+		return -FRAMEBUFFER_DEVICE_EINVAL;
+	x_offset = (uint64_t)rect->x * sizeof(uint32_t);
+	row_bytes = (uint64_t)rect->width * sizeof(uint32_t);
+	if (x_offset > active_framebuffer->pitch ||
+	    row_bytes > active_framebuffer->pitch - x_offset ||
+	    rect->source == 0 || rect->source > UINT64_MAX - active_framebuffer_size)
+		return -FRAMEBUFFER_DEVICE_EINVAL;
+	destination = active_framebuffer->address;
+	for (uint32_t row = 0; row < rect->height; row++) {
+		uint64_t source_offset = ((uint64_t)rect->y + row) *
+		    active_framebuffer->pitch + x_offset;
+		uint64_t destination_offset = source_offset;
+		uint64_t copied = 0;
+
+		if (source_offset > active_framebuffer_size ||
+		    row_bytes > active_framebuffer_size - source_offset ||
+		    rect->source > UINT64_MAX - source_offset ||
+		    !vmm_validate_user_read(space, rect->source + source_offset,
+		    (size_t)row_bytes))
+			return -14;
+		while (copied < row_bytes) {
+			size_t amount = (size_t)(row_bytes - copied);
+			if (amount > sizeof(staging))
+				amount = sizeof(staging);
+			if (!vmm_copy_from_user(space, staging,
+			    rect->source + source_offset + copied, amount))
+				return -14;
+			if (((uintptr_t)destination + destination_offset + copied) %
+			    sizeof(uint32_t) == 0) {
+				volatile uint32_t *pixels = (volatile uint32_t *)
+				    (destination + destination_offset + copied);
+				for (size_t index = 0; index < amount / sizeof(uint32_t);
+				    index++)
+					pixels[index] = staging[index];
+			} else {
+				const uint8_t *bytes = (const uint8_t *)staging;
+				volatile uint8_t *pixels = destination +
+				    destination_offset + copied;
+				for (size_t index = 0; index < amount; index++)
+					pixels[index] = bytes[index];
+			}
+			copied += amount;
+		}
+	}
+	return 0;
+}

@@ -19,6 +19,7 @@ static size_t event_queue_head;
 static size_t event_queue_count;
 static bool event_capture_enabled;
 #define MOUSE_EVENT_QUEUE_CAPACITY 64U
+#define PS2_POLL_DRAIN_LIMIT 128U
 static struct os_mouse_event mouse_event_queue[MOUSE_EVENT_QUEUE_CAPACITY];
 static size_t mouse_event_head;
 static size_t mouse_event_count;
@@ -32,8 +33,31 @@ queue_mouse_event(struct os_mouse_event event)
 {
 	size_t tail;
 
-	if (mouse_event_count == MOUSE_EVENT_QUEUE_CAPACITY)
-		return;
+	if (mouse_event_count != 0) {
+		struct os_mouse_event *last;
+		int32_t dx, dy;
+
+		tail = (mouse_event_head + mouse_event_count - 1) %
+		    MOUSE_EVENT_QUEUE_CAPACITY;
+		last = &mouse_event_queue[tail];
+		if (last->buttons == event.buttons) {
+			dx = (int32_t)last->dx + event.dx;
+			dy = (int32_t)last->dy + event.dy;
+			if (dx > INT16_MAX) dx = INT16_MAX;
+			if (dx < INT16_MIN) dx = INT16_MIN;
+			if (dy > INT16_MAX) dy = INT16_MAX;
+			if (dy < INT16_MIN) dy = INT16_MIN;
+			last->dx = (int16_t)dx;
+			last->dy = (int16_t)dy;
+			return;
+		}
+	}
+	if (mouse_event_count == MOUSE_EVENT_QUEUE_CAPACITY) {
+		/* Preserve recent button transitions instead of growing stale input. */
+		mouse_event_head = (mouse_event_head + 1) %
+		    MOUSE_EVENT_QUEUE_CAPACITY;
+		mouse_event_count--;
+	}
 	tail = (mouse_event_head + mouse_event_count) %
 	    MOUSE_EVENT_QUEUE_CAPACITY;
 	mouse_event_queue[tail] = event;
@@ -322,20 +346,22 @@ ps2_mouse_event_poll(struct os_mouse_event *event)
 	uint8_t status;
 	uint8_t byte;
 	struct terminal_key_event key_event;
+	unsigned int drained = 0;
 
 	if (event == NULL || !mouse_initialized)
 		return false;
 	mouse_capture_enabled = true;
-	if (mouse_event_count == 0) {
+	while (drained < PS2_POLL_DRAIN_LIMIT) {
 		status = inb(PS2_STATUS_PORT);
-		if ((status & PS2_STATUS_OUTPUT_FULL) != 0) {
-			byte = inb(PS2_DATA_PORT);
-			if ((status & PS2_STATUS_AUXILIARY) != 0)
-				ps2_mouse_decode_byte(byte);
-			else if (ps2_keyboard_decode_byte(&decoder, byte,
-			    &key_event) && event_capture_enabled)
-				queue_event(key_event);
-		}
+		if ((status & PS2_STATUS_OUTPUT_FULL) == 0)
+			break;
+		byte = inb(PS2_DATA_PORT);
+		drained++;
+		if ((status & PS2_STATUS_AUXILIARY) != 0)
+			ps2_mouse_decode_byte(byte);
+		else if (ps2_keyboard_decode_byte(&decoder, byte, &key_event) &&
+		    event_capture_enabled)
+			queue_event(key_event);
 	}
 	if (mouse_event_count == 0)
 		return false;

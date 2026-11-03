@@ -41,6 +41,9 @@ bool smp_topology_build(const struct limine_mp_response *response,
 bool smp_init(struct limine_mp_response *response, uint64_t tsc_frequency,
 	uint32_t ap_idle_timer_count);
 bool smp_tlb_shootdown_all(void);
+/* BSP-only. Caller prevents remote activation of space for the duration of
+ * the mapping change and acknowledgement. Kernel mappings use _all instead. */
+bool smp_tlb_shootdown_space(const struct address_space *space);
 bool smp_verify_ap_idle_timers(void);
 void smp_ap_entry(struct limine_mp_info *info);
 _Noreturn void smp_ap_online(struct smp_cpu *cpu);

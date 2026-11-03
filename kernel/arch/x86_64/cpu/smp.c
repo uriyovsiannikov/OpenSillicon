@@ -458,11 +458,12 @@ smp_verify_ap_idle_timers(void)
 	return false;
 }
 
-bool
-smp_tlb_shootdown_all(void)
+static bool
+tlb_shootdown(const struct address_space *space)
 {
 	uint64_t flags = spinlock_lock_irqsave(&tlb_shootdown_lock);
 	struct smp_cpu *current = smp_current_cpu();
+	bool targets[SMP_MAX_CPUS] = { false };
 	uint64_t generation;
 	uint64_t startup_start;
 	bool result = false;
@@ -478,6 +479,10 @@ smp_tlb_shootdown_all(void)
 		if (__atomic_load_n(&cpus[i].state, __ATOMIC_ACQUIRE) !=
 		    SMP_CPU_ONLINE)
 			continue;
+		if (space != NULL && __atomic_load_n(&cpus[i].active_address_space,
+		    __ATOMIC_ACQUIRE) != space)
+			continue;
+		targets[i] = true;
 		__atomic_store_n(&cpus[i].tlb_request, generation, __ATOMIC_RELEASE);
 		if (!lapic_send_ipi(cpus[i].apic_id, SMP_TLB_SHOOTDOWN_VECTOR))
 			goto out;
@@ -486,8 +491,7 @@ smp_tlb_shootdown_all(void)
 	for (uint32_t polls = 0; polls < STARTUP_POLL_LIMIT; polls++) {
 		bool pending = false;
 		for (size_t i = 1; i < discovered_count; i++) {
-			if (__atomic_load_n(&cpus[i].state, __ATOMIC_ACQUIRE) ==
-			    SMP_CPU_ONLINE && __atomic_load_n(
+			if (targets[i] && __atomic_load_n(
 			    &cpus[i].tlb_acknowledged, __ATOMIC_ACQUIRE) != generation) {
 				pending = true;
 				break;
@@ -505,6 +509,18 @@ smp_tlb_shootdown_all(void)
 out:
 	spinlock_unlock_irqrestore(&tlb_shootdown_lock, flags);
 	return result;
+}
+
+bool
+smp_tlb_shootdown_all(void)
+{
+	return tlb_shootdown(NULL);
+}
+
+bool
+smp_tlb_shootdown_space(const struct address_space *space)
+{
+	return space != NULL && tlb_shootdown(space);
 }
 
 size_t

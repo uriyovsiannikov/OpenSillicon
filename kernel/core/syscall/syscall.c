@@ -36,6 +36,7 @@
 #define TCSETS_REQUEST 0x5402U
 #define TIOCSRAW_REQUEST 0x4f530001U
 #define TIOCCANON_REQUEST 0x4f530002U
+#define TIOCSFB_REQUEST 0x4f530003U
 #define ERRNO_EFAULT 14U
 #define ERRNO_EINVAL 22U
 #define ERRNO_E2BIG 7U
@@ -742,6 +743,23 @@ syscall_interrupt(struct interrupt_frame *frame)
 				frame->rax = 0;
 		}
 		break;
+	case SYSCALL_FRAMEBUFFER_PRESENT_RECT:
+		{
+			struct os_framebuffer_rect rect;
+			int result;
+
+			if (!vmm_copy_from_user(vmm_active_address_space(), &rect,
+			    frame->rdi, sizeof(rect))) {
+				syscall_error(frame, EFAULT);
+				break;
+			}
+			result = framebuffer_device_present_rect(&rect);
+			if (result != 0)
+				syscall_error(frame, errno_from_kernel(result));
+			else
+				frame->rax = 0;
+		}
+		break;
 	case SYSCALL_KEYBOARD_POLL:
 		{
 			struct terminal_key_event event;
@@ -1363,6 +1381,28 @@ syscall_interrupt(struct interrupt_frame *frame)
 				if (!vmm_copy_to_user(vmm_active_address_space(),
 				    frame->rdx, &value, sizeof(value))) {
 					syscall_error(frame, ERRNO_EFAULT);
+					break;
+				}
+				frame->rax = 0;
+				break;
+			}
+			if (frame->rsi == TIOCSFB_REQUEST) {
+				int enabled;
+
+				if (!fd_object_is_console(object)) {
+					syscall_error(frame, ERRNO_ENOTTY);
+					break;
+				}
+				if (!vmm_copy_from_user(vmm_active_address_space(), &enabled,
+				    frame->rdx, sizeof(enabled))) {
+					syscall_error(frame, ERRNO_EFAULT);
+					break;
+				}
+				if ((enabled != 0 && enabled != 1) ||
+				    !tty_console_framebuffer_set(enabled != 0,
+				    process_current_pid())) {
+					syscall_error(frame, enabled != 0 && enabled != 1 ?
+					    ERRNO_EINVAL : 1U);
 					break;
 				}
 				frame->rax = 0;

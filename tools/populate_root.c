@@ -129,10 +129,11 @@ main(int argc, char **argv)
 	const char *twm_path = NULL;
 	const char *xterm_path = NULL;
 	const char *xeyes_path = NULL;
+	const char *feh_path = NULL;
 	int arg;
 
 	if (argc < 4) {
-		fprintf(stderr, "usage: %s image init-elf shell-elf [--libos elf] [--tinyx elf] [--startx elf] [--twm elf] [--xterm elf] [--xeyes elf] [--coreutils coreutils...]\n", argv[0]);
+		fprintf(stderr, "usage: %s image init-elf shell-elf [--libos elf] [--tinyx elf] [--startx elf] [--twm elf] [--xterm elf] [--xeyes elf] [--feh elf] [--coreutils coreutils...]\n", argv[0]);
 		return 2;
 	}
 	for (arg = 4; arg < argc; arg++) {
@@ -154,6 +155,9 @@ main(int argc, char **argv)
 		} else if (strcmp(argv[arg], "--xeyes") == 0 && arg + 1 < argc) {
 			if (xeyes_path != NULL) return 2;
 			xeyes_path = argv[++arg];
+		} else if (strcmp(argv[arg], "--feh") == 0 && arg + 1 < argc) {
+			if (feh_path != NULL) return 2;
+			feh_path = argv[++arg];
 		} else if (strcmp(argv[arg], "--coreutils") == 0) {
 			if (coreutils_start != 0) return 2;
 			coreutils_start = arg + 1;
@@ -190,6 +194,7 @@ main(int argc, char **argv)
 	    (error = add_directory("/sbin", 0755)) != 0 ||
 	    (error = add_directory("/etc", 0755)) != 0 ||
 	    (error = add_directory("/tmp", 01777)) != 0 ||
+	    (error = add_file("/tmp/img1.jpg", "other/img1.jpg", 0644)) != 0 ||
 	    (error = add_file("/sbin/init", argv[2], 0755)) != 0 ||
 	    (error = add_file("/bin/sh", argv[3], 0755)) != 0) {
 		fprintf(stderr, "SilliconFS population failed: %d\n", error);
@@ -215,13 +220,22 @@ main(int argc, char **argv)
 		return 1;
 	}
 	if (twm_path != NULL &&
-	    (error = add_file("/bin/twm", twm_path, 0755)) != 0) {
+	    ((error = add_file("/bin/twm", twm_path, 0755)) != 0 ||
+	    (error = add_file("/etc/twmrc", "user/xorg/startx/system.twmrc", 0644)) != 0)) {
 		fprintf(stderr, "SilliconFS twm population failed: %d\n", error);
 		fclose(image);
 		return 1;
 	}
 	if (xterm_path != NULL &&
-	    (error = add_file("/bin/xterm", xterm_path, 0755)) != 0) {
+	    ((error = add_file("/bin/xterm", xterm_path, 0755)) != 0 ||
+	    (error = add_directory("/usr", 0755)) != 0 ||
+	    (error = add_directory("/usr/share", 0755)) != 0 ||
+	    (error = add_directory("/usr/share/fonts", 0755)) != 0 ||
+	    (error = add_directory("/usr/share/fonts/misc", 0755)) != 0 ||
+	    (error = add_file("/usr/share/fonts/misc/gallant.bdf",
+	    "user/xorg/fonts/gallant.bdf", 0644)) != 0 ||
+	    (error = add_file("/usr/share/fonts/misc/fonts.dir",
+	    "user/xorg/fonts/fonts.dir", 0644)) != 0)) {
 		fprintf(stderr, "SilliconFS xterm population failed: %d\n", error);
 		fclose(image);
 		return 1;
@@ -229,6 +243,25 @@ main(int argc, char **argv)
 	if (xeyes_path != NULL &&
 	    (error = add_file("/bin/xeyes", xeyes_path, 0755)) != 0) {
 		fprintf(stderr, "SilliconFS xeyes population failed: %d\n", error);
+		fclose(image);
+		return 1;
+	}
+	if (feh_path != NULL &&
+	    ((error = add_file("/bin/feh", feh_path, 0755)) != 0 ||
+	    (xterm_path == NULL &&
+	    (error = add_directory("/usr", 0755)) != 0) ||
+	    (xterm_path == NULL &&
+	    (error = add_directory("/usr/share", 0755)) != 0) ||
+	    (error = add_directory("/usr/share/feh", 0755)) != 0 ||
+	    (error = add_directory("/usr/share/feh/fonts", 0755)) != 0 ||
+	    (error = add_directory("/usr/share/feh/images", 0755)) != 0 ||
+	    (error = add_file("/usr/share/feh/fonts/yudit.ttf",
+	    "user/xorg/feh/share/fonts/yudit.ttf", 0644)) != 0 ||
+	    (error = add_file("/usr/share/feh/fonts/NotoSans-Medium.ttf",
+	    "user/xorg/feh/share/fonts/NotoSans-Medium.ttf", 0644)) != 0 ||
+	    (error = add_file("/usr/share/feh/images/feh.png",
+	    "user/xorg/feh/share/images/feh.png", 0644)) != 0)) {
+		fprintf(stderr, "SilliconFS feh population failed: %d\n", error);
 		fclose(image);
 		return 1;
 	}

@@ -10,6 +10,31 @@ endif
 __dispatch:
 	+$(MAKE) -C $(ROOT_DIR) -f Makefile $(if $(strip $(MAKECMDGOALS)),$(MAKECMDGOALS),libos-qemu-test)
 else
+.PHONY: framebuffer-device-test libos-math-test
+framebuffer-device-test: $(BUILD_DIR)/framebuffer_device_test
+	$<
+
+$(BUILD_DIR)/framebuffer_device_test: tests/framebuffer_device_test.c kernel/tty/framebuffer_device.c include/abi/framebuffer.h | $(BUILD_DIR)
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Iinclude -Ilimine \
+		tests/framebuffer_device_test.c kernel/tty/framebuffer_device.c -o $@
+
+$(BUILD_DIR)/libos_math_host.o: user/libos/src/math.c tests/libos_math_namespace.h | $(BUILD_DIR)
+	$(CC) -std=c11 -O2 -fno-builtin -Wall -Wextra -Werror \
+		-include tests/libos_math_namespace.h -c $< -o $@
+
+$(BUILD_DIR)/libos_math_test: tests/libos_math_test.c $(BUILD_DIR)/libos_math_host.o
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror $^ -lm -o $@
+
+libos-math-test: $(BUILD_DIR)/libos_math_test
+	$<
+
+.PHONY: libos-uio-test
+$(BUILD_DIR)/libos_uio_test: tests/libos_uio_test.c user/libos/src/uio.c include/abi/syscall.h | $(BUILD_DIR)
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Iinclude $(filter %.c,$^) -o $@
+
+libos-uio-test: $(BUILD_DIR)/libos_uio_test
+	$<
+
 $(BUILD_DIR)/devfs_procfs_test: tests/devfs_procfs_test.c \
 		kernel/fs/vfs/vfs.c kernel/fs/ramfs/ramfs.c \
 		kernel/fs/devfs/devfs.c kernel/fs/procfs/procfs.c \
@@ -85,7 +110,7 @@ $(LIBOS_QEMU_BUILD_DIR)/libos-root.img: $(BUILD_DIR)/init.elf \
 
 .PHONY: tinyx-qemu-test
 tinyx-qemu-test: iso $(BUILD_DIR)/root.img
-	python3 tests/tinyx_qemu_test.py --qemu '$(QEMU)' \
+	python3 tests/xorg_session_qemu_test.py --qemu '$(QEMU)' \
 		--bios '$(OVMF_CODE)' --build-dir '$(BUILD_DIR)'
 
 .PHONY: smp-qemu-test

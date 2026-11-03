@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <sys/stat.h>
+#include <limits.h>
 #include "abi/syscall.h"
 #include "internal.h"
 
@@ -44,6 +45,15 @@ int
 getpagesize(void)
 {
 	return (int)sysconf(_SC_PAGESIZE);
+}
+
+int
+fchmod(int descriptor, unsigned int mode)
+{
+	(void)descriptor;
+	(void)mode;
+	errno = EOPNOTSUPP;
+	return -1;
 }
 
 int
@@ -158,7 +168,25 @@ long __libos_read(int, void *, size_t);
 long __libos_write(int, const void *, size_t);
 long __libos_lseek(int, off_t, int);
 long __libos_getpid(void);
-int open(const char *p,int f,...){unsigned m=0;int result;if(f&O_APPEND){errno=EOPNOTSUPP;return -1;}if(f&O_CREAT){va_list a;va_start(a,f);m=(unsigned)va_arg(a,int);va_end(a);m&=~process_umask;}result=(int)__libos_open(p,f,m);return result;}
+int open(const char *p,int f,...) {
+ unsigned m=0;
+ char absolute[PATH_MAX];
+ if(p==NULL){errno=EFAULT;return -1;}
+ if(*p=='\0'){errno=ENOENT;return -1;}
+ if(f&O_APPEND){errno=EOPNOTSUPP;return -1;}
+ if(f&O_CREAT){va_list a;va_start(a,f);m=(unsigned)va_arg(a,int);va_end(a);m&=~process_umask;}
+ /* The native open syscall requires an absolute path. */
+ if(p[0]!='/') {
+  if(getcwd(absolute,sizeof(absolute))==NULL)return -1;
+  size_t length=strlen(absolute), size=strlen(p);
+  int separator=length>0&&absolute[length-1]!='/';
+  if(size>=sizeof(absolute)-length-(size_t)separator){errno=ENAMETOOLONG;return -1;}
+  if(separator)absolute[length++]='/';
+  memcpy(absolute+length,p,size+1);
+  p=absolute;
+ }
+ return (int)__libos_open(p,f,m);
+}
 int close(int f){return (int)__libos_close(f);}
 int dup2(int source, int destination){return (int)__libos_call(SYSCALL_DUP2,source,destination,0,0,0,0);}
 ssize_t read(int f,void*b,size_t n){return __libos_read(f,b,n);}

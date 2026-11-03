@@ -87,7 +87,7 @@ $(BUILD_DIR)/populate_root: tools/populate_root.c kernel/fs/vfs/vfs.c \
 		tools/populate_root.c kernel/fs/vfs/vfs.c kernel/fs/silliconfs/silliconfs.c \
 		kernel/proc/fd.c -o $@
 
-LIBOS_SOURCES := syscall unistd mman string stat allocator dirent stdio socket select uio fcntl pipe pty termios time poll signal ioctl uname env math random stdlib passwd termcap regex
+LIBOS_SOURCES := syscall unistd mman string stat allocator dirent stdio socket select uio fcntl pipe pty termios time poll signal ioctl uname env math random stdlib passwd termcap regex path getopt getopt_long
 LIBOS_OBJECTS := $(addprefix $(LIBOS_BUILD_DIR)/,$(addsuffix .o,$(LIBOS_SOURCES)))
 
 $(LIBOS_BUILD_DIR)/setjmp.o: user/libos/src/setjmp.S | $(LIBOS_BUILD_DIR)
@@ -117,7 +117,7 @@ $(LIBOS_BUILD_DIR)/crt0.o: user/libos/src/crt0.S | $(LIBOS_BUILD_DIR)
 $(LIBOS_BUILD_DIR)/syscall_abi.o: user/libos/src/syscall_abi.S | $(LIBOS_BUILD_DIR)
 	$(CC) -m64 -ffreestanding -fno-pic -fno-pie -mno-red-zone -c $< -o $@
 
-LIBZ_SOURCES := adler32 crc32 inflate inffast inftrees zutil
+LIBZ_SOURCES := adler32 crc32 deflate trees inflate inffast inftrees zutil
 LIBZ_OBJECTS := $(addprefix $(LIBZ_BUILD_DIR)/,$(addsuffix .o,$(LIBZ_SOURCES)))
 
 $(LIBZ_BUILD_DIR):
@@ -176,7 +176,7 @@ $(LIBXFONT_ARCHIVE): $(LIBZ_ARCHIVE) $(LIBFONTENC_ARCHIVE) \
 		CPPFLAGS='$(LIBXFONT_CPPFLAGS)' CFLAGS='$(LIBXFONT_CFLAGS)' \
 		PKG_CONFIG_PATH=/usr/lib64/pkgconfig:/usr/share/pkgconfig \
 		$(abspath user/xorg/deps/libxfont/configure) --host=x86_64-elf \
-		--disable-freetype --disable-fc --disable-bdfformat \
+		--disable-freetype --disable-fc --enable-bdfformat \
 		--disable-shared --enable-static
 	$(MAKE) -C $(LIBXFONT_BUILD_DIR) ACLOCAL=true AUTOMAKE=true \
 		AUTOCONF=true AUTOHEADER=true
@@ -202,7 +202,7 @@ TINYX_SOURCES := $(shell find user/xorg/tinyx -type f ! -path '*/.git/*' -print)
 .PHONY: tinyx-build
 tinyx-build: $(TINYX_BINARY)
 
-$(TINYX_BINARY): $(TINYX_SOURCES) user/Makefile $(LIBOS_ARCHIVE) $(LIBZ_ARCHIVE) \
+$(TINYX_BINARY): $(TINYX_SOURCES) $(LIBOS_ARCHIVE) $(LIBZ_ARCHIVE) \
 		$(LIBFONTENC_ARCHIVE) $(LIBXFONT_ARCHIVE) $(LIBOS_BUILD_DIR)/crt0.o
 	mkdir -p $(TINYX_SOURCE_DIR) $(TINYX_BUILD_DIR)
 	tar --exclude=.git -cf - -C user/xorg/tinyx . | tar -xf - -C $(TINYX_SOURCE_DIR)
@@ -224,7 +224,7 @@ $(TINYX_BINARY): $(TINYX_SOURCES) user/Makefile $(LIBOS_ARCHIVE) $(LIBZ_ARCHIVE)
 		--disable-xdmcp --disable-xdm-auth-1 --disable-xf86bigfont \
 		--disable-dbe --disable-dpms --disable-screensaver \
 		--disable-install-setuid --with-fontdir=/usr/share/fonts \
-		--with-default-font-path=built-ins
+		--with-default-font-path=built-ins,/usr/share/fonts/misc
 	$(MAKE) -C $(TINYX_BUILD_DIR)
 	touch $@
 
@@ -257,11 +257,18 @@ $(BUILD_DIR)/startx.elf: $(BUILD_DIR)/startx.o $(LIBOS_BUILD_DIR)/crt0.o $(LIBOS
 		-Wl,-T,user/c_linker.ld $(LIBOS_BUILD_DIR)/crt0.o \
 		$(BUILD_DIR)/startx.o $(LIBOS_ARCHIVE) -o $@
 
-$(BUILD_DIR)/root.img: $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.elf \
+.PHONY: x11-apps-ready
+x11-apps-ready: $(TINYX_BINARY) $(LIBOS_ARCHIVE) $(LIBZ_ARCHIVE) \
+		$(LIBFONTENC_ARCHIVE) $(LIBXFONT_ARCHIVE)
+	sh tools/build_x11_if_needed.sh
+
+$(BUILD_DIR)/root.img: x11-apps-ready $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.elf \
 		$(BUILD_DIR)/startx.elf \
 		$(BUILD_DIR)/populate_root \
+		other/img1.jpg \
+		user/xorg/fonts/gallant.bdf user/xorg/fonts/fonts.dir \
+		user/xorg/startx/system.twmrc \
 		$(TINYX_BINARY) \
-		$(BUILD_DIR)/x11/.apps-built \
 		$(COREUTILS_ELFS) \
 		tools/mksilliconfs.py | $(BUILD_DIR)
 	python3 tools/mksilliconfs.py $@ --blocks 32768 --inodes 1024
@@ -269,7 +276,7 @@ $(BUILD_DIR)/root.img: $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.elf \
 		$(BUILD_DIR)/shell.elf --tinyx $(TINYX_BINARY) \
 		--startx $(BUILD_DIR)/startx.elf \
 		--twm $(BUILD_DIR)/x11/twm/src/twm --xterm $(BUILD_DIR)/x11/xterm/xterm \
-		--xeyes $(BUILD_DIR)/x11/xeyes/xeyes --coreutils \
+		--xeyes $(BUILD_DIR)/x11/xeyes/xeyes --feh $(BUILD_DIR)/x11/feh/src/feh --coreutils \
 		$(BUILD_DIR)/coreutils/ls.elf $(BUILD_DIR)/coreutils/cat.elf \
 		$(BUILD_DIR)/coreutils/echo.elf $(BUILD_DIR)/coreutils/pwd.elf \
 		$(BUILD_DIR)/coreutils/true.elf $(BUILD_DIR)/coreutils/false.elf \
@@ -281,16 +288,5 @@ $(BUILD_DIR)/root.img: $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.elf \
 		$(BUILD_DIR)/coreutils/sleep.elf $(BUILD_DIR)/coreutils/which.elf \
 		$(BUILD_DIR)/coreutils/ps.elf $(BUILD_DIR)/coreutils/netdiag.elf \
 		$(BUILD_DIR)/coreutils/ping.elf
-
-X11_APP_SOURCES := $(shell find user/xorg/deps/libXau user/xorg/deps/libxcb user/xorg/deps/libX11 user/xorg/deps/libXext \
-	user/xorg/deps/libICE user/xorg/deps/libSM user/xorg/deps/libXt user/xorg/deps/libXmu user/xorg/deps/libXpm user/xorg/deps/libXaw \
-	user/xorg/deps/libxtrans user/xorg/deps/xcb-proto user/xorg/deps/libXfixes-6.0.2 \
-	user/xorg/deps/libXi-1.8.4 user/xorg/twm user/xorg/xterm user/xorg/xeyes-1.3.1 -type f -print 2>/dev/null)
-
-$(BUILD_DIR)/x11/.apps-built: tools/build_x11_apps.sh $(X11_APP_SOURCES) \
-		$(LIBOS_ARCHIVE) $(TINYX_BINARY) | $(BUILD_DIR)
-	mkdir -p $(@D)
-	sh tools/build_x11_apps.sh
-	touch $@
 
 endif

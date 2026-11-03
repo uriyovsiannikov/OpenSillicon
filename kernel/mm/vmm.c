@@ -118,9 +118,13 @@ canonical(uint64_t address)
 }
 
 static void
-shootdown_tlbs(void)
+shootdown_tlbs(const struct address_space *space)
 {
-	if (!smp_tlb_shootdown_all()) {
+	/* APs remain on kernel_space throughout this milestone. Before remote
+	 * address-space activation is allowed, all mutation paths must acquire
+	 * lifecycle ownership while publishing mappings and selecting targets. */
+	if (!(space == NULL || space == &kernel_space ? smp_tlb_shootdown_all() :
+	    smp_tlb_shootdown_space(space))) {
 		klog("OpenSillicon panic: remote TLB shootdown failed\n");
 		kernel_halt();
 	}
@@ -366,7 +370,7 @@ vmm_map_page(struct address_space *space, uint64_t virtual_address,
 		sync_kernel_mapping(virtual_address);
 	__asm__ volatile ("invlpg (%0)" : : "r" ((void *)(uintptr_t)virtual_address)
 	    : "memory");
-	shootdown_tlbs();
+	shootdown_tlbs((flags & VMM_USER) != 0 ? space : NULL);
 	return true;
 }
 
@@ -448,7 +452,7 @@ unmap_shared_page(void *context, uint64_t virtual_address,
 	leaf_table[leaf_index] = 0;
 	__asm__ volatile ("invlpg (%0)" : : "r" ((void *)(uintptr_t)virtual_address)
 	    : "memory");
-	shootdown_tlbs();
+	shootdown_tlbs(space);
 	return true;
 }
 
@@ -600,7 +604,7 @@ unmap_user_page(struct address_space *space, uint64_t virtual_address,
 	}
 	__asm__ volatile ("invlpg (%0)" : : "r" ((void *)(uintptr_t)virtual_address)
 	    : "memory");
-	shootdown_tlbs();
+	shootdown_tlbs(virtual_address < KERNEL_BASE ? space : NULL);
 	return true;
 }
 
@@ -1080,7 +1084,7 @@ vmm_private_protect(struct address_space *space, uint64_t base,
 			    "r" ((void *)(uintptr_t)address) : "memory");
 	}
 	if (active_on_any_cpu)
-		shootdown_tlbs();
+		shootdown_tlbs(space);
 	spinlock_unlock_irqrestore(&address_space_lifecycle_lock, lock_flags);
 	return 0;
 }

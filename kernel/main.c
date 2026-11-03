@@ -1014,6 +1014,28 @@ report_smp_bootstrap(void)
 	}
 }
 
+static void
+snapshot_ap_tlb_acknowledgements(uint64_t *snapshot)
+{
+	for (size_t i = 1; i < smp_discovered_count(); i++) {
+		const struct smp_cpu *cpu = smp_cpu_at(i);
+		snapshot[i] = __atomic_load_n(&cpu->tlb_acknowledged, __ATOMIC_ACQUIRE);
+	}
+}
+
+static void
+verify_ap_tlb_acknowledgements(const uint64_t *snapshot)
+{
+	for (size_t i = 1; i < smp_discovered_count(); i++) {
+		const struct smp_cpu *cpu = smp_cpu_at(i);
+		if (__atomic_load_n(&cpu->tlb_acknowledged, __ATOMIC_ACQUIRE) !=
+		    snapshot[i]) {
+			klog("OpenSillicon panic: user mapping flushed unrelated AP TLB\n");
+			kernel_halt();
+		}
+	}
+}
+
 void
 _start(void)
 {
@@ -1028,6 +1050,7 @@ _start(void)
 	uint64_t test_page;
 	uint64_t user_page;
 	struct address_space user_space;
+	uint64_t ap_tlb_snapshot[SMP_MAX_CPUS] = { 0 };
 	void *heap_allocation;
 	void *large_heap_allocation;
 	void *coalesced_heap_allocation;
@@ -1386,6 +1409,7 @@ virtio_rng_probe_done:
 	klog_status("VFS", true, NULL);
 	switch_root_to_silliconfs();
 	klog("OpenSillicon: heap initialized\n");
+	snapshot_ap_tlb_acknowledgements(ap_tlb_snapshot);
 	if (!pmm_alloc_page(&user_page) || !address_space_create(&user_space) ||
 	    vmm_map_page(&user_space, 0x400000, user_page,
 	    VMM_USER | VMM_WRITE | VMM_EXEC) ||
@@ -1395,6 +1419,8 @@ virtio_rng_probe_done:
 		kernel_halt();
 	}
 	klog("OpenSillicon: user address space activated\n");
+	verify_ap_tlb_acknowledgements(ap_tlb_snapshot);
+	klog("OpenSillicon: user mapping preserved unrelated AP TLBs\n");
 	if (address_space_destroy(&user_space) ||
 	    address_space_destroy_with_pages(&user_space)) {
 		klog("OpenSillicon: active address-space destruction was not rejected\n");
@@ -1425,6 +1451,7 @@ virtio_rng_probe_done:
 		klog("OpenSillicon: kernel heap coalescing test failed\n");
 		kernel_halt();
 	}
+	snapshot_ap_tlb_acknowledgements(ap_tlb_snapshot);
 	*(volatile uint64_t *)(uintptr_t)0x400000 = 0x564d4d7465737421ULL;
 	if (*(volatile uint64_t *)(uintptr_t)0x400000 != 0x564d4d7465737421ULL ||
 	    !vmm_unmap_page(&user_space, 0x400000, &test_page) ||
@@ -1435,6 +1462,8 @@ virtio_rng_probe_done:
 		kernel_halt();
 	}
 	klog("OpenSillicon: address space destroyed\n");
+	verify_ap_tlb_acknowledgements(ap_tlb_snapshot);
+	klog("OpenSillicon: user unmapping preserved unrelated AP TLBs\n");
 	run_vmm_shared_test();
 #ifdef KERNEL_TEST_PRIVATE_MAPPING_PROTECTION
 	run_vmm_private_protection_test();

@@ -121,10 +121,12 @@ cd "$root/build/x11/xeyes"
 export CFLAGS="$common_c -DOPEN_SILLICON -nostdinc -I$gcc_include -I$root/user/libos/include -I$prefix/include -I$root/user/xorg/deps/libX11/include -I$root/build/x11/libX11/include -I$root/user/xorg/deps/libxtrans -idirafter /usr/include"
 export LDFLAGS="-L$prefix/lib -nostdlib -static -no-pie -Wl,--build-id=none -Wl,-z,noexecstack -Wl,-T,$root/user/c_linker.ld $root/build/libos/crt0.o $root/build/libos/liblibos.a $prefix/lib/libi18n.a"
 if [ -f build.ninja ]; then
-	meson setup --reconfigure . "$root/user/xorg/xeyes-1.3.1" \
+	meson setup --reconfigure . "$root/user/xorg/xeyes" \
 		--prefix="$prefix" --buildtype=release -Dxrender=disabled -Dpresent=disabled
 else
-	meson setup . "$root/user/xorg/xeyes-1.3.1" --prefix="$prefix" \
+	meson setup . "$root/user/xorg/xeyes" --prefix="$prefix" \
 		--buildtype=release -Dxrender=disabled -Dpresent=disabled
 fi
 meson compile -C .
+
+sh "$root/tools/build_feh.sh"

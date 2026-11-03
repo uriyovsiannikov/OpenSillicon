@@ -17,8 +17,12 @@ void qsort(void *, size_t, size_t, int (*)(const void *, const void *));
 void *bsearch(const void *, const void *, size_t, size_t,
 	int (*)(const void *, const void *));
 char *getenv(const char *);
+int setenv(const char *, const char *, int);
+char *realpath(const char *, char *);
 int rand(void);
 void srand(unsigned int);
+long random(void);
+void srandom(unsigned int);
 int abs(int);
 long labs(long);
 int atoi(const char *);

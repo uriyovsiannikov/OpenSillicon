@@ -60,7 +60,7 @@
 #endif
 
 #ifndef DEFFONT
-#define DEFFONT			"fixed"
+#define DEFFONT			"-misc-gallant-medium-r-normal--22-220-75-75-c-120-iso10646-1"
 #endif
 
 #ifndef DEFWIDEFONT

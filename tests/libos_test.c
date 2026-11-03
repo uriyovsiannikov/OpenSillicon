@@ -21,6 +21,9 @@ int main(int argc,char**argv,char**envp){char b[64];struct stat st,fdst;int fd;D
  if(check(lseek(fd,1,SEEK_SET)==1&&fstat(fd,&st)==0&&lseek(fd,0,SEEK_CUR)==1,13))return 13;
  if(check(lseek(fd,0,SEEK_SET)==0&&read(fd,b,1)==1&&b[0]=='r',14))return 14;
  close(fd);
+ {FILE*f=fopen("etc/passwd","rb");if(check(f!=0,32))return 32;if(check(fread(b,1,1,f)==1&&b[0]=='r',33))return 33;if(check(fclose(f)==0,34))return 34;}
+ if(check(open("etc/libos-does-not-exist",O_RDONLY)==-1&&errno==ENOENT,35))return 35;
+ if(check(open("",O_RDONLY)==-1&&errno==ENOENT,36))return 36;
  {FILE*f=fopen("/etc/passwd","r");if(check(f!=0,15))return 15;if(check(fread(b,1,1,f)==1&&b[0]=='r',16))return 16;if(check(fclose(f)==0,17))return 17;}
  if(check(stat("/bin",&st)==0&&S_ISDIR(st.st_mode),18))return 18;
  if(check(fstatat(AT_FDCWD,"/etc/passwd",&st,0)==0&&S_ISREG(st.st_mode)&&st.st_size==fdst.st_size&&st.st_ino==fdst.st_ino,19))return 19;

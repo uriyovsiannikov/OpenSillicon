@@ -11,6 +11,7 @@
 #include "kernel/smp.h"
 #include "kernel/timer.h"
 #include "kernel/process.h"
+#include "kernel/tty.h"
 #include "kernel/syscall.h"
 #include "kernel/vmm.h"
 #include "kernel/vfs.h"
@@ -1769,6 +1770,7 @@ process_exit(struct interrupt_frame *frame, uint64_t status)
 	(void)frame;
 	if (process == NULL)
 		user_return_to_kernel(status);
+	tty_console_framebuffer_owner_exit(process->id);
 #ifdef KERNEL_TEST_PRIVATE_MAPPING_LIFECYCLE
 	if (process->test_private_mapping_child) {
 		uint64_t marker = 0;

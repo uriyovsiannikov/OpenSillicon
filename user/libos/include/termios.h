@@ -22,6 +22,7 @@ struct termios {
 #define BRKINT 0x0002U
 #define IGNPAR 0x0004U
 #define INPCK 0x0010U
+#define PARMRK 0x0008U
 #define ISTRIP 0x0020U
 #define INLCR 0x0040U
 #define IGNCR 0x0080U
@@ -88,6 +89,8 @@ struct termios {
 int tcgetattr(int, struct termios *);
 int tcsetattr(int, int, const struct termios *);
 int tcflush(int, int);
+pid_t tcgetpgrp(int);
+int tcsetpgrp(int, pid_t);
 speed_t cfgetispeed(const struct termios *);
 speed_t cfgetospeed(const struct termios *);
 int cfsetispeed(struct termios *, speed_t);

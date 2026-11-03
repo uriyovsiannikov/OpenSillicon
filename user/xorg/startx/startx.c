@@ -7,6 +7,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
+#include <sys/ioctl.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -42,13 +43,17 @@ static pid_t launch(char *const argv[])
 int main(void)
 {
 	char *server_args[] = {"/bin/Xopensillicon", ":0", NULL};
-	char *wm_args[] = {"/bin/twm", "-display", ":0", NULL};
-	char *term_args[] = {"/bin/xterm", "-display", ":0", "-geometry", "80x24+40+40", NULL};
-	pid_t children[3] = {-1, -1, -1};
-	int result = 1, fd, status;
+	char *wm_args[] = {"/bin/twm", "-display", ":0", "-f", "/etc/twmrc", NULL};
+	char *wallpaper_args[] = {"/bin/feh", "--no-fehbg", "--bg-fill",
+	    "/tmp/img1.jpg", NULL};
+	char *term_args[] = {"/bin/xterm", "-display", ":0", "-geometry", "80x24+40+40",
+	    "-e", "/bin/sh", "--xterm", NULL};
+	pid_t children[4] = {-1, -1, -1, -1};
+	int result = 1, fd, status, framebuffer_console = 0;
 	/* Check executables before taking over the framebuffer. */
-	for (unsigned i = 0; i < 3; i++) {
-		const char *path = i == 0 ? server_args[0] : i == 1 ? wm_args[0] : term_args[0];
+	for (unsigned i = 0; i < 4; i++) {
+		const char *path = i == 0 ? server_args[0] : i == 1 ? wm_args[0] :
+		    i == 2 ? wallpaper_args[0] : term_args[0];
 		fd = open(path, 0);
 		if (fd < 0) { fprintf(stderr, "startx: missing %s\n", path); return 1; }
 		close(fd);
@@ -57,6 +62,10 @@ int main(void)
 	if (fd >= 0) { close(fd); fputs("startx: display :0 already active\n", stderr); return 1; }
 	if (signal(SIGINT, stop) == SIG_ERR || signal(SIGTERM, stop) == SIG_ERR)
 		return 1;
+	if (ioctl(STDOUT_FILENO, TIOCSFB, &framebuffer_console) < 0) {
+		perror("startx: cannot suppress framebuffer console output");
+		return 1;
+	}
 	children[0] = launch(server_args);
 	if (children[0] < 0) goto cleanup;
 	for (unsigned i = 0; i < 200 && !stopping; i++) {
@@ -72,8 +81,21 @@ int main(void)
 	close(fd);
 	children[1] = launch(wm_args);
 	if (children[1] < 0) goto cleanup;
-	children[2] = launch(term_args);
+	{
+		struct timespec delay = {0, 300000000};
+		nanosleep(&delay, NULL);
+	}
+	children[2] = launch(wallpaper_args);
 	if (children[2] < 0) goto cleanup;
+	while (waitpid(children[2], &status, 0) < 0) {
+		if (errno == EINTR) continue;
+		goto cleanup;
+	}
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		fputs("startx: could not set /tmp/img1.jpg as wallpaper\n", stderr);
+	children[2] = -1;
+	children[3] = launch(term_args);
+	if (children[3] < 0) goto cleanup;
 	puts("startx: TinyX, twm and xterm launched");
 	while (!stopping) {
 		pid_t pid = waitpid(-1, &status, 0);
@@ -88,7 +110,7 @@ int main(void)
 	}
 cleanup:
 	/* Clients leave first so they can still communicate with the server. */
-	for (int i = 2; i >= 0; i--) {
+	for (int i = 3; i >= 0; i--) {
 		if (children[i] <= 0) continue;
 		kill(children[i], SIGTERM);
 		/* SIGKILL guarantees cleanup even if the child ignores SIGTERM. */
@@ -97,5 +119,8 @@ cleanup:
 		kill(children[i], SIGKILL);
 		while (waitpid(children[i], &status, 0) < 0 && errno == EINTR) {}
 	}
+	framebuffer_console = 1;
+	if (ioctl(STDOUT_FILENO, TIOCSFB, &framebuffer_console) < 0)
+		perror("startx: cannot restore framebuffer console output");
 	return result;
 }

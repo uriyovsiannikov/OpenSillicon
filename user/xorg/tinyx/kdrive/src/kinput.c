@@ -1481,7 +1481,9 @@ KdBlockHandler(int screen, pointer blockData, pointer timeout, pointer readmask)
 	/* if we need to poll for events, do that */
 	if (kdOsFuncs->pollEvents) {
 		(*kdOsFuncs->pollEvents) ();
-		myTimeout = 20;
+		/* The OpenSillicon backend drains a bounded PS/2 input batch here.
+		 * Poll once per timer tick to reduce visible pointer latency. */
+		myTimeout = 10;
 	}
 	if (myTimeout > 0)
 		AdjustWaitForDelay(timeout, myTimeout);

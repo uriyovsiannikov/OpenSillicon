@@ -11,6 +11,8 @@
 #define TTY_RAW_READ_TIMEOUT_TICKS 50U
 
 static bool renderer_available;
+static bool framebuffer_output_enabled = true;
+static uint64_t framebuffer_output_owner;
 static unsigned int tty_columns;
 static unsigned int tty_rows;
 
@@ -92,8 +94,41 @@ tty_write(const void *buffer, size_t length)
 {
 	if (buffer == NULL && length != 0)
 		return false;
+	if (!framebuffer_output_enabled)
+		return true;
 	terminal_write(buffer, length);
 	return true;
+}
+
+bool
+tty_console_framebuffer_set(bool enabled, uint64_t owner_pid)
+{
+	if (owner_pid == 0)
+		return false;
+	if (!enabled) {
+		if (framebuffer_output_owner != 0 &&
+		    framebuffer_output_owner != owner_pid)
+			return false;
+		framebuffer_output_enabled = false;
+		framebuffer_output_owner = owner_pid;
+		return true;
+	}
+	if (framebuffer_output_owner != owner_pid)
+		return false;
+	framebuffer_output_enabled = true;
+	framebuffer_output_owner = 0;
+	(void)terminal_switch(terminal_active());
+	return true;
+}
+
+void
+tty_console_framebuffer_owner_exit(uint64_t owner_pid)
+{
+	if (owner_pid != 0 && framebuffer_output_owner == owner_pid) {
+		framebuffer_output_enabled = true;
+		framebuffer_output_owner = 0;
+		(void)terminal_switch(terminal_active());
+	}
 }
 
 bool

@@ -296,6 +296,12 @@ fd_object_is_terminal(const struct fd_object *object)
 	    object->operations->is_terminal(object->context);
 }
 
+bool
+fd_object_is_console(const struct fd_object *object)
+{
+	return object != NULL && object->operations == &console_operations;
+}
+
 uint32_t
 fd_object_poll(struct fd_object *object, uint32_t events)
 {

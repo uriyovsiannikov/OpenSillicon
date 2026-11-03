@@ -25,8 +25,13 @@ void exit(int status) {
 long __libos_getpid(void){return __libos_call(SYSCALL_GETPID,0,0,0,0,0,0);}
 long __libos_open(const char*p,int f,unsigned m){return __libos_call(SYSCALL_OPEN,(long)p,f,m,0,0,0);}
 long __libos_close(int f){return __libos_call(SYSCALL_CLOSE,f,0,0,0,0,0);}
-long __libos_read(int f,void*b,size_t n){return __libos_call(SYSCALL_READ,f,(long)b,(long)n,0,0,0);}
-long __libos_write(int f,const void*b,size_t n){return __libos_call(SYSCALL_WRITE,f,(long)b,(long)n,0,0,0);}
+/* The kernel stages reads in a 4096-byte buffer. Return a short read so
+ * callers such as fread can continue reading larger files. */
+long __libos_read(int f,void *b,size_t n) {
+ if(n>4096)n=4096;
+ return __libos_call(SYSCALL_READ,f,(long)b,(long)n,0,0,0);
+}
+long __libos_write(int f,const void*b,size_t n){if(n>4096)n=4096;return __libos_call(SYSCALL_WRITE,f,(long)b,(long)n,0,0,0);}
 long __libos_lseek(int f,off_t o,int w){return __libos_call(SYSCALL_LSEEK,f,o,w,0,0,0);}
 long __libos_fstat(int f,void*b){return __libos_call(SYSCALL_FSTAT,f,(long)b,0,0,0,0);}
 long __libos_fstatat(int f,const char*p,void*b,int flags){return __libos_call(SYSCALL_FSTATAT,f,(long)p,(long)b,flags,0,0);}

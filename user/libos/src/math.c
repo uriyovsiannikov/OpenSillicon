@@ -326,3 +326,144 @@ hypot(double x, double y)
 		return 0.0;
 	return x * sqrt(1.0 + (y / x) * (y / x));
 }
+
+double
+atan(double value)
+{
+	return atan2(value, 1.0);
+}
+
+double
+rint(double value)
+{
+	double result;
+	__asm__ volatile ("fldl %1; frndint; fstpl %0"
+	    : "=m" (result) : "m" (value) : "st", "memory");
+	return result;
+}
+
+double
+round(double value)
+{
+	double integral, fraction;
+	if (is_nan(value) || is_infinite(value) || value == 0.0)
+		return value;
+	fraction = modf(value, &integral);
+	if (fraction >= 0.5) integral += 1.0;
+	if (fraction <= -0.5) integral -= 1.0;
+	return integral;
+}
+
+long
+lround(double value)
+{
+	return (long)round(value);
+}
+
+double
+frexp(double value, int *exponent)
+{
+	uint64_t bits = double_bits(value);
+	int field = (int)((bits >> 52) & 0x7ffU);
+	*exponent = 0;
+	if (field == 0x7ff || value == 0.0)
+		return value;
+	if (field == 0) {
+		value *= 0x1p54;
+		bits = double_bits(value);
+		field = (int)((bits >> 52) & 0x7ffU);
+		*exponent = -54;
+	}
+	*exponent += field - 1022;
+	return bits_double((bits & 0x800fffffffffffffULL) | (1022ULL << 52));
+}
+
+double
+modf(double value, double *integral)
+{
+	*integral = round_integral(value, 0x0c00U);
+	if (is_infinite(value) || *integral == value)
+		return bits_double(double_bits(value) & (1ULL << 63));
+	return value - *integral;
+}
+
+double
+ldexp(double value, int exponent)
+{
+	double result, scale = exponent;
+	__asm__ volatile ("fldl %2; fldl %1; fscale; fstpl %0; fstp %%st(0)"
+	    : "=m" (result) : "m" (value), "m" (scale) : "st", "memory");
+	return result;
+}
+
+double
+log(double value)
+{
+	double result;
+	if (value < 0.0) { errno = EDOM; return quiet_nan(); }
+	if (value == 0.0) { errno = ERANGE; return -HUGE_VAL; }
+	__asm__ volatile ("fldln2; fldl %1; fyl2x; fstpl %0"
+	    : "=m" (result) : "m" (value) : "st", "memory");
+	return result;
+}
+
+double
+log10(double value)
+{
+	double result;
+	if (value < 0.0) { errno = EDOM; return quiet_nan(); }
+	if (value == 0.0) { errno = ERANGE; return -HUGE_VAL; }
+	__asm__ volatile ("fldlg2; fldl %1; fyl2x; fstpl %0"
+	    : "=m" (result) : "m" (value) : "st", "memory");
+	return result;
+}
+
+static double
+exp2_finite(double exponent)
+{
+	double result;
+	if (exponent >= 1024.0) { errno = ERANGE; return HUGE_VAL; }
+	if (exponent < -1075.0) { errno = ERANGE; return 0.0; }
+	__asm__ volatile ("fldl %1; fld %%st(0); frndint; fxch; "
+	    "fsub %%st(1), %%st; f2xm1; fld1; faddp; fscale; "
+	    "fstpl %0; fstp %%st(0)"
+	    : "=m" (result) : "m" (exponent) : "st", "memory");
+	return result;
+}
+
+double
+exp(double value)
+{
+	if (is_nan(value)) return value;
+	if (is_infinite(value)) return value < 0.0 ? 0.0 : value;
+	return exp2_finite(value * 0x1.71547652b82fep+0);
+}
+
+double
+pow(double base, double power)
+{
+	double magnitude = fabs(base), exponent, result;
+	int odd = 0;
+	if (power == 0.0 || base == 1.0) return 1.0;
+	if (is_nan(base) || is_nan(power)) return quiet_nan();
+	if (is_infinite(power)) {
+		if (magnitude == 1.0) return 1.0;
+		return (magnitude > 1.0) == (power > 0.0) ? HUGE_VAL : 0.0;
+	}
+	if (fabs(power) < 0x1p53 && floor(power) == power)
+		odd = ((int64_t)power & 1) != 0;
+	if (magnitude == 0.0 || is_infinite(magnitude)) {
+		result = (magnitude == 0.0) == (power > 0.0) ? 0.0 : HUGE_VAL;
+		if (magnitude == 0.0 && power < 0.0) errno = ERANGE;
+		return (double_bits(base) >> 63) && odd ? -result : result;
+	}
+	if (base < 0.0 && floor(power) != power) {
+		errno = EDOM;
+		return quiet_nan();
+	}
+	__asm__ volatile ("fldl %2; fldl %1; fyl2x; fstpl %0"
+	    : "=m" (exponent) : "m" (magnitude), "m" (power)
+	    : "st", "memory");
+	result = exp2_finite(exponent);
+	return base < 0.0 && odd ? -result : result;
+}

@@ -1,0 +1,342 @@
+v1.12.7 - 2026-08-28
+--------------------
+Kim Woelders (3):
+      XCF loader: Remove unused variable (gcc16)
+      Spec file: Add a %conf section
+      v1.12.7
+
+v1.12.6 - 2026-01-03
+--------------------
+Kim Woelders (2):
+      autofoo: Use AM_LIBTOOLFLAGS, not LIBTOOLFLAGS
+      v1.12.6
+
+v1.12.5 - 2025-04-06
+--------------------
+Kim Woelders (2):
+      autofoo: Track some changes from imlib2
+      v1.12.5
+
+v1.12.4 - 2025-03-15
+--------------------
+Kim Woelders (1):
+      v1.12.4 - No changes since v1.12.3
+
+v1.12.3 - 2024-07-13
+--------------------
+Kim Woelders (1):
+      v1.12.3 - No changes since v1.12.2
+
+v1.12.2 - 2024-02-03
+--------------------
+Kim Woelders (1):
+      v1.12.2 - No changes since v1.12.1
+
+v1.12.1 - 2023-09-21
+--------------------
+Kim Woelders (1):
+      v1.12.1 - No changes since v1.12.0
+
+v1.12.0 - 2023-08-17
+--------------------
+Kim Woelders (1):
+      v1.12.0
+
+v1.11.1 - 2023-05-01
+--------------------
+Kim Woelders (1):
+      v1.11.1
+
+v1.11.0 - 2023-03-09
+--------------------
+Kim Woelders (1):
+      v1.11.0
+
+v1.10.0 - 2022-12-17
+--------------------
+Kim Woelders (4):
+      Follow imlib2 loader API changes
+      Drop ani loader
+      autofoo: Rework git tag/release stuff, as in imlib2
+      v1.10.0
+
+v1.9.1 - 2022-07-06
+--------------------
+Kim Woelders (1):
+      v1.9.1
+
+v1.9.0 - 2022-04-21
+--------------------
+Kim Woelders (2):
+      Update headers, adapt to imlib2 changes, switch to stdint types
+      v1.9.0
+
+v1.8.1 - 2022-03-14
+--------------------
+Kim Woelders (5):
+      Follow the imlib2 image flags refactoring
+      XCF loader: Debug tweaks
+      XCF loader: Fix hang in corrupt image
+      Update headers, adapt to imlib2 changes
+      v1.8.1
+
+v1.8.0 - 2022-02-06
+--------------------
+Kim Woelders (3):
+      Drop change log from before first version tag
+      Copy updated headers from imlib2
+      v1.8.0 (no code changes since 1.7.5)
+
+v1.7.5 - 2021-12-06
+--------------------
+Kim Woelders (3):
+      Build .xz instead of .bz2 release tarball
+      Copy updated headers from imlib2
+      1.7.5 (no code changes since 1.7.4)
+
+v1.7.4 - 2021-09-16
+--------------------
+Kim Woelders (2):
+      Update Changelog to new format
+      1.7.4 (no code changes since 1.7.3)
+
+v1.7.3 - 2021-08-08
+--------------------
+Kim Woelders (1):
+      1.7.3 (no changes since 1.7.2)
+
+v1.7.2 - 2021-07-27
+--------------------
+Kim Woelders (6):
+      EET loader: Fix build + stuff
+      EET loader: Disable - broken
+      Add /build to .gitignore
+      Remove obsolete and unused AC_HEADER_STDC
+      Spec file: Add git tag to rpm file name (if built from git checkout)
+      v1.7.2
+
+v1.7.1 - 2020-12-07
+--------------------
+Kim Woelders (1):
+      1.7.1 (no changes since 1.7.0)
+
+v1.7.0 - 2020-08-01
+--------------------
+Kim Woelders (9):
+      Update headers
+      Update loaders (follow changes in imlib2)
+      autogen.sh: Add -n as alternative to NOCONFIGURE
+      XCF loader: Use correct enum (gcc10)
+      configure.ac: Drop initial config.cache removal
+      Update headers
+      Use SWAP.. macros from common.h
+      Move loaders to load2()
+      1.7.0
+
+v1.6.1 - 2019-12-12
+--------------------
+Kim Woelders (1):
+      1.6.1 (no changes since 1.6.0)
+
+v1.6.0 - 2019-11-24
+--------------------
+Kim Woelders (24):
+      Autofoo cleanup
+      Set warning options when using gcc.
+      Use headers for funcion prototypes
+      Enable visibility hiding
+      Drop ICO loader
+      Remove unused X11 headers
+      Spec file cleanups
+      Simplify autogen.sh
+      Indent
+      Copy updated headers from imlib2
+      Match various changes done in imlib2 loaders
+      ANI loader: Fix - Don't use __imlib_LoadImage() or tempnam()
+      ANI loader: Fix memory leak in error path
+      ANI loader: Cosmetics
+      XCF loader: Cosmetic rearrangements
+      XCF loader: Prefer DATA32 when accessing imlib2 image data
+      XCF loader: Stop on errors and propagate error status up to load()
+      XCF loader: Fix double free.
+      Fix make dist
+      ANI loader: Make debug stuff similar to elsewhere around here
+      ANI loader: Don't use static buffer for mkstemp() template
+      ANI loader: If .ani looks good we must try .ico loading chunks
+      XCF loader: Avoid accessing unset data in signature check
+      1.6.0.
+
+v1.5.1 - 2018-03-17
+--------------------
+Kim Woelders (1):
+      1.5.1 (no changes since 1.5.0).
+
+v1.5.0 - 2018-02-21
+--------------------
+Kim Woelders (4):
+      Copy updated headers from imlib2
+      Fix some warnings
+      Clean up formats()
+      1.5.0 (no significant changes since 1.4.10).
+
+v1.4.10 - 2017-04-15
+--------------------
+Kim Woelders (2):
+      Autofoo tweaks.
+      1.4.10 (no significant changes since 1.4.9).
+
+v1.4.9 - 2016-04-29
+--------------------
+Kim Woelders (1):
+      1.4.9 (no changes since 1.4.8).
+
+v1.4.8 - 2016-03-12
+--------------------
+Kim Woelders (2):
+      Autofoo cleanups.
+      1.4.8 (no significant changes since 1.4.7).
+
+v1.4.7 - 2015-04-04
+--------------------
+Kim Woelders (5):
+      1.4.6.
+      Update autofoo (run autoupdate).
+      Don't install .a files.
+      Generate a ChangeLog using git shortlog between existing tags.
+      1.4.7.
+
+v1.4.6 - 2013-12-21
+--------------------
+Cedric BAIL (2):
+      autotools: move to AC_CONFIG_HEADERS.
+      trunk: remove use of AM_PROG_CC_STDC as AC_PROG_CC does it.
+
+Kim Woelders (3):
+      Change INCLUDES to AM_CPPFLAGS.
+      Edb is dead.
+      1.4.6.
+
+v1.4.5 - 2011-08-15
+--------------------
+Carsten Haitzler (1):
+      no more debian dir in our svn - debian now handles this tehmselves.
+
+Kim Woelders (1):
+      1.4.5 (no significant changes since 1.4.4).
+
+Lucas De Marchi (1):
+      Convert (hopefully) all comparisons to NULL
+
+v1.4.4 - 2010-05-05
+--------------------
+Kim Woelders (1):
+      1.4.4 (no change since 1.4.3).
+
+v1.4.3 - 2010-03-14
+--------------------
+Carsten Haitzler (1):
+      fix the copying license to
+
+Daniel Kolesa (11):
+      Removed debian things like rasterman did in some others from Makefile.am and configure.ac/in(and modifed AUTHORS, autogen.sh and README in E-MODULES-EXTRA) in
+      Removed debian subfolders - prepared for a new set of debian subdirs.
+      Added new set of debian subdirs.
+      prepare debian rules files for new chmod permissions.
+      Added debian/rules files with a new permissions set(755).
+      Updated debian stuff everywhere.
+      forgot to add --prefix=/usr
+      i found it is useless and cdbs is setting up prefix automatically.
+      Updated debian stuff(grew Standards-Version, updated python-ecore rules file)
+      Updated Standards-Version
+      Fixed debian stuff everywhere.
+
+Kim Woelders (4):
+      Set AUTOMAKE_OPTIONS = foreign.
+      Remove .cvsignores.
+      Add .gitignore.
+      1.4.3.
+
+v1.4.2 - 2008-10-22
+--------------------
+Carsten Haitzler (1):
+      asparagus!
+
+Michael Jennings (1):
+      Tue Oct 21 21:27:44 2008                        Michael Jennings (mej)
+
+Peter Wehrfritz (1):
+      configure.in -> configure.ac
+
+v1.4.1 - 2008-06-10
+--------------------
+Carsten Haitzler (4):
+      ASPARAGUS!
+      1. fix a lot of things so they pass make distcheck - so many things have broken. guys - need to be more careful! 2. asparagus 3. some extra docs/comments for evas
+      asparagus!
+      asparagus! also pass distcheck and have common autofoo init that is consistent for package, version etc.
+
+Christopher Michael (1):
+      Patch from Jerome Pinot to fix EDB detection. Makes use of pkg_check_modules now.
+
+Michael Jennings (1):
+      Mon Jun  9 22:46:52 2008                        Michael Jennings (mej)
+
+v1.4.0 - 2007-05-06
+--------------------
+Carsten Haitzler (2):
+      asparagus - pass distcheck.
+      up to 1.4.0 (and add a release 000)
+
+Sebastian Dransfeld (2):
+      No longer needed.
+      Remove unused files.
+
+Stafford Mitchell Horne (1):
+      pkg-config updates for imlib2_loaders (eet)
+
+v1.3.0 - 2006-09-30
+--------------------
+Carsten Haitzler (3):
+      cvs is back up.. time for some asparagus!
+      1. autofoot patches. 2. fix maximize to work again. :)
+      ASPARA!
+
+Falko Schmidt (1):
+      Fix some dependency issues regarding xlibs-dev.
+
+Horms (2):
+      Save and restore autogenerated changelog when debian/rule's clean target runs. Otherwise the following breaks because make distclean removes autogenerated files, but debian/rules expects the changelog to always be there:
+      Prefer automake1.7
+
+v1.2.2 - 2006-03-18
+--------------------
+Carsten Haitzler (11):
+      it's been a while, so it was time for some ASPARAGUS on our plates
+      apps/e/enlightenment.spec CVS: apps/entice/configure.in apps/entrance/configure.in CVS: libs/ecore/configure.in libs/edb/configure.in libs/embryo/configure.in CVS: libs/emotion/configure.in libs/epeg/configure.in CVS: libs/epsilon/configure.in libs/esmart/configure.in CVS: libs/etox/configure.in libs/evas/configure.in libs/imlib2_loaders/configure.in CVS: ---------------------------------------------------------------------- ��������� :)
+      2nd asapargus for the weekend :)
+      a bit of asparagus action for shits & giggles
+      asparagus!
+      after some quiet on the western front - asparagus.
+      asparagus. and make distcheck passes again.
+      asparagus - again. lots fo leak fixes and other fixes have been happening, so i think an asparagus is a good idea - sorry package config people. :)
+      big fat asparagus!
+      asparagus!!!
+      1.2.2 of imlib2 - for kwo :)
+
+Emfox Zhou (1):
+      fix wrong file including of Makefile.am
+
+Michael Jennings (1):
+      Thu Sep  8 17:12:14 2005                        Michael Jennings (mej)
+
+Mike Frysinger (5):
+      whitespace tweaks
+      make edb/eet detection smarter and tweak output
+      you are not supposed to be here
+      add error checking to all autogen scripts
+      touchup help output
+
+Sebastian Dransfeld (2):
+      Silence
+      If the version from config has something after x.y.z, drop it.
+

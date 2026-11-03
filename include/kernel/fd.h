@@ -75,6 +75,7 @@ int fd_set_descriptor_flags(struct fd_table *table, uint64_t descriptor,
 	uint32_t flags);
 void fd_table_close_on_exec(struct fd_table *table);
 bool fd_object_is_terminal(const struct fd_object *object);
+bool fd_object_is_console(const struct fd_object *object);
 uint32_t fd_object_poll(struct fd_object *object, uint32_t events);
 bool fd_object_nonblocking(const struct fd_object *object);
 void fd_readiness_wake(void);

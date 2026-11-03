@@ -26,10 +26,26 @@ opensilliconFramebufferPresent(ScreenPtr pScreen, shadowBufPtr pBuf)
 	KdScreenPriv(pScreen);
 	KdScreenInfo *screen = pScreenPriv->screen;
 	OpenSilliconCard *card = screen->card->driver;
+	RegionPtr damage = shadowDamage(pBuf);
+	BoxPtr extents;
+	struct os_framebuffer_rect rect;
 
 	shadowUpdatePacked(pScreen, pBuf);
-	if (os_syscall2(SYSCALL_FRAMEBUFFER_PRESENT,
-	    (uintptr_t)card->pixels, card->info.size) < 0)
+	if (REGION_NUM_RECTS(damage) == 0)
+		return;
+	extents = REGION_EXTENTS(damage);
+	if (extents->x1 < 0 || extents->y1 < 0 || extents->x2 <= extents->x1 ||
+	    extents->y2 <= extents->y1)
+		return;
+	rect = (struct os_framebuffer_rect){
+		.source = (uintptr_t)card->pixels,
+		.x = extents->x1,
+		.y = extents->y1,
+		.width = extents->x2 - extents->x1,
+		.height = extents->y2 - extents->y1
+	};
+	if (os_syscall2(SYSCALL_FRAMEBUFFER_PRESENT_RECT,
+	    (uintptr_t)&rect, 0) < 0)
 		ErrorF("OpenSillicon: framebuffer present syscall failed\n");
 }
 

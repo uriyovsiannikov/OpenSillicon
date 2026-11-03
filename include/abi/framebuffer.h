@@ -18,4 +18,12 @@ struct os_framebuffer_info {
 	uint8_t reserved[6];
 };
 
+struct os_framebuffer_rect {
+	uint64_t source;
+	uint32_t x;
+	uint32_t y;
+	uint32_t width;
+	uint32_t height;
+};
+
 #endif

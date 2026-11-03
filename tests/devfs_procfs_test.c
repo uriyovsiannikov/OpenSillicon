@@ -183,6 +183,15 @@ test_devfs(void)
 		assert(entry.type == VNODE_DEVICE);
 	}
 	assert(fd_readdir(&table, (uint64_t)directory, &entry) == 0);
+	{
+		uint64_t offset;
+		assert(fd_seek(&table, (uint64_t)directory, 0, SEEK_SET,
+		    &offset) == 0 && offset == 0);
+		assert(fd_readdir(&table, (uint64_t)directory, &entry) == 1);
+		assert(strcmp(entry.name, expected_names[0]) == 0);
+		assert(fd_seek(&table, (uint64_t)directory, 1, SEEK_SET,
+		    &offset) == -29);
+	}
 	assert(fd_close(&table, (uint64_t)directory) == 0);
 
 	assert(vfs_open("/dev/missing", VFS_O_RDONLY, 0,

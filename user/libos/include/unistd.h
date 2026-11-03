@@ -16,6 +16,8 @@ int rmdir(const char *);
 int dup(int);
 pid_t wait(int *);
 int setpgrp(void);
+pid_t getpgrp(void);
+int setpgid(pid_t, pid_t);
 char *ttyname(int);
 unsigned int alarm(unsigned int);
 int chown(const char *, uid_t, gid_t);
@@ -34,6 +36,7 @@ int gethostname(char *, size_t);
 #define _SC_OPEN_MAX 4
 #define _SC_PAGESIZE 30
 #define _SC_PAGE_SIZE _SC_PAGESIZE
+#define _SC_HOST_NAME_MAX 180
 #define _SC_IOV_MAX 60
 ssize_t read(int, void *, size_t);
 ssize_t write(int, const void *, size_t);

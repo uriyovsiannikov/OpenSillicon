@@ -11,4 +11,5 @@ Xopensillicon_SOURCES = opensilliconinit.c
 Xopensillicon_LDADD = @OPEN_SILLICON_CRT0@ libopensillicon.a \
 	@KDRIVE_LIBS@ @XSERVER_LIBS@
 Xopensillicon_LDFLAGS = @OPEN_SILLICON_LDFLAGS@
-Xopensillicon_DEPENDENCIES = @OPEN_SILLICON_CRT0@ libopensillicon.a @KDRIVE_LIBS@
+Xopensillicon_DEPENDENCIES = @OPEN_SILLICON_CRT0@ libopensillicon.a @KDRIVE_LIBS@ \
+	$(filter %.a,@OPEN_SILLICON_LIBS@)

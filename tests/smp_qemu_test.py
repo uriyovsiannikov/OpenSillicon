@@ -88,6 +88,10 @@ with tempfile.TemporaryDirectory(prefix="opensillicon-smp-") as temp_dir:
     if "OpenSillicon panic:" in contents:
         print(contents[-5000:])
         raise SystemExit("guest reported a kernel panic after the SMP marker")
+    for operation in ("mapping", "unmapping"):
+        if f"OpenSillicon: user {operation} preserved unrelated AP TLBs" not in contents:
+            print(contents[-5000:])
+            raise SystemExit(f"address-space TLB target check missing for {operation}")
     if a.expect_unavailable:
         if "SMP bootstrap " in contents or "SMP cpu logical " in contents:
             raise SystemExit("kernel reported partially initialized SMP state")

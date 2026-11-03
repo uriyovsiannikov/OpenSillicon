@@ -428,6 +428,11 @@ file_seek(void *context, uint64_t current, int64_t offset, int whence,
 	uint64_t base;
 	uint64_t target;
 
+	if (file->node->type == VNODE_DIRECTORY && whence == VFS_SEEK_SET &&
+	    offset == 0) {
+		*result = 0;
+		return 0;
+	}
 	if (file->node->type != VNODE_REGULAR)
 		return -VFS_ESPIPE;
 	switch (whence) {

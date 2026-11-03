@@ -15,6 +15,8 @@ FILE *fopen(const char *, const char *);
 FILE *fdopen(int, const char *);
 int fileno(FILE *);
 int fclose(FILE *);
+int remove(const char *);
+int rename(const char *, const char *);
 int fseek(FILE *, long, int);
 long ftell(FILE *);
 void rewind(FILE *);

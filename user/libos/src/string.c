@@ -34,3 +34,38 @@ size_t wcslen(const wchar_t*s){size_t n=0;while(s[n])n++;return n;}
 wchar_t *wcscpy(wchar_t*d,const wchar_t*s){wchar_t*r=d;while((*d++=*s++));return r;}
 wchar_t *wcsncpy(wchar_t*d,const wchar_t*s,size_t n){size_t i=0;while(i<n&&s[i]){d[i]=s[i];i++;}while(i<n)d[i++]=0;return d;}
 int iswalnum(wint_t c){return (c>='0'&&c<='9')||(c>='A'&&c<='Z')||(c>='a'&&c<='z');}
+char *strndup(const char *text, size_t limit)
+{
+	size_t length = strnlen(text, limit);
+	char *copy = malloc(length + 1);
+	if (copy != NULL) {
+		memcpy(copy, text, length);
+		copy[length] = '\0';
+	}
+	return copy;
+}
+
+void *memmem(const void *haystack, size_t length, const void *needle, size_t size)
+{
+	const unsigned char *bytes = haystack;
+	if (size == 0) return (void *)haystack;
+	if (size > length) return NULL;
+	for (size_t i = 0; i <= length - size; i++)
+		if (memcmp(bytes + i, needle, size) == 0)
+			return (void *)(bytes + i);
+	return NULL;
+}
+
+size_t strcspn(const char *text, const char *reject)
+{
+	size_t length = 0;
+	while (text[length] != '\0' && strchr(reject, text[length]) == NULL) length++;
+	return length;
+}
+
+size_t strspn(const char *text, const char *accept)
+{
+	size_t length = 0;
+	while (text[length] != '\0' && strchr(accept, text[length]) != NULL) length++;
+	return length;
+}

@@ -1,0 +1,8 @@
+/share/applications/*.desktop
+/src/deps.mk
+/src/*.o
+/src/*.inc
+/src/feh
+/man/*.1
+*~
+core

@@ -75,6 +75,7 @@ static size_t history_count;
 static size_t history_next;
 static size_t history_position;
 static int cursor_visible = 1;
+static int xterm_cursor;
 
 static int
 resolve(const char *path, char *absolute)
@@ -343,7 +344,7 @@ redraw_line(const char *line, size_t length, size_t cursor)
 	u_puts("\r");
 	u_puts(current_directory);
 	u_puts("# ");
-	if (cursor_visible) {
+	if (cursor_visible && !xterm_cursor) {
 		u_putn(line, cursor);
 		u_puts("\033[0m_");
 		if (cursor < length)
@@ -352,7 +353,7 @@ redraw_line(const char *line, size_t length, size_t cursor)
 		u_putn(line, length);
 	}
 	u_puts("\033[K");
-	if (cursor_visible && cursor == length) {
+	if (cursor_visible && !xterm_cursor && cursor == length) {
 		u_puts("\033[1D");
 	} else if (cursor < length) {
 		u_puts("\033[");
@@ -816,8 +817,10 @@ user_main(uint64_t argc, char **argv, const uint64_t *startup_stack)
 		(void)run_command(argv[2]);
 		u_exit(0);
 	}
-	if (argc > 1) {
-		u_puts("usage: sh [-c command]\n");
+	if (argc == 2 && u_streq(argv[1], "--xterm")) {
+		xterm_cursor = 1;
+	} else if (argc > 1) {
+		u_puts("usage: sh [-c command] [--xterm]\n");
 		u_exit(2);
 	}
 	if (u_ioctl(0, U_TIOCSRAW, 0) < 0) {

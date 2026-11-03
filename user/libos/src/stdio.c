@@ -212,3 +212,15 @@ int fprintf(FILE*f,const char*fmt,...){va_list a;va_start(a,fmt);int r=vfprintf(
 int printf(const char*f,...){va_list a,copy;int n;char*b;size_t done=0;va_start(a,f);__builtin_va_copy(copy,a);n=vsnprintf(0,0,f,copy);__builtin_va_end(copy);if(n<0){va_end(a);return -1;}b=malloc((size_t)n+1);if(!b){va_end(a);return -1;}__builtin_va_copy(copy,a);(void)vsnprintf(b,(size_t)n+1,f,copy);__builtin_va_end(copy);va_end(a);while(done<(size_t)n){size_t w=fwrite(b+done,1,(size_t)n-done,stdout);if(w==0){free(b);return -1;}done+=w;}free(b);return n;}
 int vprintf(const char*f,va_list a){return vfprintf(stdout,f,a);}
 int putchar(int c){return fputc(c,stdout);}
+int remove(const char *path)
+{
+	return unlink(path);
+}
+
+int rename(const char *old_path, const char *new_path)
+{
+	(void)old_path;
+	(void)new_path;
+	errno = EOPNOTSUPP;
+	return -1;
+}
