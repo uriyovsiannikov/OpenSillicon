@@ -2,7 +2,7 @@
   <img src="other/logo.png" alt="OpenSillicon logo" width="88">
   <h1>OpenSillicon</h1>
   <p>a small x86_64 operating system built from the ground up.</p>
-  <img src="other/screenshot1.png" alt="OpenSillicon shell" width="620">
+  <img src="other/screenshot2.png" alt="OpenSillicon shell" width="620">
 </div>
 
 OpenSillicon is an experimental Unix-like operating system with a modular
