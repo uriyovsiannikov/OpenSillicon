@@ -5,6 +5,7 @@
 #include "kernel/entropy.h"
 #include "kernel/rdseed.h"
 #include "kernel/virtio_rng.h"
+#include "kernel/smp.h"
 #include "kernel/log.h"
 #include "kernel/errno.h"
 #include "kernel/pmm.h"
@@ -896,6 +897,27 @@ static volatile struct limine_entropy_request entropy_request = {
 	.value_count = BOOT_ENTROPY_MAX_VALUES
 };
 
+/* Also applies to the initial stacks Limine gives its MP processors. */
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_stack_size_request stack_size_request = {
+	.id = LIMINE_STACK_SIZE_REQUEST_ID,
+	.revision = 0,
+	.stack_size = 64U * 1024U
+};
+
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_tsc_frequency_request tsc_frequency_request = {
+	.id = LIMINE_TSC_FREQUENCY_REQUEST_ID,
+	.revision = 0
+};
+
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_mp_request mp_request = {
+	.id = LIMINE_MP_REQUEST_ID,
+	.revision = 0,
+	.flags = 0
+};
+
 __attribute__((used, section(".limine_requests_end")))
 static volatile uint64_t limine_requests_end[] = LIMINE_REQUESTS_END_MARKER;
 
@@ -905,6 +927,91 @@ clear_boot_entropy_values(uint64_t values[BOOT_ENTROPY_MAX_VALUES])
 	volatile uint64_t *current = values;
 	for (size_t i = 0; i < BOOT_ENTROPY_MAX_VALUES; i++)
 		current[i] = 0;
+}
+
+static void
+report_smp_bootstrap(void)
+{
+	if (stack_size_request.response == NULL) {
+		klog("OpenSillicon: SMP unavailable; Limine stack size request was not honored\n");
+	} else if (tsc_frequency_request.response == NULL ||
+	    tsc_frequency_request.response->frequency == 0) {
+		klog("OpenSillicon: SMP unavailable; no Limine TSC frequency for startup timeout\n");
+	} else if (mp_request.response != NULL &&
+	    mp_request.response->cpu_count > SMP_MAX_CPUS) {
+		klog("OpenSillicon: SMP topology rejected; discovered ");
+		klog_u64(mp_request.response->cpu_count);
+		klog(" exceeds maximum ");
+		klog_u64(SMP_MAX_CPUS);
+		klog("; continuing on BSP\n");
+	} else if (mp_request.response != NULL && smp_init(mp_request.response,
+	    tsc_frequency_request.response->frequency, timer_ap_initial_count())) {
+		klog("OpenSillicon: SMP BSP initialized; CPUs discovered ");
+		klog_u64(smp_discovered_count());
+		klog(" online ");
+		klog_u64(smp_online_count());
+		klog("; APs idle with TLB shootdown IPI enabled\n");
+		if (smp_verify_ap_idle_timers())
+			klog("OpenSillicon: AP idle timer ticks verified\n");
+		else
+			klog("OpenSillicon: AP idle timer tick verification failed\n");
+		if (!smp_tlb_shootdown_all()) {
+			klog("OpenSillicon panic: SMP TLB shootdown acknowledgement timed out\n");
+			kernel_halt();
+		}
+		klog("OpenSillicon: SMP TLB shootdown acknowledged by all online APs\n");
+#if defined(KERNEL_TEST_SMP_TLB_ROUNDS)
+		for (uint64_t round = 1; round < KERNEL_TEST_SMP_TLB_ROUNDS; round++) {
+			if (!smp_tlb_shootdown_all()) {
+				klog("OpenSillicon panic: repeated SMP TLB shootdown failed\n");
+				kernel_halt();
+			}
+		}
+		klog("OpenSillicon: repeated SMP TLB shootdowns acknowledged rounds ");
+		klog_u64(KERNEL_TEST_SMP_TLB_ROUNDS);
+		klog("\n");
+#endif
+		if (smp_online_count() == smp_discovered_count())
+			klog("OpenSillicon: SMP bootstrap verified discovered ");
+		else
+			klog("OpenSillicon: SMP bootstrap partial discovered ");
+		klog_u64(smp_discovered_count());
+		klog(" online ");
+		klog_u64(smp_online_count());
+		klog("\n");
+		for (size_t cpu_index = 0; cpu_index < smp_discovered_count();
+		    cpu_index++) {
+			const struct smp_cpu *cpu = smp_cpu_at(cpu_index);
+			klog("OpenSillicon: SMP cpu logical ");
+			klog_u64(cpu->logical_id);
+			klog(" processor ");
+			klog_u64(cpu->processor_id);
+			klog(" bsp ");
+			klog_u64(cpu->bsp ? 1 : 0);
+			klog(" apic ");
+			klog_u64(cpu->apic_id);
+			klog(" state ");
+			klog_u64(__atomic_load_n(&cpu->state, __ATOMIC_ACQUIRE));
+			klog(" stage ");
+			klog_u64(__atomic_load_n(&cpu->stage, __ATOMIC_ACQUIRE));
+			klog(" per_cpu ");
+			klog_u64((uintptr_t)cpu);
+			klog(" gdt ");
+			klog_u64((uintptr_t)cpu->gdt);
+			klog(" tss ");
+			klog_u64((uintptr_t)cpu->tss);
+			klog(" active_space ");
+			klog_u64((uintptr_t)cpu->active_address_space);
+			klog(" stack_top ");
+			klog_u64(cpu->stack_top);
+			klog(" idle_timer_ticks ");
+			klog_u64(__atomic_load_n(&cpu->idle_timer_ticks,
+			    __ATOMIC_ACQUIRE));
+			klog("\n");
+		}
+	} else {
+		klog("OpenSillicon: SMP unavailable or invalid Limine CPU topology; continuing on BSP\n");
+	}
 }
 
 void
@@ -1102,6 +1209,7 @@ _start(void)
 		kernel_halt();
 	}
 	klog_status("scheduler timer", true, NULL);
+	report_smp_bootstrap();
 	if (!kheap_init()) {
 		klog_status("heap", false, "kernel heap initialization failed");
 		kernel_halt();
@@ -1287,6 +1395,12 @@ virtio_rng_probe_done:
 		kernel_halt();
 	}
 	klog("OpenSillicon: user address space activated\n");
+	if (address_space_destroy(&user_space) ||
+	    address_space_destroy_with_pages(&user_space)) {
+		klog("OpenSillicon: active address-space destruction was not rejected\n");
+		kernel_halt();
+	}
+	klog("OpenSillicon: active address-space destruction blocked\n");
 	heap_allocation = kheap_alloc(128);
 	if (heap_allocation == NULL) {
 		klog("OpenSillicon: kernel heap allocation failed\n");

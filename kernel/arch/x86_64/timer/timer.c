@@ -11,6 +11,7 @@
 #define PIC_SLAVE_DATA 0xa1U
 
 static volatile uint64_t ticks;
+static uint32_t ap_initial_count;
 static bool initialized;
 
 static struct interrupt_frame *
@@ -40,6 +41,7 @@ timer_init(void)
 	if (!lapic_timer_calibrate(TIMER_HZ, &initial_count) ||
 	    !interrupt_register_handler(TIMER_VECTOR, timer_interrupt))
 		goto out;
+	ap_initial_count = initial_count;
 	ticks = 0;
 	if (!lapic_timer_start(TIMER_VECTOR, initial_count))
 		goto out;
@@ -55,4 +57,10 @@ uint64_t
 timer_ticks(void)
 {
 	return initialized ? ticks : 0;
+}
+
+uint32_t
+timer_ap_initial_count(void)
+{
+	return initialized ? ap_initial_count : 0;
 }

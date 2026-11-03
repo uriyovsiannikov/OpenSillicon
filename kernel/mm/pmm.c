@@ -2,6 +2,7 @@
 #include <stdint.h>
 
 #include "kernel/pmm.h"
+#include "kernel/spinlock.h"
 
 #define PAGE_SIZE 4096ULL
 
@@ -18,6 +19,7 @@ struct pmm_state {
 };
 
 static struct pmm_state pmm;
+static struct spinlock pmm_lock = SPINLOCK_INITIALIZER;
 #ifdef KERNEL_TEST_PRIVATE_MAPPING_EXHAUSTION
 static uint64_t test_exhaustion_failures;
 #endif
@@ -183,8 +185,8 @@ pmm_init(const struct boot_info *info, struct bootstrap_allocator *bootstrap)
 	return true;
 }
 
-bool
-pmm_alloc_page(uint64_t *physical_address)
+static bool
+pmm_alloc_page_locked(uint64_t *physical_address)
 {
 	uint64_t checked;
 	uint64_t frame;
@@ -215,7 +217,17 @@ pmm_alloc_page(uint64_t *physical_address)
 }
 
 bool
-pmm_free_page(uint64_t physical_address)
+pmm_alloc_page(uint64_t *physical_address)
+{
+	uint64_t flags = spinlock_lock_irqsave(&pmm_lock);
+	bool result = pmm_alloc_page_locked(physical_address);
+
+	spinlock_unlock_irqrestore(&pmm_lock, flags);
+	return result;
+}
+
+static bool
+pmm_free_page_locked(uint64_t physical_address)
 {
 	uint64_t frame;
 
@@ -234,7 +246,17 @@ pmm_free_page(uint64_t physical_address)
 }
 
 bool
-pmm_alloc_contiguous(size_t page_count, size_t alignment_pages,
+pmm_free_page(uint64_t physical_address)
+{
+	uint64_t flags = spinlock_lock_irqsave(&pmm_lock);
+	bool result = pmm_free_page_locked(physical_address);
+
+	spinlock_unlock_irqrestore(&pmm_lock, flags);
+	return result;
+}
+
+static bool
+pmm_alloc_contiguous_locked(size_t page_count, size_t alignment_pages,
 	uint64_t maximum_address_exclusive, uint64_t *physical_address)
 {
 	uint64_t limit_frames;
@@ -309,7 +331,19 @@ pmm_alloc_contiguous(size_t page_count, size_t alignment_pages,
 }
 
 bool
-pmm_free_contiguous(uint64_t physical_address, size_t page_count)
+pmm_alloc_contiguous(size_t page_count, size_t alignment_pages,
+	uint64_t maximum_address_exclusive, uint64_t *physical_address)
+{
+	uint64_t flags = spinlock_lock_irqsave(&pmm_lock);
+	bool result = pmm_alloc_contiguous_locked(page_count, alignment_pages,
+	    maximum_address_exclusive, physical_address);
+
+	spinlock_unlock_irqrestore(&pmm_lock, flags);
+	return result;
+}
+
+static bool
+pmm_free_contiguous_locked(uint64_t physical_address, size_t page_count)
 {
 	uint64_t first;
 	uint64_t count;
@@ -338,22 +372,41 @@ pmm_free_contiguous(uint64_t physical_address, size_t page_count)
 	return true;
 }
 
+bool
+pmm_free_contiguous(uint64_t physical_address, size_t page_count)
+{
+	uint64_t flags = spinlock_lock_irqsave(&pmm_lock);
+	bool result = pmm_free_contiguous_locked(physical_address, page_count);
+
+	spinlock_unlock_irqrestore(&pmm_lock, flags);
+	return result;
+}
+
 uint64_t
 pmm_total_pages(void)
 {
-	return pmm.initialized ? pmm.frame_count : 0;
+	uint64_t flags = spinlock_lock_irqsave(&pmm_lock);
+	uint64_t result = pmm.initialized ? pmm.frame_count : 0;
+	spinlock_unlock_irqrestore(&pmm_lock, flags);
+	return result;
 }
 
 uint64_t
 pmm_usable_pages(void)
 {
-	return pmm.initialized ? pmm.usable_count : 0;
+	uint64_t flags = spinlock_lock_irqsave(&pmm_lock);
+	uint64_t result = pmm.initialized ? pmm.usable_count : 0;
+	spinlock_unlock_irqrestore(&pmm_lock, flags);
+	return result;
 }
 
 uint64_t
 pmm_free_pages(void)
 {
-	return pmm.initialized ? pmm.free_count : 0;
+	uint64_t flags = spinlock_lock_irqsave(&pmm_lock);
+	uint64_t result = pmm.initialized ? pmm.free_count : 0;
+	spinlock_unlock_irqrestore(&pmm_lock, flags);
+	return result;
 }
 
 #if defined(KERNEL_TEST_PRIVATE_MAPPING_LIFECYCLE) || \
@@ -362,11 +415,17 @@ bool
 pmm_test_page_is_allocated(uint64_t physical_address)
 {
 	uint64_t frame;
+	uint64_t flags = spinlock_lock_irqsave(&pmm_lock);
+	bool allocated;
 
-	if (!pmm.initialized || (physical_address & (PAGE_SIZE - 1)) != 0)
-		return false;
-	frame = physical_address / PAGE_SIZE;
-	return frame < pmm.frame_count && bit_is_set(pmm.used, frame);
+	if (!pmm.initialized || (physical_address & (PAGE_SIZE - 1)) != 0) {
+		allocated = false;
+	} else {
+		frame = physical_address / PAGE_SIZE;
+		allocated = frame < pmm.frame_count && bit_is_set(pmm.used, frame);
+	}
+	spinlock_unlock_irqrestore(&pmm_lock, flags);
+	return allocated;
 }
 #endif
 
@@ -374,12 +433,17 @@ pmm_test_page_is_allocated(uint64_t physical_address)
 void
 pmm_test_reset_exhaustion_failures(void)
 {
+	uint64_t flags = spinlock_lock_irqsave(&pmm_lock);
 	test_exhaustion_failures = 0;
+	spinlock_unlock_irqrestore(&pmm_lock, flags);
 }
 
 uint64_t
 pmm_test_exhaustion_failures(void)
 {
-	return test_exhaustion_failures;
+	uint64_t flags = spinlock_lock_irqsave(&pmm_lock);
+	uint64_t result = test_exhaustion_failures;
+	spinlock_unlock_irqrestore(&pmm_lock, flags);
+	return result;
 }
 #endif

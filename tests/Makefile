@@ -32,6 +32,46 @@ $(BUILD_DIR)/pty_test: tests/pty_test.c kernel/tty/pty.c kernel/proc/fd.c kernel
 devfs-procfs-test: $(BUILD_DIR)/devfs_procfs_test
 	$(BUILD_DIR)/devfs_procfs_test
 
+.PHONY: smp-topology-test
+smp-topology-test: $(BUILD_DIR)/smp_topology_test
+	$(BUILD_DIR)/smp_topology_test
+
+.PHONY: spinlock-test
+spinlock-test: $(BUILD_DIR)/spinlock_test
+	$(BUILD_DIR)/spinlock_test
+
+$(BUILD_DIR)/spinlock_test: tests/spinlock_test.c include/kernel/spinlock.h | $(BUILD_DIR)
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -pthread \
+		-DKERNEL_SPINLOCK_HOST_TEST -Iinclude $< -o $@
+
+.PHONY: pmm-concurrency-test
+pmm-concurrency-test: $(BUILD_DIR)/pmm_concurrency_test
+	$(BUILD_DIR)/pmm_concurrency_test
+
+$(BUILD_DIR)/pmm_concurrency_test: tests/pmm_concurrency_test.c \
+		kernel/mm/pmm.c include/kernel/pmm.h include/kernel/spinlock.h | $(BUILD_DIR)
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -pthread \
+		-DKERNEL_SPINLOCK_HOST_TEST -Iinclude -Ilimine $< \
+		kernel/mm/pmm.c -o $@
+
+.PHONY: heap-concurrency-test
+heap-concurrency-test: $(BUILD_DIR)/heap_concurrency_test
+	$(BUILD_DIR)/heap_concurrency_test
+
+$(BUILD_DIR)/heap_concurrency_test: tests/heap_concurrency_test.c \
+		kernel/mm/heap.c include/kernel/heap.h include/kernel/vmm.h \
+		include/kernel/pmm.h include/kernel/spinlock.h | $(BUILD_DIR)
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -pthread \
+		-DKERNEL_SPINLOCK_HOST_TEST -Iinclude -Ilimine $< \
+		kernel/mm/heap.c -o $@
+
+$(BUILD_DIR)/smp_topology_test: tests/smp_topology_test.c \
+		kernel/arch/x86_64/cpu/smp_topology.c include/kernel/smp.h \
+		limine/limine.h | $(BUILD_DIR)
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Iinclude -Ilimine \
+		tests/smp_topology_test.c kernel/arch/x86_64/cpu/smp_topology.c \
+		-o $@
+
 $(BUILD_DIR)/initramfs.cpio: $(shell find initramfs -type f -o -type d) \
 		tools/mkinitramfs.py | $(BUILD_DIR)
 	python3 tools/mkinitramfs.py initramfs $@
@@ -47,6 +87,121 @@ $(LIBOS_QEMU_BUILD_DIR)/libos-root.img: $(BUILD_DIR)/init.elf \
 tinyx-qemu-test: iso $(BUILD_DIR)/root.img
 	python3 tests/tinyx_qemu_test.py --qemu '$(QEMU)' \
 		--bios '$(OVMF_CODE)' --build-dir '$(BUILD_DIR)'
+
+.PHONY: smp-qemu-test
+smp-qemu-test: iso $(BUILD_DIR)/root.img
+	python3 tests/smp_qemu_test.py --qemu '$(QEMU)' \
+		--bios '$(OVMF_CODE)' --build-dir '$(BUILD_DIR)'
+
+.PHONY: smp-shootdown-qemu-test
+smp-shootdown-qemu-test: iso $(BUILD_DIR)/root.img
+	$(MAKE) BUILD_DIR=$(BUILD_DIR)/smp-shootdown \
+		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DKERNEL_TEST_SMP_TLB_ROUNDS=32' \
+		kernel
+	mkdir -p $(BUILD_DIR)/smp-shootdown/iso_root/EFI/BOOT \
+		$(BUILD_DIR)/smp-shootdown/iso_root/boot \
+		$(BUILD_DIR)/smp-shootdown/iso_root/limine
+	cp limine/BOOTX64.EFI $(BUILD_DIR)/smp-shootdown/iso_root/EFI/BOOT/BOOTX64.EFI
+	cp limine/limine-uefi-cd.bin $(BUILD_DIR)/smp-shootdown/iso_root/limine/limine-uefi-cd.bin
+	cp $(BUILD_DIR)/smp-shootdown/kernel.elf $(BUILD_DIR)/smp-shootdown/iso_root/boot/kernel.elf
+	cp $(BUILD_DIR)/initramfs.cpio $(BUILD_DIR)/smp-shootdown/iso_root/boot/initramfs.cpio
+	printf 'timeout: 0\n/ OpenSillicon\n    protocol: limine\n    path: boot():/boot/kernel.elf\n    module_path: boot():/boot/initramfs.cpio\n    module_string: initramfs\n' > $(BUILD_DIR)/smp-shootdown/iso_root/limine.conf
+	$(XORRISO) -as mkisofs -R -r -J \
+		--efi-boot limine/limine-uefi-cd.bin \
+		-efi-boot-part --efi-boot-image --protective-msdos-label \
+		$(BUILD_DIR)/smp-shootdown/iso_root \
+		-o $(BUILD_DIR)/smp-shootdown/opensillicon.iso
+	cp $(BUILD_DIR)/root.img $(BUILD_DIR)/smp-shootdown/root.img
+	python3 tests/smp_qemu_test.py --qemu '$(QEMU)' \
+		--bios '$(OVMF_CODE)' --build-dir '$(BUILD_DIR)/smp-shootdown' \
+		--cpus 4 --expected-online 4 --tlb-rounds 32
+
+.PHONY: smp-single-qemu-test
+smp-single-qemu-test: iso $(BUILD_DIR)/root.img
+	python3 tests/smp_qemu_test.py --qemu '$(QEMU)' \
+		--bios '$(OVMF_CODE)' --build-dir '$(BUILD_DIR)' \
+		--cpus 1 --expected-online 1
+
+.PHONY: smp-max-qemu-test
+smp-max-qemu-test: iso $(BUILD_DIR)/root.img
+	python3 tests/smp_qemu_test.py --qemu '$(QEMU)' \
+		--bios '$(OVMF_CODE)' --build-dir '$(BUILD_DIR)' \
+		--cpus 8 --expected-online 8
+
+.PHONY: smp-over-limit-qemu-test
+smp-over-limit-qemu-test: iso $(BUILD_DIR)/root.img
+	python3 tests/smp_qemu_test.py --qemu '$(QEMU)' \
+		--bios '$(OVMF_CODE)' --build-dir '$(BUILD_DIR)' \
+		--cpus 9 --expect-unavailable
+
+.PHONY: smp-failure-qemu-test
+smp-failure-qemu-test:
+	$(MAKE) BUILD_DIR=$(BUILD_DIR)/smp-failure \
+		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DKERNEL_TEST_SMP_FAIL_INIT_LOGICAL_CPU=1' \
+		kernel
+	mkdir -p $(BUILD_DIR)/smp-failure/iso_root/EFI/BOOT \
+		$(BUILD_DIR)/smp-failure/iso_root/boot \
+		$(BUILD_DIR)/smp-failure/iso_root/limine
+	cp limine/BOOTX64.EFI $(BUILD_DIR)/smp-failure/iso_root/EFI/BOOT/BOOTX64.EFI
+	cp limine/limine-uefi-cd.bin $(BUILD_DIR)/smp-failure/iso_root/limine/limine-uefi-cd.bin
+	cp $(BUILD_DIR)/smp-failure/kernel.elf $(BUILD_DIR)/smp-failure/iso_root/boot/kernel.elf
+	cp $(BUILD_DIR)/initramfs.cpio $(BUILD_DIR)/smp-failure/iso_root/boot/initramfs.cpio
+	printf 'timeout: 0\n/ OpenSillicon\n    protocol: limine\n    path: boot():/boot/kernel.elf\n    module_path: boot():/boot/initramfs.cpio\n    module_string: initramfs\n' > $(BUILD_DIR)/smp-failure/iso_root/limine.conf
+	$(XORRISO) -as mkisofs -R -r -J \
+		--efi-boot limine/limine-uefi-cd.bin \
+		-efi-boot-part --efi-boot-image --protective-msdos-label \
+		$(BUILD_DIR)/smp-failure/iso_root \
+		-o $(BUILD_DIR)/smp-failure/opensillicon.iso
+	cp $(BUILD_DIR)/root.img $(BUILD_DIR)/smp-failure/root.img
+	python3 tests/smp_qemu_test.py --qemu '$(QEMU)' \
+		--bios '$(OVMF_CODE)' --build-dir '$(BUILD_DIR)/smp-failure' \
+		--cpus 4 --expected-online 3 --failed-cpu 1
+
+.PHONY: smp-timeout-qemu-test
+smp-timeout-qemu-test:
+	$(MAKE) BUILD_DIR=$(BUILD_DIR)/smp-timeout \
+		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DKERNEL_TEST_SMP_TIMEOUT_LOGICAL_CPU=1' \
+		kernel
+	mkdir -p $(BUILD_DIR)/smp-timeout/iso_root/EFI/BOOT \
+		$(BUILD_DIR)/smp-timeout/iso_root/boot \
+		$(BUILD_DIR)/smp-timeout/iso_root/limine
+	cp limine/BOOTX64.EFI $(BUILD_DIR)/smp-timeout/iso_root/EFI/BOOT/BOOTX64.EFI
+	cp limine/limine-uefi-cd.bin $(BUILD_DIR)/smp-timeout/iso_root/limine/limine-uefi-cd.bin
+	cp $(BUILD_DIR)/smp-timeout/kernel.elf $(BUILD_DIR)/smp-timeout/iso_root/boot/kernel.elf
+	cp $(BUILD_DIR)/initramfs.cpio $(BUILD_DIR)/smp-timeout/iso_root/boot/initramfs.cpio
+	printf 'timeout: 0\n/ OpenSillicon\n    protocol: limine\n    path: boot():/boot/kernel.elf\n    module_path: boot():/boot/initramfs.cpio\n    module_string: initramfs\n' > $(BUILD_DIR)/smp-timeout/iso_root/limine.conf
+	$(XORRISO) -as mkisofs -R -r -J \
+		--efi-boot limine/limine-uefi-cd.bin \
+		-efi-boot-part --efi-boot-image --protective-msdos-label \
+		$(BUILD_DIR)/smp-timeout/iso_root \
+		-o $(BUILD_DIR)/smp-timeout/opensillicon.iso
+	cp $(BUILD_DIR)/root.img $(BUILD_DIR)/smp-timeout/root.img
+	python3 tests/smp_qemu_test.py --qemu '$(QEMU)' \
+		--bios '$(OVMF_CODE)' --build-dir '$(BUILD_DIR)/smp-timeout' \
+		--cpus 4 --expected-online 3 --failed-cpu 1 --failed-stage 0
+
+.PHONY: smp-exception-qemu-test
+smp-exception-qemu-test:
+	$(MAKE) BUILD_DIR=$(BUILD_DIR)/smp-exception \
+		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DKERNEL_TEST_SMP_AP_EXCEPTION_LOGICAL_CPU=1' \
+		kernel
+	mkdir -p $(BUILD_DIR)/smp-exception/iso_root/EFI/BOOT \
+		$(BUILD_DIR)/smp-exception/iso_root/boot \
+		$(BUILD_DIR)/smp-exception/iso_root/limine
+	cp limine/BOOTX64.EFI $(BUILD_DIR)/smp-exception/iso_root/EFI/BOOT/BOOTX64.EFI
+	cp limine/limine-uefi-cd.bin $(BUILD_DIR)/smp-exception/iso_root/limine/limine-uefi-cd.bin
+	cp $(BUILD_DIR)/smp-exception/kernel.elf $(BUILD_DIR)/smp-exception/iso_root/boot/kernel.elf
+	cp $(BUILD_DIR)/initramfs.cpio $(BUILD_DIR)/smp-exception/iso_root/boot/initramfs.cpio
+	printf 'timeout: 0\n/ OpenSillicon\n    protocol: limine\n    path: boot():/boot/kernel.elf\n    module_path: boot():/boot/initramfs.cpio\n    module_string: initramfs\n' > $(BUILD_DIR)/smp-exception/iso_root/limine.conf
+	$(XORRISO) -as mkisofs -R -r -J \
+		--efi-boot limine/limine-uefi-cd.bin \
+		-efi-boot-part --efi-boot-image --protective-msdos-label \
+		$(BUILD_DIR)/smp-exception/iso_root \
+		-o $(BUILD_DIR)/smp-exception/opensillicon.iso
+	cp $(BUILD_DIR)/root.img $(BUILD_DIR)/smp-exception/root.img
+	python3 tests/smp_qemu_test.py --qemu '$(QEMU)' \
+		--bios '$(OVMF_CODE)' --build-dir '$(BUILD_DIR)/smp-exception' \
+		--cpus 4 --expected-online 3 --failed-cpu 1 --failed-stage 1
 
 libos-qemu-test: libos-build
 	CCACHE_DISABLE=1 $(MAKE) BUILD_DIR=$(LIBOS_QEMU_BUILD_DIR) \

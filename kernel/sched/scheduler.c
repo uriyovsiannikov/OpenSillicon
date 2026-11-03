@@ -4,6 +4,7 @@
 #include "kernel/heap.h"
 #include "kernel/log.h"
 #include "kernel/scheduler.h"
+#include "kernel/smp.h"
 #include "kernel/vmm.h"
 
 #define THREAD_STACK_SIZE 16384U
@@ -35,12 +36,20 @@ struct scheduler_cpu {
 
 static struct thread boot_thread;
 static struct scheduler_cpu bootstrap_cpu;
-static struct scheduler_cpu *active_cpu;
+static struct scheduler_cpu *fallback_cpu;
 static struct sched_process kernel_process;
 static bool initialized;
 
 extern void context_switch(uint64_t **old_stack, uint64_t *new_stack);
 static void thread_bootstrap(void);
+
+static struct scheduler_cpu *
+scheduler_cpu_current(void)
+{
+	struct smp_cpu *cpu = smp_current_cpu();
+
+	return cpu == NULL ? fallback_cpu : cpu->scheduler_context;
+}
 
 static uint64_t
 interrupt_state_disable(void)
@@ -61,9 +70,14 @@ interrupt_state_restore(uint64_t flags)
 static void
 reap_dead_threads(void)
 {
-	struct thread *thread = active_cpu->dead_threads;
+	struct scheduler_cpu *cpu = scheduler_cpu_current();
+	struct thread *thread;
 
-	active_cpu->dead_threads = NULL;
+	if (cpu == NULL)
+		return;
+	thread = cpu->dead_threads;
+
+	cpu->dead_threads = NULL;
 	while (thread != NULL) {
 		struct thread *next = thread->dead_next;
 
@@ -78,7 +92,11 @@ reap_dead_threads(void)
 bool
 scheduler_init(void)
 {
+	struct smp_cpu *cpu = smp_current_cpu();
+
 	if (initialized)
+		return false;
+	if (cpu != NULL && !cpu->bsp)
 		return false;
 	boot_thread = (struct thread){0};
 	boot_thread.previous = &boot_thread;
@@ -96,7 +114,10 @@ scheduler_init(void)
 		.current = &boot_thread,
 		.dead_threads = NULL
 	};
-	active_cpu = &bootstrap_cpu;
+	if (cpu == NULL)
+		fallback_cpu = &bootstrap_cpu;
+	else
+		cpu->scheduler_context = &bootstrap_cpu;
 	initialized = true;
 	return true;
 }
@@ -105,11 +126,12 @@ bool
 thread_create(thread_entry entry, void *argument)
 {
 	struct thread *thread;
+	struct scheduler_cpu *cpu = scheduler_cpu_current();
 	uintptr_t stack_top;
 	uint64_t *initial_stack;
 	uint64_t flags;
 
-	if (!initialized || entry == NULL)
+	if (!initialized || cpu == NULL || entry == NULL)
 		return false;
 	thread = kheap_alloc(sizeof(*thread));
 	if (thread == NULL)
@@ -138,22 +160,22 @@ thread_create(thread_entry entry, void *argument)
 	initial_stack[6] = (uintptr_t)thread_bootstrap;
 	thread->saved_stack = initial_stack;
 	flags = interrupt_state_disable();
-	thread->previous = active_cpu->run_queue->previous;
-	thread->next = active_cpu->run_queue;
-	active_cpu->run_queue->previous->next = thread;
-	active_cpu->run_queue->previous = thread;
+	thread->previous = cpu->run_queue->previous;
+	thread->next = cpu->run_queue;
+	cpu->run_queue->previous->next = thread;
+	cpu->run_queue->previous = thread;
 	kernel_process.thread_count++;
 	interrupt_state_restore(flags);
 	return true;
 }
 
 static void
-thread_remove(struct thread *thread)
+thread_remove(struct scheduler_cpu *cpu, struct thread *thread)
 {
 	thread->previous->next = thread->next;
 	thread->next->previous = thread->previous;
-	if (active_cpu->run_queue == thread)
-		active_cpu->run_queue = thread->next;
+	if (cpu->run_queue == thread)
+		cpu->run_queue = thread->next;
 	if (thread->process == NULL || thread->process->thread_count <= 1) {
 		klog("OpenSillicon panic: invalid process thread count\n");
 		kernel_halt();
@@ -164,11 +186,12 @@ thread_remove(struct thread *thread)
 void
 thread_yield(void)
 {
+	struct scheduler_cpu *cpu = scheduler_cpu_current();
 	struct thread *previous;
 	struct thread *next;
 	uint64_t flags;
 
-	if (!initialized)
+	if (!initialized || cpu == NULL)
 		return;
 	flags = interrupt_state_disable();
 	if ((flags & (1ULL << 9)) == 0) {
@@ -176,13 +199,13 @@ thread_yield(void)
 		kernel_halt();
 	}
 	reap_dead_threads();
-	previous = active_cpu->current;
+	previous = cpu->current;
 	next = previous->next;
 	if (next == previous) {
 		interrupt_state_restore(flags);
 		return;
 	}
-	active_cpu->current = next;
+	cpu->current = next;
 	interrupt_state_restore(flags);
 	context_switch(&previous->saved_stack, next->saved_stack);
 }
@@ -190,19 +213,27 @@ thread_yield(void)
 static void
 thread_exit(void)
 {
-	struct thread *finished = active_cpu->current;
-	struct thread *next = finished->next;
+	struct scheduler_cpu *cpu = scheduler_cpu_current();
+	struct thread *finished;
+	struct thread *next;
 	uint64_t flags;
+
+	if (cpu == NULL) {
+		for (;;)
+			__asm__ volatile ("cli; hlt" : : : "memory");
+	}
+	finished = cpu->current;
+	next = finished->next;
 
 	if (finished == &boot_thread) {
 		klog("OpenSillicon panic: bootstrap thread exited\n");
 		kernel_halt();
 	}
 	flags = interrupt_state_disable();
-	thread_remove(finished);
-	finished->dead_next = active_cpu->dead_threads;
-	active_cpu->dead_threads = finished;
-	active_cpu->current = next;
+	thread_remove(cpu, finished);
+	finished->dead_next = cpu->dead_threads;
+	cpu->dead_threads = finished;
+	cpu->current = next;
 	interrupt_state_restore(flags);
 	context_switch(&finished->saved_stack, next->saved_stack);
 	for (;;)
@@ -212,8 +243,16 @@ thread_exit(void)
 static void
 thread_bootstrap(void)
 {
-	thread_entry entry = active_cpu->current->entry;
-	void *argument = active_cpu->current->argument;
+	struct scheduler_cpu *cpu = scheduler_cpu_current();
+	thread_entry entry;
+	void *argument;
+
+	if (cpu == NULL || cpu->current == NULL) {
+		for (;;)
+			__asm__ volatile ("cli; hlt" : : : "memory");
+	}
+	entry = cpu->current->entry;
+	argument = cpu->current->argument;
 
 	entry(argument);
 	thread_exit();

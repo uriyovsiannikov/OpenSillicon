@@ -9,6 +9,9 @@
 #define APIC_PHYSICAL_MASK 0x000ffffffffff000ULL
 #define LAPIC_SVR 0x0f0U
 #define LAPIC_ID 0x020U
+#define LAPIC_TPR 0x080U
+#define LAPIC_ICR_LOW 0x300U
+#define LAPIC_ICR_HIGH 0x310U
 #define LAPIC_LVT_TIMER 0x320U
 #define LAPIC_LVT_THERMAL 0x330U
 #define LAPIC_LVT_PERF 0x340U
@@ -26,8 +29,10 @@
 #define PIT_SPEAKER 0x61U
 #define PIT_FREQUENCY 1193182U
 #define PIT_POLL_LIMIT 10000000U
+#define LAPIC_IPI_POLL_LIMIT 10000000U
 
 static volatile uint32_t *lapic_registers;
+static uint64_t lapic_physical;
 
 static inline void
 outb(uint16_t port, uint8_t value)
@@ -103,6 +108,7 @@ lapic_init(void)
 	    VMM_WRITE | VMM_UNCACHED))
 		return false;
 	lapic_registers = (volatile uint32_t *)(uintptr_t)virtual_address;
+	lapic_physical = physical;
 	(void)lapic_read(LAPIC_ID);
 	lapic_write(LAPIC_LVT_TIMER,
 	    lapic_read(LAPIC_LVT_TIMER) | LAPIC_LVT_MASKED);
@@ -120,10 +126,74 @@ lapic_init(void)
 	return true;
 }
 
+bool
+lapic_ap_init(uint32_t expected_apic_id)
+{
+	uint64_t apic_base;
+	uint32_t eax = 1;
+	uint32_t ebx;
+	uint32_t ecx;
+	uint32_t edx;
+
+	if (lapic_registers == NULL || expected_apic_id > UINT8_MAX)
+		return false;
+	__asm__ volatile ("cpuid" : "+a" (eax), "=b" (ebx), "=c" (ecx),
+	    "=d" (edx));
+	if ((edx & (1U << 9)) == 0)
+		return false;
+	apic_base = read_msr(IA32_APIC_BASE);
+	if ((apic_base & APIC_BASE_X2) != 0 ||
+	    (apic_base & APIC_PHYSICAL_MASK) != lapic_physical)
+		return false;
+	write_msr(IA32_APIC_BASE, apic_base | APIC_BASE_ENABLE);
+	(void)lapic_read(LAPIC_ID);
+	lapic_write(LAPIC_TPR, 0);
+	lapic_write(LAPIC_LVT_TIMER,
+	    lapic_read(LAPIC_LVT_TIMER) | LAPIC_LVT_MASKED);
+	lapic_write(LAPIC_LVT_THERMAL,
+	    lapic_read(LAPIC_LVT_THERMAL) | LAPIC_LVT_MASKED);
+	lapic_write(LAPIC_LVT_PERF,
+	    lapic_read(LAPIC_LVT_PERF) | LAPIC_LVT_MASKED);
+	lapic_write(LAPIC_LVT_LINT0,
+	    lapic_read(LAPIC_LVT_LINT0) | LAPIC_LVT_MASKED);
+	lapic_write(LAPIC_LVT_LINT1,
+	    lapic_read(LAPIC_LVT_LINT1) | LAPIC_LVT_MASKED);
+	lapic_write(LAPIC_LVT_ERROR,
+	    lapic_read(LAPIC_LVT_ERROR) | LAPIC_LVT_MASKED);
+	lapic_write(LAPIC_SVR, 0x1ffU);
+	return lapic_id() == expected_apic_id;
+}
+
 uint32_t
 lapic_id(void)
 {
 	return lapic_registers == NULL ? UINT32_MAX : lapic_read(LAPIC_ID) >> 24;
+}
+
+bool
+lapic_send_ipi(uint32_t apic_id, uint8_t vector)
+{
+	uint32_t polls;
+
+	if (lapic_registers == NULL || apic_id > UINT8_MAX || vector < 32 ||
+	    vector == UINT8_MAX)
+		return false;
+	for (polls = 0; polls < LAPIC_IPI_POLL_LIMIT; polls++) {
+		if ((lapic_read(LAPIC_ICR_LOW) & (1U << 12)) == 0)
+			break;
+		__asm__ volatile ("pause" : : : "memory");
+	}
+	if (polls == LAPIC_IPI_POLL_LIMIT)
+		return false;
+	lapic_write(LAPIC_ICR_HIGH, apic_id << 24);
+	__atomic_thread_fence(__ATOMIC_RELEASE);
+	lapic_write(LAPIC_ICR_LOW, vector);
+	for (polls = 0; polls < LAPIC_IPI_POLL_LIMIT; polls++) {
+		if ((lapic_read(LAPIC_ICR_LOW) & (1U << 12)) == 0)
+			return true;
+		__asm__ volatile ("pause" : : : "memory");
+	}
+	return false;
 }
 
 bool

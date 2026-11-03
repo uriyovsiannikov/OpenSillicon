@@ -2558,3 +2558,126 @@ device drivers may use architecture interfaces through the existing
 are not mirrored merely to match source paths. The Makefile keeps explicit
 production object and host-test source lists so moving files cannot silently
 pull tests into the kernel.
+
+SMP bootstrap currently uses Limine v12.9.6's x86-64 MP request revision 0
+and requests a 64 KiB Limine startup stack, shared by the BSP/AP boot entry
+contract. It also requests the BSP TSC frequency and uses a one-second TSC
+deadline with a bounded poll-count backstop for AP startup. SMP startup is
+skipped if Limine does not return a valid frequency or the BSP lacks TSC.
+Startup is also skipped if Limine does not return the stack-size response. The
+kernel's private per-CPU stacks are 16 KiB and APs switch to them
+after validating their startup record and installing local descriptor state.
+An assembly trampoline normalizes Limine's jump stack to the x86-64 SysV
+function-entry alignment and installs a temporary halt-on-exception IDT using
+Limine's guaranteed 64-bit code selector (`0x28`) before entering C. The
+per-CPU GDT keeps a compatible code descriptor at `0x28`, so the temporary
+IDT remains valid while switching tables; the TSS uses selector `0x30`. The
+BSP loads the kernel IDT with its GDT. APs first use a halt-only emergency IDT,
+then load a dedicated idle IDT that halts on every exception or interrupt except
+the TLB shootdown vector, a private idle-timer vector, and APIC spurious vector.
+The BSP maps and initializes the LAPIC before releasing APs. The BSP initializes
+and calibrates its LAPIC timer first, then passes the calibrated count to APs.
+Each AP enables its own LAPIC and periodic idle timer, switches to its private
+stack, publishes ONLINE, and then enters `sti; hlt`.
+The response is validated and bounded to eight CPUs; records are indexed by
+contiguous logical CPU index with the BSP at index zero, while ACPI processor
+IDs and APIC IDs are preserved as separate identifiers. Duplicate identifiers
+and missing BSP records reject the topology. The kernel checks the BSP's CPUID
+APIC ID against Limine's BSP ID and checks each AP's local CPUID APIC ID
+against its Limine record before bringing it online. x2APIC responses and APIC
+IDs above 255 are rejected because this bootstrap requests and configures
+xAPIC only. Limine parks APs until the kernel publishes each `goto_address`
+with release ordering; it provides a startup stack and enters
+with the same CPU machine state as the BSP, while the IDT is undefined. Each
+CPU then loads a private GDT and TSS and sets GS base to its static CPU record.
+The BSP loads the completed shared IDT; APs switch to a private restricted
+idle IDT and kernel stack, then publish ONLINE with release ordering. Their IDT
+only handles TLB shootdowns, its private timer heartbeat, and the APIC spurious
+vector; all other vectors halt the AP. The timer handler increments only that
+CPU's idle tick counter and sends EOI. It does not enter process wakeup,
+preemption, or scheduler code. The BSP waits with a one-second TSC deadline for
+every online AP to report at least one idle tick; failure is logged and does
+not convert a running AP to FAILED.
+`smp_current_cpu()` reads the self pointer at `GS:0`, validates it against the
+bounded CPU-record array, and returns the record only after an acquire load
+observes ONLINE. The BSP waits on acquire loads. ONLINE and timeout-to-FAILED
+are competing atomic state
+transitions, so a late AP cannot replace a timeout result. Failed starts do
+not prevent BSP boot.
+
+The TLB shootdown IPI reloads each online AP's current CR3, sends LAPIC EOI,
+and publishes an acknowledgement generation. The BSP serializes shootdowns,
+sends one targeted xAPIC IPI to each online AP, and waits for acknowledgements
+with a TSC deadline and bounded poll backstop. VMM mapping, unmapping, and
+active protection changes invalidate local translations and synchronously
+shoot down remote AP translations. A missing acknowledgement is fatal because
+returning could leave stale translations after a frame is freed. The QEMU test
+requires the acknowledgement marker; later boot-time mappings exercise the
+VMM integration.
+
+This remains an SMP foundation, not SMP scheduling. APs receive only the
+restricted local idle-timer interrupt and TLB shootdown interrupt. They do not
+schedule work, allocate memory, or enter shared kernel facilities. The scheduler and process globals,
+VMM address-space metadata, interrupt dispatch, device drivers, and the broader
+page-table lifecycle remain single-CPU only.
+The current-process pointer is stored in each CPU's SMP record, with a BSP-only
+fallback when SMP setup is unavailable. This removes that pointer as shared
+state but does not make the process list, process lifetime, or scheduler SMP
+safe; only the BSP runs process code in this milestone. The cooperative kernel
+thread scheduler's active run-queue pointer is also resolved from the current
+CPU record. Only the BSP gets a scheduler context; AP calls fail or return
+without using the BSP run queue. Per-CPU ready queues and task migration are
+not implemented. The active address-space pointer is tracked per CPU as well;
+APs start on the kernel address space. VMM metadata and page-table mutation
+remain single-CPU operations, so this tracking alone does not make address
+spaces safe to share or destroy while another CPU uses them. Destruction now
+rejects a space recorded active on any discovered CPU before freeing its user
+pages. A lifecycle spinlock serializes address-space activation, clone,
+protection changes, and destruction so a CPU cannot switch into a space while
+it is being torn down. Concurrent mapping operations and address-space metadata
+access are still single-CPU only; a broader VMM lock/ownership model is needed
+before AP scheduling.
+The global IDT and handler table are shared read-only after BSP initialization.
+The physical frame allocator now serializes bitmap, search cursor, and page
+count updates with an IRQ-saving spinlock. Its lock is non-recursive; NMI
+handlers must not acquire it, and contiguous allocation scans while holding it.
+The host `make spinlock-test` checks mutual exclusion under four pthreads but
+does not emulate CPU interrupt state. `make pmm-concurrency-test` drives page
+and contiguous allocation/free through the PMM concurrently and checks for
+overlap and free-count corruption. The heap serializes its allocator metadata,
+coalescing, and growth with an IRQ-saving lock. Its lock order is heap then VMM
+mapping then PMM; PMM does not call back into heap. Heap growth holds the lock
+while mapping pages. `make heap-concurrency-test` checks concurrent allocation,
+free, coalescing, and reuse against a simulated mapping backend. Heap growth
+still calls the single-CPU VMM, so concurrent page-table changes are unsafe.
+VMM address-space metadata and lifetime, concurrent page-table writers, device
+state, and process/scheduler structures remain single-CPU only. Mapping,
+unmapping, and active permission changes do issue remote TLB shootdowns.
+Activation, clone, protection, and destruction are serialized by the lifecycle
+lock; mapping operations and shared VMM metadata are not covered by it. Before
+scheduling on APs, VMM needs per-space mutation ownership and synchronized
+address-space registry/lifetime rules, plus safe external interrupt routing.
+The QEMU bootstrap check is `make smp-qemu-test`; it boots four CPUs and
+requires four online acknowledgements, unique logical/APIC IDs and CPU records,
+unique stack tops, a non-null shared kernel address-space pointer at idle entry,
+rejection of active-space destruction, and successful TLB shootdown acknowledgements.
+`make smp-shootdown-qemu-test` sends 32 serialized shootdown IPIs to each
+online AP and requires every round to be acknowledged before the guest reaches
+init.
+`make smp-single-qemu-test` verifies the BSP-only case;
+`make smp-max-qemu-test` exercises all eight supported slots.
+`make smp-over-limit-qemu-test` boots with nine CPUs and verifies topology
+rejection before AP release while the BSP proceeds to init.
+`make smp-topology-test` checks sparse APIC IDs, BSP remapping, duplicate and
+missing IDs, x2APIC rejection, capacity limits, and unchanged output on errors.
+`make smp-failure-qemu-test` builds a separate test kernel that
+injects a per-CPU initialization failure for logical AP 1 after setting up its
+GDT, TSS, IDT, and GS base. It must remain at `AP_ENTERED` and become FAILED;
+the other three CPUs must reach ONLINE and BSP continues. The fault hook is
+compiled out of normal kernel builds.
+`make smp-timeout-qemu-test` leaves logical AP 1 parked by Limine after the
+BSP records STARTING; it verifies the bounded TSC timeout marks that CPU
+FAILED without claiming AP entry, while the other APs reach ONLINE.
+`make smp-exception-qemu-test` injects `ud2` on AP 1 after local descriptor
+initialization. Its idle IDT must halt that AP without invoking shared
+interrupt dispatch; the BSP times it out while the other APs reach ONLINE.

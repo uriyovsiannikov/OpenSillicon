@@ -3,6 +3,7 @@
 
 #include "kernel/heap.h"
 #include "kernel/pmm.h"
+#include "kernel/spinlock.h"
 #include "kernel/vmm.h"
 
 #define PAGE_SIZE 4096ULL
@@ -18,6 +19,7 @@ struct heap_block {
 static uint64_t heap_start;
 static uint64_t heap_end;
 static bool initialized;
+static struct spinlock heap_lock = SPINLOCK_INITIALIZER;
 
 static uint64_t *
 footer(struct heap_block *block)
@@ -104,8 +106,8 @@ grow_heap(uint64_t minimum)
 	return true;
 }
 
-bool
-kheap_init(void)
+static bool
+kheap_init_locked(void)
 {
 	if (initialized || vmm_kernel_address_space() == NULL ||
 	    vmm_heap_start() >= vmm_heap_end())
@@ -116,8 +118,18 @@ kheap_init(void)
 	return true;
 }
 
-void *
-kheap_alloc(size_t size)
+bool
+kheap_init(void)
+{
+	uint64_t flags = spinlock_lock_irqsave(&heap_lock);
+	bool result = kheap_init_locked();
+
+	spinlock_unlock_irqrestore(&heap_lock, flags);
+	return result;
+}
+
+static void *
+kheap_alloc_locked(size_t size)
 {
 	uint64_t needed;
 	struct heap_block *block;
@@ -153,8 +165,18 @@ kheap_alloc(size_t size)
 	}
 }
 
-bool
-kheap_free(void *allocation)
+void *
+kheap_alloc(size_t size)
+{
+	uint64_t flags = spinlock_lock_irqsave(&heap_lock);
+	void *result = kheap_alloc_locked(size);
+
+	spinlock_unlock_irqrestore(&heap_lock, flags);
+	return result;
+}
+
+static bool
+kheap_free_locked(void *allocation)
 {
 	struct heap_block *block;
 	uint64_t block_address;
@@ -192,4 +214,14 @@ kheap_free(void *allocation)
 		}
 	}
 	return true;
+}
+
+bool
+kheap_free(void *allocation)
+{
+	uint64_t flags = spinlock_lock_irqsave(&heap_lock);
+	bool result = kheap_free_locked(allocation);
+
+	spinlock_unlock_irqrestore(&heap_lock, flags);
+	return result;
 }

@@ -33,6 +33,7 @@ typedef struct interrupt_frame *(*interrupt_handler)(
 	struct interrupt_frame *frame);
 
 void idt_init(void);
+void idt_load(void);
 bool interrupt_register_handler(uint8_t vector, interrupt_handler handler);
 struct interrupt_frame *interrupt_dispatch(struct interrupt_frame *frame);
 

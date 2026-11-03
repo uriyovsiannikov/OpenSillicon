@@ -2,6 +2,7 @@
 #include <stdint.h>
 
 #include "arch/x86_64/gdt.h"
+#include "kernel/smp.h"
 
 #define GDT_ENTRIES 7
 #define KERNEL_CODE_SELECTOR 0x08
@@ -92,11 +93,27 @@ gdt_init(void)
 void
 gdt_set_kernel_stack(uint64_t stack_top)
 {
-	tss.rsp0 = stack_top;
+	uint64_t base;
+	uint32_t low, high;
+	struct smp_cpu *cpu;
+	__asm__ volatile ("rdmsr" : "=a" (low), "=d" (high) : "c" (0xc0000101U));
+	base = ((uint64_t)high << 32) | low;
+	cpu = (struct smp_cpu *)(uintptr_t)base;
+	if (base != 0)
+		((struct tss64 *)cpu->tss)->rsp0 = stack_top;
+	else
+		tss.rsp0 = stack_top;
 }
 
 void
 gdt_restore_kernel_stack(void)
 {
-	tss.rsp0 = (uint64_t)(uintptr_t)(kernel_stack + sizeof(kernel_stack));
+	uint32_t low, high;
+	uint64_t base;
+	__asm__ volatile ("rdmsr" : "=a" (low), "=d" (high) : "c" (0xc0000101U));
+	base = ((uint64_t)high << 32) | low;
+	if (base != 0)
+		gdt_set_kernel_stack(((struct smp_cpu *)(uintptr_t)base)->stack_top);
+	else
+		gdt_set_kernel_stack((uint64_t)(uintptr_t)(kernel_stack + sizeof(kernel_stack)));
 }

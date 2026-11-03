@@ -8,6 +8,7 @@
 #include "kernel/log.h"
 #include "kernel/network_service.h"
 #include "kernel/pmm.h"
+#include "kernel/smp.h"
 #include "kernel/timer.h"
 #include "kernel/process.h"
 #include "kernel/syscall.h"
@@ -108,11 +109,21 @@ _Static_assert(_Alignof(struct process) >= 16,
 	"process FXSAVE state must be 16-byte aligned");
 
 static struct process *process_head;
-static struct process *current_process;
+static struct process *fallback_current_process;
 static uint64_t next_process_id = 1;
 static uint64_t user_preemptions;
 static uint64_t pipe_blocked_ticks;
 static bool initialized;
+
+static struct process **
+process_current_slot(void)
+{
+	struct smp_cpu *cpu = smp_current_cpu();
+
+	return cpu == NULL ? &fallback_current_process : &cpu->current_process;
+}
+
+#define current_process (*process_current_slot())
 #ifdef KERNEL_TEST_SHM_LIFECYCLE
 static uint64_t test_shm_reap_releases;
 static uint64_t test_shm_exec_releases;

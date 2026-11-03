@@ -62,6 +62,16 @@ idt_init(void)
 	__asm__ volatile ("lidt %0" : : "m" (pointer));
 }
 
+void
+idt_load(void)
+{
+	struct table_pointer pointer = {
+		.limit = sizeof(idt) - 1,
+		.base = (uint64_t)(uintptr_t)idt
+	};
+	__asm__ volatile ("lidt %0" : : "m" (pointer) : "memory");
+}
+
 bool
 interrupt_register_handler(uint8_t vector, interrupt_handler handler)
 {

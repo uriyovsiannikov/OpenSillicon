@@ -33,6 +33,7 @@ $(BUILD_DIR)/main.o: kernel/main.c include/kernel/boot.h include/kernel/log.h \
 	include/kernel/entropy.h \
 	include/kernel/rdseed.h \
 	include/kernel/virtio_rng.h \
+	include/kernel/smp.h \
 		include/arch/x86_64/ahci.h include/kernel/block.h \
 		include/kernel/block_silliconfs.h include/kernel/silliconfs.h \
 		include/kernel/devfs.h include/kernel/procfs.h \
@@ -63,12 +64,12 @@ $(BUILD_DIR)/virtio_rng.o: kernel/drivers/entropy/virtio_rng.c \
 	$(CC) $(KERNEL_CFLAGS) -DOPEN_SILLICON_KERNEL -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/pmm.o: kernel/mm/pmm.c include/kernel/pmm.h \
-		include/kernel/boot.h limine/limine.h | $(BUILD_DIR)
+		include/kernel/boot.h include/kernel/spinlock.h limine/limine.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/vmm.o: kernel/mm/vmm.c include/kernel/vmm.h \
 		include/kernel/pmm.h include/kernel/boot.h include/kernel/log.h \
-		include/kernel/shm.h \
+		include/kernel/shm.h include/kernel/smp.h include/kernel/spinlock.h \
 		limine/limine.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
@@ -85,7 +86,8 @@ $(BUILD_DIR)/shm.o: kernel/mm/shm.c include/kernel/shm.h \
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/heap.o: kernel/mm/heap.c include/kernel/heap.h \
-		include/kernel/vmm.h include/kernel/pmm.h | $(BUILD_DIR)
+		include/kernel/vmm.h include/kernel/pmm.h \
+		include/kernel/spinlock.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/log.o: kernel/core/log/log.c include/kernel/log.h include/kernel/tty.h | $(BUILD_DIR)
@@ -184,6 +186,7 @@ $(BUILD_DIR)/process.o: kernel/proc/process.c include/kernel/process.h \
 		include/kernel/syscall.h include/abi/syscall.h \
 		include/kernel/signal_state.h include/kernel/elf.h include/kernel/vmm.h include/kernel/heap.h \
 		include/kernel/pmm.h include/kernel/fd.h include/kernel/timer.h \
+		include/kernel/smp.h \
 		include/kernel/network_service.h \
 		include/arch/x86_64/gdt.h include/arch/x86_64/fpu.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
@@ -197,8 +200,21 @@ $(BUILD_DIR)/interrupts.o: kernel/arch/x86_64/interrupts/interrupts.c \
 		include/kernel/log.h include/kernel/process.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/gdt.o: kernel/arch/x86_64/cpu/gdt.c include/arch/x86_64/gdt.h | $(BUILD_DIR)
+$(BUILD_DIR)/gdt.o: kernel/arch/x86_64/cpu/gdt.c include/arch/x86_64/gdt.h \
+		include/kernel/smp.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/smp.o: kernel/arch/x86_64/cpu/smp.c include/kernel/smp.h \
+		include/arch/x86_64/interrupts.h include/arch/x86_64/lapic.h \
+		include/kernel/spinlock.h include/kernel/log.h include/kernel/vmm.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -Ilimine -c $< -o $@
+
+$(BUILD_DIR)/smp_topology.o: kernel/arch/x86_64/cpu/smp_topology.c \
+		include/kernel/smp.h limine/limine.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -Ilimine -c $< -o $@
+
+$(BUILD_DIR)/smp_asm.o: kernel/arch/x86_64/cpu/smp.S | $(BUILD_DIR)
+	$(CC) $(KERNEL_ASFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/fpu.o: kernel/arch/x86_64/cpu/fpu.c \
 		include/arch/x86_64/fpu.h include/kernel/log.h | $(BUILD_DIR)
@@ -310,6 +326,7 @@ $(BUILD_DIR)/timer.o: kernel/arch/x86_64/timer/timer.c \
 
 $(BUILD_DIR)/scheduler.o: kernel/sched/scheduler.c \
 		include/kernel/scheduler.h include/kernel/heap.h include/kernel/vmm.h \
+		include/kernel/smp.h \
 		include/kernel/log.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
@@ -340,7 +357,9 @@ acpica-check: $(ACPICA_OBJECTS)
 KERNEL_OBJECTS := $(BUILD_DIR)/main.o $(BUILD_DIR)/boot.o $(BUILD_DIR)/boot_entropy.o $(BUILD_DIR)/entropy.o $(BUILD_DIR)/random.o $(BUILD_DIR)/rdseed.o $(BUILD_DIR)/pmm.o \
 	$(BUILD_DIR)/virtio_rng.o \
 	$(BUILD_DIR)/vmm.o $(BUILD_DIR)/shm.o $(BUILD_DIR)/heap.o $(BUILD_DIR)/log.o \
-	$(BUILD_DIR)/gdt.o $(BUILD_DIR)/fpu.o $(BUILD_DIR)/lapic.o $(BUILD_DIR)/acpi.o \
+	$(BUILD_DIR)/gdt.o $(BUILD_DIR)/smp.o $(BUILD_DIR)/smp_topology.o \
+	$(BUILD_DIR)/smp_asm.o \
+	$(BUILD_DIR)/fpu.o $(BUILD_DIR)/lapic.o $(BUILD_DIR)/acpi.o \
 	$(BUILD_DIR)/ioapic.o $(BUILD_DIR)/ahci.o $(BUILD_DIR)/block.o \
 	$(BUILD_DIR)/block_silliconfs.o \
 	$(BUILD_DIR)/pci.o $(BUILD_DIR)/pci_resource.o $(BUILD_DIR)/dma.o \

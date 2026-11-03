@@ -5,6 +5,8 @@
 #include "kernel/errno.h"
 #include "kernel/heap.h"
 #include "kernel/pmm.h"
+#include "kernel/smp.h"
+#include "kernel/spinlock.h"
 #include "kernel/vmm.h"
 
 #define PAGE_SIZE 4096ULL
@@ -33,9 +35,10 @@ extern char __kernel_end[];
 static uint64_t hhdm_offset;
 static const struct limine_memmap_response *physical_memory_map;
 static struct address_space kernel_space;
-static struct address_space *active_space;
+static struct address_space *fallback_active_space;
 static struct address_space *address_spaces;
 static bool initialized;
+static struct spinlock address_space_lifecycle_lock = SPINLOCK_INITIALIZER;
 static bool unmap_user_page(struct address_space *space,
 	uint64_t virtual_address, uint64_t *physical_address, bool allow_private);
 #ifdef KERNEL_TEST_SHM_FORK_FAILURE
@@ -66,6 +69,37 @@ address_space_valid(const struct address_space *space)
 	return false;
 }
 
+static struct address_space **
+active_space_slot(void)
+{
+	struct smp_cpu *cpu = smp_current_cpu();
+
+	return cpu == NULL ? &fallback_active_space : &cpu->active_address_space;
+}
+
+static struct address_space *
+current_active_space(void)
+{
+	return __atomic_load_n(active_space_slot(), __ATOMIC_ACQUIRE);
+}
+
+static bool
+address_space_active_on_any_cpu(const struct address_space *space)
+{
+	size_t count = smp_discovered_count();
+
+	if (count == 0)
+		return __atomic_load_n(&fallback_active_space, __ATOMIC_ACQUIRE) == space;
+	for (size_t i = 0; i < count; i++) {
+		const struct smp_cpu *cpu = smp_cpu_at(i);
+
+		if (cpu != NULL && __atomic_load_n(&cpu->active_address_space,
+		    __ATOMIC_ACQUIRE) == space)
+			return true;
+	}
+	return false;
+}
+
 static uint64_t
 read_cr3(void)
 {
@@ -81,6 +115,15 @@ canonical(uint64_t address)
 	uint64_t upper = address >> 47;
 
 	return upper == 0 || upper == 0x1ffff;
+}
+
+static void
+shootdown_tlbs(void)
+{
+	if (!smp_tlb_shootdown_all()) {
+		klog("OpenSillicon panic: remote TLB shootdown failed\n");
+		kernel_halt();
+	}
 }
 
 static uint64_t *
@@ -191,7 +234,7 @@ vmm_init(const struct boot_info *info)
 	__asm__ volatile ("mov %%cr0, %%rax; or $0x10000, %%rax; mov %%rax, %%cr0"
 	    : : : "rax", "memory");
 	kernel_space.root_physical = read_cr3();
-	active_space = &kernel_space;
+	__atomic_store_n(&fallback_active_space, &kernel_space, __ATOMIC_RELEASE);
 	initialized = true;
 	return true;
 }
@@ -323,6 +366,7 @@ vmm_map_page(struct address_space *space, uint64_t virtual_address,
 		sync_kernel_mapping(virtual_address);
 	__asm__ volatile ("invlpg (%0)" : : "r" ((void *)(uintptr_t)virtual_address)
 	    : "memory");
+	shootdown_tlbs();
 	return true;
 }
 
@@ -404,6 +448,7 @@ unmap_shared_page(void *context, uint64_t virtual_address,
 	leaf_table[leaf_index] = 0;
 	__asm__ volatile ("invlpg (%0)" : : "r" ((void *)(uintptr_t)virtual_address)
 	    : "memory");
+	shootdown_tlbs();
 	return true;
 }
 
@@ -555,6 +600,7 @@ unmap_user_page(struct address_space *space, uint64_t virtual_address,
 	}
 	__asm__ volatile ("invlpg (%0)" : : "r" ((void *)(uintptr_t)virtual_address)
 	    : "memory");
+	shootdown_tlbs();
 	return true;
 }
 
@@ -953,6 +999,8 @@ vmm_private_protect(struct address_space *space, uint64_t base,
 	size_t first_page;
 	size_t page_count;
 	size_t i;
+	bool active_on_any_cpu;
+	uint64_t lock_flags;
 
 	if ((protection & VMM_PROT_EXEC) != 0)
 		return -EOPNOTSUPP;
@@ -1005,6 +1053,8 @@ vmm_private_protect(struct address_space *space, uint64_t base,
 		    (entry & PTE_ADDRESS) != mapping->physical_pages[first_page + i])
 			return -EINVAL;
 	}
+	lock_flags = spinlock_lock_irqsave(&address_space_lifecycle_lock);
+	active_on_any_cpu = address_space_active_on_any_cpu(space);
 
 	/* The commit loop only rewrites validated leaf entries; it cannot allocate. */
 	for (i = 0; i < page_count; i++) {
@@ -1025,10 +1075,13 @@ vmm_private_protect(struct address_space *space, uint64_t base,
 			entry |= PTE_WRITE;
 		leaf_table[leaf_index] = entry;
 		mapping->page_protections[first_page + i] = (uint8_t)protection;
-		if (active_space == space)
+		if (current_active_space() == space)
 			__asm__ volatile ("invlpg (%0)" : :
 			    "r" ((void *)(uintptr_t)address) : "memory");
 	}
+	if (active_on_any_cpu)
+		shootdown_tlbs();
+	spinlock_unlock_irqrestore(&address_space_lifecycle_lock, lock_flags);
 	return 0;
 }
 
@@ -1120,13 +1173,20 @@ address_space_create(struct address_space *space)
 bool
 address_space_activate(const struct address_space *space)
 {
+	uint64_t lock_flags = spinlock_lock_irqsave(&address_space_lifecycle_lock);
+	bool result = false;
+
 	if (!initialized || !address_space_valid(space) || space->root_physical == 0 ||
 	    (space->root_physical & (PAGE_SIZE - 1)) != 0 ||
 	    table_virtual(space->root_physical) == NULL)
-		return false;
+		goto out;
 	__asm__ volatile ("mov %0, %%cr3" : : "r" (space->root_physical) : "memory");
-	active_space = (struct address_space *)space;
-	return true;
+	__atomic_store_n(active_space_slot(), (struct address_space *)space,
+	    __ATOMIC_RELEASE);
+	result = true;
+out:
+	spinlock_unlock_irqrestore(&address_space_lifecycle_lock, lock_flags);
+	return result;
 }
 
 static bool
@@ -1451,6 +1511,7 @@ destroy_address_space_tables(struct address_space *space)
 
 	if (!initialized || !address_space_valid(space) || space->root_physical == 0 ||
 	    space->root_physical == kernel_space.root_physical ||
+	    address_space_active_on_any_cpu(space) ||
 	    space->root_physical == read_cr3() ||
 	    space->private_mappings != NULL)
 		return false;
@@ -1491,8 +1552,8 @@ destroy_address_space_tables(struct address_space *space)
 	return true;
 }
 
-bool
-address_space_destroy(struct address_space *space)
+static bool
+address_space_destroy_locked(struct address_space *space)
 {
 	uint64_t *root;
 	unsigned int i;
@@ -1516,6 +1577,16 @@ address_space_destroy(struct address_space *space)
 	if (!validate_shared_mappings(space) || !validate_private_mappings(space))
 		return false;
 	return destroy_address_space_tables(space);
+}
+
+bool
+address_space_destroy(struct address_space *space)
+{
+	uint64_t lock_flags = spinlock_lock_irqsave(&address_space_lifecycle_lock);
+	bool result = address_space_destroy_locked(space);
+
+	spinlock_unlock_irqrestore(&address_space_lifecycle_lock, lock_flags);
+	return result;
 }
 
 static bool
@@ -1930,14 +2001,16 @@ vmm_test_arm_shm_fork_failure(void)
 }
 #endif
 
-bool
-address_space_destroy_with_pages(struct address_space *space)
+static bool
+address_space_destroy_with_pages_locked(struct address_space *space)
 {
 	uint64_t *root;
 	unsigned int i;
 
 	if (!initialized || !address_space_valid(space) || space == &kernel_space ||
-	    space->root_physical == 0 || space->root_physical == read_cr3())
+	    space->root_physical == 0 ||
+	    address_space_active_on_any_cpu(space) ||
+	    space->root_physical == read_cr3())
 		return false;
 	root = table_virtual(space->root_physical);
 	if (root == NULL)
@@ -1966,6 +2039,16 @@ address_space_destroy_with_pages(struct address_space *space)
 	__asm__ volatile ("" : : : "memory");
 	shm_mapping_set_destroy(&space->shared_mappings);
 	return true;
+}
+
+bool
+address_space_destroy_with_pages(struct address_space *space)
+{
+	uint64_t lock_flags = spinlock_lock_irqsave(&address_space_lifecycle_lock);
+	bool result = address_space_destroy_with_pages_locked(space);
+
+	spinlock_unlock_irqrestore(&address_space_lifecycle_lock, lock_flags);
+	return result;
 }
 
 static bool
@@ -2065,8 +2148,8 @@ rollback_address_space_clone(struct address_space *space)
 	return true;
 }
 
-bool
-address_space_clone(const struct address_space *source,
+static bool
+address_space_clone_locked(const struct address_space *source,
 	struct address_space *destination)
 {
 	uint64_t *root;
@@ -2127,6 +2210,17 @@ fail:
 	return false;
 }
 
+bool
+address_space_clone(const struct address_space *source,
+	struct address_space *destination)
+{
+	uint64_t lock_flags = spinlock_lock_irqsave(&address_space_lifecycle_lock);
+	bool result = address_space_clone_locked(source, destination);
+
+	spinlock_unlock_irqrestore(&address_space_lifecycle_lock, lock_flags);
+	return result;
+}
+
 uint64_t
 vmm_hhdm_offset(void)
 {
@@ -2136,7 +2230,7 @@ vmm_hhdm_offset(void)
 struct address_space *
 vmm_active_address_space(void)
 {
-	return initialized ? active_space : NULL;
+	return initialized ? current_active_space() : NULL;
 }
 
 struct address_space *
