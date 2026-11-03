@@ -6,8 +6,8 @@
 
 #include "font.h"
 
-#define FONT_WIDTH 8U
-#define FONT_HEIGHT 16U
+#define FONT_WIDTH 12U
+#define FONT_HEIGHT 22U
 
 static const struct limine_framebuffer *active_framebuffer;
 static unsigned int framebuffer_columns;
@@ -147,6 +147,7 @@ framebuffer_text_draw(void *context, unsigned int terminal,
 	uint64_t origin_y;
 	unsigned int glyph_row;
 	unsigned int x;
+	unsigned int glyph;
 
 	(void)context;
 	if (active_framebuffer == NULL || terminal != terminal_active() ||
@@ -154,13 +155,15 @@ framebuffer_text_draw(void *context, unsigned int terminal,
 		return;
 	foreground = palette[cell.foreground & 15U];
 	background = palette[cell.background & 15U];
+	glyph = cell.character < 0x80U ? cell.character :
+	    cell.character >= 0xa0U ? 128U + cell.character - 0xa0U : 224U;
 	origin_x = (uint64_t)column * FONT_WIDTH;
 	origin_y = (uint64_t)row * FONT_HEIGHT;
 	for (glyph_row = 0; glyph_row < FONT_HEIGHT; glyph_row++) {
-		uint8_t bits = font8x16_basic[cell.character][glyph_row];
+		uint16_t bits = gallant12x22[glyph][glyph_row];
 
 		for (x = 0; x < FONT_WIDTH; x++) {
-			uint32_t color = (bits & (0x80U >> x)) != 0 ? foreground :
+			uint32_t color = (bits & (0x800U >> x)) != 0 ? foreground :
 			    background;
 
 			put_pixel(origin_x + x, origin_y + glyph_row, color);

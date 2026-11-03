@@ -120,7 +120,8 @@ $(BUILD_DIR)/keyboard.o: kernel/tty/keyboard.c \
 
 $(BUILD_DIR)/framebuffer.o: kernel/tty/framebuffer.c \
 		include/kernel/framebuffer.h include/kernel/terminal.h \
-		kernel/tty/font.h | $(BUILD_DIR)
+		kernel/tty/font.h kernel/tty/font/gallant.go \
+		kernel/tty/font/GALLANT-LICENSE.txt | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/framebuffer_device.o: kernel/tty/framebuffer_device.c \
@@ -395,14 +396,14 @@ $(BUILD_DIR)/kernel.elf: $(KERNEL_OBJECTS) kernel/arch/x86_64/boot/linker.ld
 iso: $(BUILD_DIR)/opensillicon.iso
 
 $(BUILD_DIR)/opensillicon.iso: $(BUILD_DIR)/kernel.elf $(BUILD_DIR)/initramfs.cpio \
-		limine/BOOTX64.EFI limine/limine-uefi-cd.bin
+		limine/BOOTX64.EFI limine/limine-uefi-cd.bin kernel/Makefile
 	rm -rf $(ISO_ROOT)
 	mkdir -p $(ISO_ROOT)/EFI/BOOT $(ISO_ROOT)/boot $(ISO_ROOT)/limine
 	cp limine/BOOTX64.EFI $(ISO_ROOT)/EFI/BOOT/BOOTX64.EFI
 	cp limine/limine-uefi-cd.bin $(ISO_ROOT)/limine/limine-uefi-cd.bin
 	cp $(BUILD_DIR)/kernel.elf $(ISO_ROOT)/boot/kernel.elf
 	cp $(BUILD_DIR)/initramfs.cpio $(ISO_ROOT)/boot/initramfs.cpio
-	printf 'timeout: 0\n/ OpenSillicon\n    protocol: limine\n    path: boot():/boot/kernel.elf\n    module_path: boot():/boot/initramfs.cpio\n    module_string: initramfs\n' > $(ISO_ROOT)/limine.conf
+	printf 'timeout: 0\n/ OpenSillicon\n    protocol: limine\n    path: boot():/boot/kernel.elf\n    module_path: boot():/boot/initramfs.cpio\n    module_string: initramfs\n    resolution: 1920x1080x32\n' > $(ISO_ROOT)/limine.conf
 	$(XORRISO) -as mkisofs -R -r -J \
 		--efi-boot limine/limine-uefi-cd.bin \
 		-efi-boot-part --efi-boot-image --protective-msdos-label \
