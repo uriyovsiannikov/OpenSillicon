@@ -5,7 +5,7 @@
   <img src="other/screenshot2.png" alt="OpenSillicon shell" width="620">
 </div>
 
-opensillicon is an experimental Unix-like operating system with a modular
+opensillicon is an experimental unix-like operating system with a modular
 monolithic kernel and a native userspace.
 
 ## what works
@@ -24,15 +24,15 @@ on a linux x86_64 host, install gcc, gnu binutils, gnu make, py3, qemu-x86 and `
 
 ```sh
 make
-make run       # UEFI QEMU, serial console
-make run-gui   # UEFI QEMU, graphical display
+make run       # serial console
+make run-gui   # graphical display
 ```
 
 ## source map
 
 - `kernel/` - kernel, architecture code, drivers, filesystems, and networking.
 - `user/` - init, shell, utilities, `libos`, and xorg components.
-- `include/` - kernel and userspace ABI headers.
+- `include/` - kernel and userspace abi headers.
 - `tests/` - host and qemu test harnesses.
 - `tools/` - image and filesystem build tools.
 
