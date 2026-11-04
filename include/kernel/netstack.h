@@ -18,6 +18,7 @@ struct netstack_config {
 	uint8_t mac[6];
 	uint8_t address[4];
 	uint8_t netmask[4];
+	uint8_t gateway[4];
 };
 
 struct netstack_arp_entry {
@@ -88,6 +89,10 @@ bool netstack_ipv4_classify(const uint8_t *packet, size_t available,
 	enum netstack_ipv4_protocol *protocol);
 bool netstack_arp_lookup(struct netstack *stack, const uint8_t address[4],
 	uint64_t now, uint8_t mac[6]);
+/* Resolves a destination to its on-link next hop, using the configured default
+ * gateway when the destination is outside the local subnet. */
+bool netstack_route_ipv4(const struct netstack *stack,
+	const uint8_t destination[4], uint8_t next_hop[4]);
 bool netstack_build_arp_request(const struct netstack *stack,
 	const uint8_t target[4], uint8_t *frame, size_t capacity,
 	size_t *frame_length);

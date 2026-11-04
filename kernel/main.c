@@ -659,7 +659,8 @@ virtio_rng_probe_done:
 				struct netstack_config network_config = {
 					.mac = {0x52, 0x54, 0x00, 0x15, 0x03, 0x01},
 					.address = {10, 15, 3, 1},
-					.netmask = {255, 255, 255, 0}
+					.netmask = {255, 255, 255, 0},
+					.gateway = {10, 15, 3, 2}
 				};
 				if (udp_socket_system_init(network_device,
 				    &network_config) != 0)
@@ -667,7 +668,7 @@ virtio_rng_probe_done:
 				else if (!network_service_init())
 					klog("OpenSillicon: deferred network service unavailable; syscall polling remains enabled\n");
 				else {
-					klog("OpenSillicon: static IPv4 UDP profile 10.15.3.1/24 initialized; bounded deferred polling enabled\n");
+					klog("OpenSillicon: static IPv4 profile 10.15.3.1/24 via 10.15.3.2 initialized; bounded deferred polling enabled\n");
 					if (!tcp_runtime_init())
 						klog("OpenSillicon: TCP core runtime owner unavailable; TCP remains disabled\n");
 					else

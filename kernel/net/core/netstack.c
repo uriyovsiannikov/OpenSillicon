@@ -144,6 +144,24 @@ on_link(const struct netstack *stack, const uint8_t address[4])
 }
 
 static bool
+valid_unicast_host(const struct netstack *stack, const uint8_t address[4])
+{
+	bool host_zero = true;
+	bool host_ones = true;
+
+	if (!valid_unicast_ipv4(address))
+		return false;
+	for (size_t i = 0; i < 4; i++) {
+		uint8_t host_mask = (uint8_t)~stack->config.netmask[i];
+		if ((address[i] & host_mask) != 0)
+			host_zero = false;
+		if ((address[i] & host_mask) != host_mask)
+			host_ones = false;
+	}
+	return !host_zero && !host_ones;
+}
+
+static bool
 valid_unicast_mac(const uint8_t mac[6])
 {
 	return !is_zero(mac, 6) && (mac[0] & 1U) == 0;
@@ -169,10 +187,37 @@ valid_netmask(const uint8_t mask[4])
 bool
 netstack_init(struct netstack *stack, const struct netstack_config *config)
 {
+	struct netstack candidate;
 	if (stack == NULL || config == NULL || !valid_unicast_mac(config->mac) ||
 	    !valid_unicast_ipv4(config->address) || !valid_netmask(config->netmask))
 		return false;
+	candidate = (struct netstack){.config = *config};
+	if (!is_zero(config->gateway, sizeof(config->gateway)) &&
+	    (!on_link(&candidate, config->gateway) ||
+	    !valid_unicast_host(&candidate, config->gateway) ||
+	    bytes_equal(config->gateway, config->address, 4)))
+		return false;
 	*stack = (struct netstack){.config = *config};
+	return true;
+}
+
+bool
+netstack_route_ipv4(const struct netstack *stack,
+	const uint8_t destination[4], uint8_t next_hop[4])
+{
+	const uint8_t *route;
+	if (stack == NULL || destination == NULL || next_hop == NULL ||
+	    !valid_unicast_ipv4(destination) ||
+	    bytes_equal(destination, stack->config.address, 4))
+		return false;
+	if (on_link(stack, destination) && valid_unicast_host(stack, destination))
+		route = destination;
+	else if (!is_zero(stack->config.gateway, sizeof(stack->config.gateway)))
+		route = stack->config.gateway;
+	else
+		return false;
+	for (size_t i = 0; i < 4; i++)
+		next_hop[i] = route[i];
 	return true;
 }
 
@@ -306,12 +351,13 @@ netstack_build_echo_request(const struct netstack *stack,
 	size_t *frame_length)
 {
 	size_t icmp_length;
+	uint8_t next_hop[4];
 	uint8_t *ip;
 	uint8_t *icmp;
 	if (stack == NULL || destination_mac == NULL || destination == NULL ||
 	    frame == NULL || frame_length == NULL ||
 	    !valid_unicast_mac(destination_mac) ||
-	    !valid_unicast_ipv4(destination) || !on_link(stack, destination) ||
+	    !netstack_route_ipv4(stack, destination, next_hop) ||
 	    (payload_length != 0 && payload == NULL) ||
 	    payload_length > NETSTACK_MTU - NETSTACK_IPV4_HEADER - 8)
 		return false;
@@ -344,13 +390,14 @@ netstack_build_udp_frame(const struct netstack *stack,
 	uint8_t *frame, size_t capacity, size_t *frame_length)
 {
 	size_t udp_length;
+	uint8_t next_hop[4];
 	uint8_t *ip;
 	uint8_t *udp;
 	uint16_t value;
 	if (stack == NULL || destination_mac == NULL || destination == NULL ||
 	    frame == NULL || frame_length == NULL || source_port == 0 ||
 	    destination_port == 0 || !valid_unicast_mac(destination_mac) ||
-	    !valid_unicast_ipv4(destination) || !on_link(stack, destination) ||
+	    !netstack_route_ipv4(stack, destination, next_hop) ||
 	    (payload_length != 0 && payload == NULL) ||
 	    payload_length > NETSTACK_UDP_MAX_PAYLOAD)
 		return false;
@@ -461,7 +508,7 @@ process_ipv4(struct netstack *stack, const uint8_t *frame, size_t length,
 	total = read_be16(ip + 2);
 	fragment = read_be16(ip + 6);
 	if ((fragment & 0xbfffU) != 0 || ip[8] == 0 ||
-	    !valid_unicast_ipv4(ip + 12) || !on_link(stack, ip + 12) ||
+	    !valid_unicast_ipv4(ip + 12) ||
 	    bytes_equal(ip + 12, stack->config.address, 4) ||
 	    !valid_unicast_mac(frame + 6) ||
 	    !bytes_equal(frame, stack->config.mac, 6) ||

@@ -445,17 +445,21 @@ udp_socket_poll(void)
 static int
 resolve_neighbor(const uint8_t address[4], uint8_t mac[6])
 {
+	uint8_t next_hop[4];
 	uint8_t request[NETSTACK_MAX_FRAME];
 	size_t request_length;
 	uint64_t start;
 	uint64_t flags = state_guard_enter();
-	bool found = netstack_arp_lookup(&protocol_stack, address,
+	bool routed = netstack_route_ipv4(&protocol_stack, address, next_hop);
+	bool found = routed && netstack_arp_lookup(&protocol_stack, next_hop,
 	    timer_ticks(), mac);
 	state_guard_leave(flags);
+	if (!routed)
+		return -EHOSTUNREACH;
 	if (found)
 		return 0;
 	flags = state_guard_enter();
-	if (!netstack_build_arp_request(&protocol_stack, address, request,
+	if (!netstack_build_arp_request(&protocol_stack, next_hop, request,
 	    sizeof(request), &request_length)) {
 		state_guard_leave(flags);
 		return -EHOSTUNREACH;
@@ -469,7 +473,7 @@ resolve_neighbor(const uint8_t address[4], uint8_t mac[6])
 		if (result < 0)
 			return result;
 		flags = state_guard_enter();
-		found = netstack_arp_lookup(&protocol_stack, address,
+		found = netstack_arp_lookup(&protocol_stack, next_hop,
 		    timer_ticks(), mac);
 		state_guard_leave(flags);
 		if (found)
@@ -482,28 +486,8 @@ resolve_neighbor(const uint8_t address[4], uint8_t mac[6])
 static bool
 icmp_destination_valid(const uint8_t address[4])
 {
-	bool all_zero = true;
-	bool all_ones = true;
-	bool host_zero = true;
-	bool host_ones = true;
-	for (size_t i = 0; i < 4; i++) {
-		uint8_t host_mask = (uint8_t)~protocol_stack.config.netmask[i];
-		if (address[i] != 0)
-			all_zero = false;
-		if (address[i] != 255)
-			all_ones = false;
-		if ((address[i] & host_mask) != 0)
-			host_zero = false;
-		if ((address[i] & host_mask) != host_mask)
-			host_ones = false;
-		if ((address[i] & protocol_stack.config.netmask[i]) !=
-		    (protocol_stack.config.address[i] &
-		    protocol_stack.config.netmask[i]))
-			return false;
-	}
-	return address[0] != 0 && address[0] < 224 && !all_zero &&
-	    !all_ones && !host_zero && !host_ones &&
-	    !address_is_local(address);
+	uint8_t next_hop[4];
+	return netstack_route_ipv4(&protocol_stack, address, next_hop);
 }
 
 int
