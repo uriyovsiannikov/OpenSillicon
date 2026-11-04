@@ -30,6 +30,7 @@ int isatty(int);
 int execvp(const char *, char *const []);
 int execlp(const char *, const char *, ...);
 int mkstemp(char *);
+int mkstemps(char *, int);
 int putenv(char *);
 int unlink(const char *);
 int gethostname(char *, size_t);

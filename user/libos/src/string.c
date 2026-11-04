@@ -69,3 +69,19 @@ size_t strspn(const char *text, const char *accept)
 	while (text[length] != '\0' && strchr(accept, text[length]) != NULL) length++;
 	return length;
 }
+
+char *strpbrk(const char *text, const char *accept)
+{
+    for (; *text; text++)
+        if (strchr(accept, *text)) return (char *)text;
+    return NULL;
+}
+
+char *strcasestr(const char *text, const char *needle)
+{
+    size_t length = strlen(needle);
+    if (length == 0) return (char *)text;
+    for (; *text; text++)
+        if (strncasecmp(text, needle, length) == 0) return (char *)text;
+    return NULL;
+}

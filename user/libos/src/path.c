@@ -63,3 +63,28 @@ realpath(const char *path, char *resolved)
 	memcpy(resolved, output, length + 1);
 	return resolved;
 }
+
+char *basename(char *path)
+{
+    static char dot[] = ".";
+    size_t length;
+    if (path == NULL || *path == '\0') return dot;
+    length = strlen(path);
+    while (length > 1 && path[length - 1] == '/') path[--length] = '\0';
+    char *slash = strrchr(path, '/');
+    return slash == NULL ? path : (slash == path && length == 1 ? path : slash + 1);
+}
+
+char *dirname(char *path)
+{
+    static char dot[] = ".";
+    if (path == NULL || *path == '\0') return dot;
+    size_t length = strlen(path);
+    while (length > 1 && path[length - 1] == '/') path[--length] = '\0';
+    char *slash = strrchr(path, '/');
+    if (slash == NULL) return dot;
+    while (slash > path && slash[-1] == '/') slash--;
+    if (slash == path) slash++;
+    *slash = '\0';
+    return path;
+}

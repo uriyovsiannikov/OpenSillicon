@@ -66,6 +66,8 @@ struct termios {
 #define ECHO 0x0008U
 #define ECHOE 0x0010U
 #define ECHOK 0x0020U
+#define ECHONL 0x0040U
+#define NOFLSH 0x0080U
 #define IEXTEN 0x8000U
 #define VINTR 0
 #define VQUIT 1
@@ -84,6 +86,8 @@ struct termios {
 #define TCSADRAIN 1
 #define TCSAFLUSH 2
 #define TCOFLUSH 1
+#define TCIFLUSH 0
+#define TCIOFLUSH 2
 #define _POSIX_VDISABLE ((cc_t)0)
 
 int tcgetattr(int, struct termios *);

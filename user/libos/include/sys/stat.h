@@ -29,6 +29,12 @@ _Static_assert(offsetof(struct stat, st_size) == 48, "libos stat size offset mis
 #define S_IFIFO 0010000
 #define S_IFLNK 0120000
 #define S_IXUSR 0100
+#define S_IRUSR 0400
+#define S_IWUSR 0200
+#define S_IRGRP 0040
+#define S_IWGRP 0020
+#define S_IROTH 0004
+#define S_IWOTH 0002
 #define S_IXGRP 0010
 #define S_ISREG(m) (((m) & S_IFMT) == S_IFREG)
 #define S_ISDIR(m) (((m) & S_IFMT) == S_IFDIR)
@@ -45,5 +51,6 @@ _Static_assert(offsetof(struct stat, st_size) == 48, "libos stat size offset mis
 int fstat(int, struct stat *);
 int stat(const char *, struct stat *);
 int fchmod(int, mode_t);
+int futimens(int, const struct timespec [2]);
 mode_t umask(mode_t);
 #endif

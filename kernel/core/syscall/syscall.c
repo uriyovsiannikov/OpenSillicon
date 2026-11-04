@@ -1428,7 +1428,7 @@ syscall_interrupt(struct interrupt_frame *frame)
 					frame->rax = 0;
 				break;
 			}
-			if (pty_is_object(object) &&
+			if ((pty_is_object(object) || fd_object_is_terminal(object)) &&
 			    (frame->rsi == TCGETS_REQUEST || frame->rsi == TCSETS_REQUEST)) {
 				struct syscall_termios {
 					uint32_t input_flags, output_flags, control_flags, local_flags;
@@ -1446,7 +1446,23 @@ syscall_interrupt(struct interrupt_frame *frame)
 					syscall_error(frame, ERRNO_EFAULT);
 					break;
 				}
-				result = pty_termios(object, &attributes, set);
+				if (pty_is_object(object))
+					result = pty_termios(object, &attributes, set);
+				else if (set)
+					result = tty_set_raw_mode((attributes.local_flags & 2U) == 0) ?
+					    0 : -ERRNO_ENOTTY;
+				else {
+					/* The native console exposes canonical/echo or raw input;
+					 * PTYs retain their more complete termios implementation. */
+					attributes = (struct syscall_termios){
+						.input_flags = tty_raw_mode() ? 0 : 0x100U,
+						.output_flags = 5U,
+						.control_flags = 0xb0U,
+						.local_flags = tty_raw_mode() ? 0 : 0xbU,
+						.control_chars = {3, 28, 127, 21, 4, 0, 1}
+					};
+					result = 0;
+				}
 				if (result != 0) {
 					syscall_error(frame, errno_from_kernel(result));
 					break;

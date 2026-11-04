@@ -13,7 +13,7 @@ else
 $(BUILD_DIR)/user_start.o: user/start.S user/include/os.h | $(BUILD_DIR)
 	$(CC) $(USER_ASFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/user_os.o: user/os.c user/include/os.h include/abi/syscall.h include/abi/framebuffer.h include/abi/input.h | $(BUILD_DIR)
+$(BUILD_DIR)/user_os.o: user/include/os.c user/include/os.h include/abi/syscall.h include/abi/framebuffer.h include/abi/input.h | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/user_path.o: user/path.c user/include/os.h | $(BUILD_DIR)
@@ -202,8 +202,13 @@ TINYX_SOURCES := $(shell find user/xorg/tinyx -type f ! -path '*/.git/*' -print)
 .PHONY: tinyx-build
 tinyx-build: $(TINYX_BINARY)
 
-$(TINYX_BINARY): $(TINYX_SOURCES) $(LIBOS_ARCHIVE) $(LIBZ_ARCHIVE) \
-		$(LIBFONTENC_ARCHIVE) $(LIBXFONT_ARCHIVE) $(LIBOS_BUILD_DIR)/crt0.o
+# Configure only when sources or the build configuration change. Runtime
+# archives are link inputs; changing libc must not regenerate the source tree.
+TINYX_CONFIG_STAMP := $(TINYX_BUILD_DIR)/.opensillicon-configured
+$(TINYX_CONFIG_STAMP): $(TINYX_SOURCES) user/Makefile mk/common.mk \
+        $(wildcard user/libos/include/*.h user/libos/include/sys/*.h) \
+        $(wildcard include/abi/*.h) user/c_linker.ld | $(LIBXFONT_ARCHIVE) \
+        $(LIBOS_ARCHIVE) $(LIBOS_BUILD_DIR)/crt0.o
 	mkdir -p $(TINYX_SOURCE_DIR) $(TINYX_BUILD_DIR)
 	tar --exclude=.git -cf - -C user/xorg/tinyx . | tar -xf - -C $(TINYX_SOURCE_DIR)
 	find $(TINYX_SOURCE_DIR) -name Makefile.am -exec touch {} +
@@ -217,14 +222,16 @@ $(TINYX_BINARY): $(TINYX_SOURCES) $(LIBOS_ARCHIVE) $(LIBZ_ARCHIVE) \
 			-Wl,-T,$(abspath user/c_linker.ld)' \
 		CPPFLAGS='$(TINYX_CPPFLAGS)' CFLAGS='$(TINYX_CFLAGS)' \
 		PKG_CONFIG_PATH='$(abspath $(LIBXFONT_BUILD_DIR))'$${PKG_CONFIG_PATH:+:"$$PKG_CONFIG_PATH"} \
-		ac_cv_func_readlink=no ac_cv_func_getifaddrs=no \
+		ac_cv_func_readlink=no \
 		ac_cv_lib_z_inflateInit2_=yes ac_cv_lib_m_hypot=yes \
 		$(abspath $(TINYX_SOURCE_DIR))/configure --host=x86_64-elf \
-		--enable-kdrive --enable-xopensillicon --disable-xfbdev \
-		--disable-xdmcp --disable-xdm-auth-1 --disable-xf86bigfont \
-		--disable-dbe --disable-dpms --disable-screensaver \
-		--disable-install-setuid --with-fontdir=/usr/share/fonts \
+		--enable-kdrive --enable-xopensillicon \
+				--with-fontdir=/usr/share/fonts \
 		--with-default-font-path=built-ins,/usr/share/fonts/misc
+	touch $@
+
+$(TINYX_BINARY): $(TINYX_CONFIG_STAMP) $(LIBOS_ARCHIVE) $(LIBZ_ARCHIVE) \
+        $(LIBFONTENC_ARCHIVE) $(LIBXFONT_ARCHIVE) $(LIBOS_BUILD_DIR)/crt0.o
 	$(MAKE) -C $(TINYX_BUILD_DIR)
 	touch $@
 
@@ -258,11 +265,20 @@ $(BUILD_DIR)/startx.elf: $(BUILD_DIR)/startx.o $(LIBOS_BUILD_DIR)/crt0.o $(LIBOS
 		$(BUILD_DIR)/startx.o $(LIBOS_ARCHIVE) -o $@
 
 .PHONY: x11-apps-ready
+.PHONY: nano-build
+NANO_SOURCES := $(shell find user/nano/src user/nano_port -type f ! -path '*/.git/*')
+nano-build: $(BUILD_DIR)/nano/nano
+
+$(BUILD_DIR)/nano/nano: $(NANO_SOURCES) tools/build_nano.sh $(LIBOS_ARCHIVE) \
+		$(LIBOS_BUILD_DIR)/crt0.o user/c_linker.ld
+	sh tools/build_nano.sh
+
 x11-apps-ready: $(TINYX_BINARY) $(LIBOS_ARCHIVE) $(LIBZ_ARCHIVE) \
 		$(LIBFONTENC_ARCHIVE) $(LIBXFONT_ARCHIVE)
 	sh tools/build_x11_if_needed.sh
 
 $(BUILD_DIR)/root.img: x11-apps-ready $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.elf \
+		$(BUILD_DIR)/nano/nano \
 		$(BUILD_DIR)/startx.elf \
 		$(BUILD_DIR)/populate_root \
 		other/img1.jpg \
@@ -271,12 +287,15 @@ $(BUILD_DIR)/root.img: x11-apps-ready $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.e
 		$(TINYX_BINARY) \
 		$(COREUTILS_ELFS) \
 		tools/mksilliconfs.py | $(BUILD_DIR)
-	python3 tools/mksilliconfs.py $@ --blocks 32768 --inodes 1024
-	$(BUILD_DIR)/populate_root $@ $(BUILD_DIR)/init.elf \
+	@set -eu; image_tmp=$$(mktemp '$@.tmp.XXXXXX'); \
+	trap 'rm -f "$$image_tmp"' EXIT HUP INT TERM; \
+	python3 tools/mksilliconfs.py "$$image_tmp" --blocks 32768 --inodes 1024; \
+	$(BUILD_DIR)/populate_root "$$image_tmp" $(BUILD_DIR)/init.elf \
 		$(BUILD_DIR)/shell.elf --tinyx $(TINYX_BINARY) \
 		--startx $(BUILD_DIR)/startx.elf \
 		--twm $(BUILD_DIR)/x11/twm/src/twm --xterm $(BUILD_DIR)/x11/xterm/xterm \
-		--xeyes $(BUILD_DIR)/x11/xeyes/xeyes --feh $(BUILD_DIR)/x11/feh/src/feh --coreutils \
+		--xeyes $(BUILD_DIR)/x11/xeyes/xeyes --feh $(BUILD_DIR)/x11/feh/src/feh \
+		--nano $(BUILD_DIR)/nano/nano --coreutils \
 		$(BUILD_DIR)/coreutils/ls.elf $(BUILD_DIR)/coreutils/cat.elf \
 		$(BUILD_DIR)/coreutils/echo.elf $(BUILD_DIR)/coreutils/pwd.elf \
 		$(BUILD_DIR)/coreutils/true.elf $(BUILD_DIR)/coreutils/false.elf \
@@ -287,6 +306,7 @@ $(BUILD_DIR)/root.img: x11-apps-ready $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.e
 		$(BUILD_DIR)/coreutils/dirname.elf $(BUILD_DIR)/coreutils/kill.elf \
 		$(BUILD_DIR)/coreutils/sleep.elf $(BUILD_DIR)/coreutils/which.elf \
 		$(BUILD_DIR)/coreutils/ps.elf $(BUILD_DIR)/coreutils/netdiag.elf \
-		$(BUILD_DIR)/coreutils/ping.elf
+		$(BUILD_DIR)/coreutils/ping.elf; \
+	mv -f "$$image_tmp" '$@'
 
 endif

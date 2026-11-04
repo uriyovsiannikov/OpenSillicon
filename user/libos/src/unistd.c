@@ -126,30 +126,37 @@ execlp(const char *file, const char *arg, ...)
 }
 
 int
-mkstemp(char *path)
+mkstemps(char *path, int suffix_length)
 {
 	static unsigned int sequence;
 	static const char digits[] = "0123456789abcdef";
 	size_t length, i;
 	unsigned int value;
 	int fd;
-	if (path == NULL) {
+	if (path == NULL || suffix_length < 0) {
 		errno = EINVAL;
 		return -1;
 	}
 	length = strlen(path);
-	if (length < 6 || strcmp(path + length - 6, "XXXXXX") != 0) {
+	if ((size_t)suffix_length > length || length - suffix_length < 6 ||
+	    strncmp(path + length - suffix_length - 6, "XXXXXX", 6) != 0) {
 		errno = EINVAL;
 		return -1;
 	}
-	value = ++sequence;
-	for (i = 0; i < 6; i++) {
-		path[length - 1 - i] = digits[value & 15U];
-		value = (value >> 4) ^ (value << 28);
+	for (unsigned int attempt = 0; attempt < 256; attempt++) {
+		value = ++sequence ^ ((unsigned int)getpid() << 8);
+		for (i = 0; i < 6; i++) {
+			path[length - suffix_length - 1 - i] = digits[value & 15U];
+			value >>= 4;
+		}
+		fd = open(path, O_RDWR | O_CREAT | O_EXCL, 0600);
+		if (fd >= 0 || errno != EEXIST)
+			return fd;
 	}
-	fd = open(path, O_RDWR | O_CREAT | O_EXCL, 0600);
-	return fd;
+	return -1;
 }
+
+int mkstemp(char *path) { return mkstemps(path, 0); }
 
 int
 usleep(unsigned int microseconds)

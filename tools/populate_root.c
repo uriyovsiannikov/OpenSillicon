@@ -69,10 +69,15 @@ add_file(const char *path, const char *host_path, uint32_t mode)
 	uint64_t offset = 0;
 	int error;
 
-	if (source == NULL)
-		return -errno;
+	if (source == NULL) {
+		int open_error = errno;
+		fprintf(stderr, "could not open %s for %s: %s\n",
+		    host_path, path, strerror(open_error));
+		return -open_error;
+	}
 	error = vfs_create_path(path, VNODE_REGULAR, mode, &node);
 	if (error != 0) {
+		fprintf(stderr, "could not create %s: error %d\n", path, error);
 		fclose(source);
 		return error;
 	}
@@ -84,6 +89,10 @@ add_file(const char *path, const char *host_path, uint32_t mode)
 			    &written);
 			if (error != 0 || written != amount) {
 				error = error != 0 ? error : -EIO;
+				fprintf(stderr, "could not populate %s from %s at offset "
+				    "%llu: error %d (wrote %zu of %zu bytes)\n",
+				    path, host_path, (unsigned long long)offset,
+				    error, written, amount);
 				break;
 			}
 			offset += written;
@@ -130,10 +139,11 @@ main(int argc, char **argv)
 	const char *xterm_path = NULL;
 	const char *xeyes_path = NULL;
 	const char *feh_path = NULL;
+	const char *nano_path = NULL;
 	int arg;
 
 	if (argc < 4) {
-		fprintf(stderr, "usage: %s image init-elf shell-elf [--libos elf] [--tinyx elf] [--startx elf] [--twm elf] [--xterm elf] [--xeyes elf] [--feh elf] [--coreutils coreutils...]\n", argv[0]);
+		fprintf(stderr, "usage: %s image init-elf shell-elf [--libos elf] [--tinyx elf] [--startx elf] [--twm elf] [--xterm elf] [--xeyes elf] [--feh elf] [--nano elf] [--coreutils coreutils...]\n", argv[0]);
 		return 2;
 	}
 	for (arg = 4; arg < argc; arg++) {
@@ -158,6 +168,9 @@ main(int argc, char **argv)
 		} else if (strcmp(argv[arg], "--feh") == 0 && arg + 1 < argc) {
 			if (feh_path != NULL) return 2;
 			feh_path = argv[++arg];
+		} else if (strcmp(argv[arg], "--nano") == 0 && arg + 1 < argc) {
+			if (nano_path != NULL) return 2;
+			nano_path = argv[++arg];
 		} else if (strcmp(argv[arg], "--coreutils") == 0) {
 			if (coreutils_start != 0) return 2;
 			coreutils_start = arg + 1;
@@ -262,6 +275,12 @@ main(int argc, char **argv)
 	    (error = add_file("/usr/share/feh/images/feh.png",
 	    "user/xorg/feh/share/images/feh.png", 0644)) != 0)) {
 		fprintf(stderr, "SilliconFS feh population failed: %d\n", error);
+		fclose(image);
+		return 1;
+	}
+	if (nano_path != NULL &&
+	    (error = add_file("/bin/nano", nano_path, 0755)) != 0) {
+		fprintf(stderr, "SilliconFS nano population failed: %d\n", error);
 		fclose(image);
 		return 1;
 	}

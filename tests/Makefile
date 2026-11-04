@@ -10,7 +10,26 @@ endif
 __dispatch:
 	+$(MAKE) -C $(ROOT_DIR) -f Makefile $(if $(strip $(MAKECMDGOALS)),$(MAKECMDGOALS),libos-qemu-test)
 else
+.PHONY: x11-build-cache-test
+x11-build-cache-test:
+	python3 tests/x11_build_cache_test.py
+
 .PHONY: framebuffer-device-test libos-math-test
+.PHONY: x86-copy-test
+.PHONY: ps2-mouse-test
+ps2-mouse-test: $(BUILD_DIR)/ps2_mouse_test
+	$<
+
+$(BUILD_DIR)/ps2_mouse_test: tests/ps2_mouse_test.c kernel/drivers/input/ps2_keyboard.c | $(BUILD_DIR)
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -ffunction-sections -fdata-sections \
+		-Iinclude $< -Wl,--gc-sections -o $@
+
+x86-copy-test: $(BUILD_DIR)/x86_copy_test
+	$<
+
+$(BUILD_DIR)/x86_copy_test: tests/x86_copy_test.c include/arch/x86_64/copy.h | $(BUILD_DIR)
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Iinclude $< -o $@
+
 framebuffer-device-test: $(BUILD_DIR)/framebuffer_device_test
 	$<
 
@@ -109,11 +128,68 @@ $(LIBOS_QEMU_BUILD_DIR)/libos-root.img: $(BUILD_DIR)/init.elf \
 		$(BUILD_DIR)/shell.elf --libos $(LIBOS_TEST)
 
 .PHONY: tinyx-qemu-test
+.PHONY: nano-qemu-test
+.PHONY: terminal-ansi-test
+terminal-ansi-test: $(BUILD_DIR)/terminal_ansi_test
+	$<
+
+$(BUILD_DIR)/terminal_ansi_test: tests/terminal_ansi_test.c kernel/tty/terminal.c include/kernel/terminal.h | $(BUILD_DIR)
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Iinclude \
+		$(filter %.c,$^) -o $@
+.PHONY: nano-libos-test
+nano-libos-test: $(BUILD_DIR)/nano_libos_test
+	$<
+
+$(BUILD_DIR)/nano_string_host.o: user/libos/src/string.c | $(BUILD_DIR)
+	$(CC) -std=c11 -O2 -fno-builtin -ffunction-sections -fdata-sections \
+		-Iuser/libos/include -Iinclude -Derrno=nano_host_errno \
+		-Dstrpbrk=os_strpbrk -Dstrcasestr=os_strcasestr -c $< -o $@
+
+$(BUILD_DIR)/nano_path_host.o: user/libos/src/path.c | $(BUILD_DIR)
+	$(CC) -std=c11 -O2 -fno-builtin -ffunction-sections -fdata-sections \
+		-Iuser/libos/include -Iinclude -Derrno=nano_host_errno \
+		-Dbasename=os_basename -Ddirname=os_dirname -c $< -o $@
+
+$(BUILD_DIR)/nano_libos_test: tests/nano_libos_test.c $(BUILD_DIR)/nano_string_host.o $(BUILD_DIR)/nano_path_host.o
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror $^ -Wl,--gc-sections -o $@
+
+nano-qemu-test: iso $(BUILD_DIR)/root.img
+	python3 tests/nano_qemu_test.py --qemu '$(QEMU)' \
+		--bios '$(OVMF_CODE)' --build-dir '$(BUILD_DIR)'
+
 tinyx-qemu-test: iso $(BUILD_DIR)/root.img
 	python3 tests/xorg_session_qemu_test.py --qemu '$(QEMU)' \
 		--bios '$(OVMF_CODE)' --build-dir '$(BUILD_DIR)'
 
 .PHONY: smp-qemu-test
+.PHONY: user-context-test
+user-context-test: $(BUILD_DIR)/user_context_test
+	$<
+
+$(BUILD_DIR)/user_context_test: tests/user_context_test.c tests/user_context_test.S \
+		kernel/arch/x86_64/context/user_entry.c kernel/arch/x86_64/context/user_entry.S \
+		include/arch/x86_64/user.h include/kernel/smp.h | $(BUILD_DIR)
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -pthread -Iinclude -Ilimine \
+		$(filter %.c %.S,$^) -o $@
+
+.PHONY: smp-scheduler-qemu-test
+SMP_SCHEDULER_BUILD_DIR ?= $(BUILD_DIR)/smp-scheduler
+SMP_SCHEDULER_EXTRA_CFLAGS ?=
+SMP_SCHEDULER_QEMU_ARGS ?=
+smp-scheduler-qemu-test: $(BUILD_DIR)/root.img
+	$(MAKE) BUILD_DIR=$(SMP_SCHEDULER_BUILD_DIR) \
+		KERNEL_CFLAGS='$(KERNEL_CFLAGS) -DKERNEL_TEST_SMP_SCHEDULER $(SMP_SCHEDULER_EXTRA_CFLAGS)' iso
+	python3 tests/smp_qemu_test.py --qemu '$(QEMU)' \
+		--bios '$(OVMF_CODE)' --build-dir '$(SMP_SCHEDULER_BUILD_DIR)' \
+		--root-image '$(BUILD_DIR)/root.img' --scheduler-test $(SMP_SCHEDULER_QEMU_ARGS)
+
+.PHONY: smp-scheduler-partial-qemu-test
+smp-scheduler-partial-qemu-test: $(BUILD_DIR)/root.img
+	$(MAKE) -o $(BUILD_DIR)/root.img smp-scheduler-qemu-test \
+		SMP_SCHEDULER_BUILD_DIR=$(BUILD_DIR)/smp-scheduler-partial \
+		SMP_SCHEDULER_EXTRA_CFLAGS=-DKERNEL_TEST_SMP_FAIL_INIT_LOGICAL_CPU=1 \
+		SMP_SCHEDULER_QEMU_ARGS='--failed-cpu 1 --expected-online 3'
+
 smp-qemu-test: iso $(BUILD_DIR)/root.img
 	python3 tests/smp_qemu_test.py --qemu '$(QEMU)' \
 		--bios '$(OVMF_CODE)' --build-dir '$(BUILD_DIR)'

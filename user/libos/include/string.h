@@ -1,5 +1,7 @@
 #ifndef LIBOS_STRING_H
 #define LIBOS_STRING_H
+char *strpbrk(const char *, const char *);
+char *strcasestr(const char *, const char *);
 #include <sys/types.h>
 void *memcpy(void *, const void *, size_t);
 void *memmove(void *, const void *, size_t);

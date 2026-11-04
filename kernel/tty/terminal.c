@@ -23,7 +23,10 @@
 enum parser_state {
 	PARSER_TEXT,
 	PARSER_ESCAPE,
-	PARSER_CSI
+	PARSER_CSI,
+	PARSER_CHARSET,
+	PARSER_OSC,
+	PARSER_OSC_ESCAPE
 };
 
 struct terminal_state {
@@ -34,10 +37,13 @@ struct terminal_state {
 	bool raw_mode;
 	uint8_t foreground;
 	uint8_t background;
+	bool reverse;
+	bool csi_private;
+	uint8_t last_character;
 	enum parser_state parser;
-	unsigned int parameters[2];
+	unsigned int parameters[16];
 	unsigned int parameter_count;
-	bool parameter_present[2];
+	bool parameter_present[16];
 	char line[TERMINAL_LINE_CAPACITY];
 	size_t line_length;
 	uint16_t input[TERMINAL_INPUT_CAPACITY];
@@ -163,9 +169,10 @@ put_character(struct terminal_state *terminal, uint8_t character)
 	}
 	terminal->cells[terminal->row][terminal->column] = (struct terminal_cell){
 		.character = character,
-		.foreground = terminal->foreground,
-		.background = terminal->background
+		.foreground = terminal->reverse ? terminal->background : terminal->foreground,
+		.background = terminal->reverse ? terminal->foreground : terminal->background
 	};
+	terminal->last_character = character;
 	draw_cell((unsigned int)(terminal - terminals), terminal->column,
 	    terminal->row);
 	if (terminal->column + 1 >= terminal_columns)
@@ -201,12 +208,21 @@ static void
 apply_csi(struct terminal_state *terminal, uint8_t final)
 {
 	unsigned int i;
+	unsigned int amount = parameter(terminal, 0, 1);
+	if (terminal->csi_private)
+		return; /* Consume DEC modes (cursor, alternate screen, paste) fully. */
 
 	switch (final) {
 	case 'J':
 		if (parameter(terminal, 0, 0) == 2)
 			clear_screen(terminal);
+		else if (parameter(terminal, 0, 0) == 0) {
+			clear_row(terminal, terminal->row, terminal->column);
+			for (i = terminal->row + 1; i < terminal_rows; i++)
+				clear_row(terminal, i, 0);
+		}
 		break;
+	case 'f':
 	case 'H':
 		terminal->row = parameter(terminal, 0, 1) - 1;
 		terminal->column = parameter(terminal, 1, 1) - 1;
@@ -221,6 +237,47 @@ apply_csi(struct terminal_state *terminal, uint8_t final)
 			terminal->wrap_pending = false;
 			clear_row(terminal, terminal->row, terminal->column);
 		}
+		else if (parameter(terminal, 0, 0) == 2)
+			clear_row(terminal, terminal->row, 0);
+		else if (parameter(terminal, 0, 0) == 1) {
+			for (i = 0; i <= terminal->column; i++) {
+				terminal->cells[terminal->row][i] = blank_cell(
+				    terminal->foreground, terminal->background);
+				draw_cell((unsigned int)(terminal - terminals), i, terminal->row);
+			}
+		}
+		break;
+	case 'A':
+		terminal->row = amount > terminal->row ? 0 : terminal->row - amount;
+		terminal->wrap_pending = false;
+		break;
+	case 'B':
+		terminal->row += amount;
+		if (terminal->row >= terminal_rows) terminal->row = terminal_rows - 1;
+		terminal->wrap_pending = false;
+		break;
+	case 'd':
+		terminal->row = amount > terminal_rows ? terminal_rows - 1 : amount - 1;
+		terminal->wrap_pending = false;
+		break;
+	case 'G':
+		terminal->column = amount > terminal_columns ? terminal_columns - 1 : amount - 1;
+		terminal->wrap_pending = false;
+		break;
+	case 'X':
+		if (amount > terminal_columns - terminal->column)
+			amount = terminal_columns - terminal->column;
+		for (i = terminal->column; i < terminal->column + amount; i++) {
+			terminal->cells[terminal->row][i] = blank_cell(
+			    terminal->foreground, terminal->background);
+			draw_cell((unsigned int)(terminal - terminals), i, terminal->row);
+		}
+		break;
+	case 'b':
+		if (amount > terminal_columns * terminal_rows)
+			amount = terminal_columns * terminal_rows;
+		if (terminal->last_character)
+			while (amount--) put_character(terminal, terminal->last_character);
 		break;
 	case 'C':
 		terminal->wrap_pending = false;
@@ -243,6 +300,15 @@ apply_csi(struct terminal_state *terminal, uint8_t final)
 			if (value == 0) {
 				terminal->foreground = 7;
 				terminal->background = 0;
+				terminal->reverse = false;
+			} else if (value == 7) {
+				terminal->reverse = true;
+			} else if (value == 27) {
+				terminal->reverse = false;
+			} else if (value == 39) {
+				terminal->foreground = 7;
+			} else if (value == 49) {
+				terminal->background = 0;
 			} else if (value >= 30 && value <= 37) {
 				terminal->foreground = value - 30;
 			} else if (value >= 40 && value <= 47) {
@@ -262,30 +328,47 @@ apply_csi(struct terminal_state *terminal, uint8_t final)
 static void
 write_byte(struct terminal_state *terminal, uint8_t byte)
 {
+	if (terminal->parser == PARSER_CHARSET) {
+		terminal->parser = PARSER_TEXT;
+		return;
+	}
+	if (terminal->parser == PARSER_OSC || terminal->parser == PARSER_OSC_ESCAPE) {
+		if (byte == 7 || (terminal->parser == PARSER_OSC_ESCAPE && byte == '\\'))
+			terminal->parser = PARSER_TEXT;
+		else
+			terminal->parser = byte == 0x1b ? PARSER_OSC_ESCAPE : PARSER_OSC;
+		return;
+	}
 	if (terminal->parser == PARSER_ESCAPE) {
 		terminal->parser = byte == '[' ? PARSER_CSI : PARSER_TEXT;
+		if (byte == '(' || byte == ')' || byte == '*' || byte == '+')
+			terminal->parser = PARSER_CHARSET;
+		if (byte == ']') terminal->parser = PARSER_OSC;
 		terminal->parameter_count = 1;
-		terminal->parameters[0] = 0;
-		terminal->parameters[1] = 0;
-		terminal->parameter_present[0] = false;
-		terminal->parameter_present[1] = false;
+		terminal->csi_private = false;
+		for (unsigned int i = 0; i < 16; i++) {
+			terminal->parameters[i] = 0;
+			terminal->parameter_present[i] = false;
+		}
 		return;
 	}
 	if (terminal->parser == PARSER_CSI) {
 		if (byte >= '0' && byte <= '9') {
 			unsigned int index = terminal->parameter_count - 1;
 
-			if (index < 2 && terminal->parameters[index] < 1000) {
+			if (index < 16 && terminal->parameters[index] < 1000) {
 				terminal->parameters[index] =
 				    terminal->parameters[index] * 10 + byte - '0';
 				terminal->parameter_present[index] = true;
 			}
-		} else if (byte == ';' && terminal->parameter_count < 2) {
-			terminal->parameter_count++;
+		} else if (byte == ';') {
+			if (terminal->parameter_count < 16) terminal->parameter_count++;
+		} else if (byte >= 0x3c && byte <= 0x3f) {
+			terminal->csi_private = true;
 		} else if (byte >= 0x40 && byte <= 0x7e) {
 			apply_csi(terminal, byte);
 			terminal->parser = PARSER_TEXT;
-		} else {
+		} else if (byte < 0x20 || byte > 0x3f) {
 			terminal->parser = PARSER_TEXT;
 		}
 		return;
@@ -563,6 +646,9 @@ terminal_key_event(struct terminal_key_event event)
 	else if (control_down && character >= 'A' && character <= 'Z')
 		character = (uint8_t)(character - 'A' + 1);
 	if (terminal->raw_mode) {
+		/* Raw terminals deliver Return as CR; Ctrl-J remains LF. */
+		if (event.scancode == KEY_ENTER)
+			character = '\r';
 		(void)queue_token(terminal, character);
 		return;
 	}

@@ -4,6 +4,7 @@
 #include <sys/types.h>
 
 typedef unsigned long sigset_t;
+typedef int sig_atomic_t;
 typedef void (*sighandler_t)(int);
 
 #define SIGHUP 1

@@ -15,6 +15,7 @@ monolithic kernel and a native userspace.
 - vfs with ramfs, initramfs, devfs, procfs, and the native SilliconFS.
 - f/b terminal, ps/2 keyboard, shell, and core utilities.
 - native `libos` runtime.
+- GNU nano text editor (`nano /tmp/example.txt`).
 - tinyx session with `twm`, `xterm`, and `xeyes`.
 - network stack components for ethernet, arp, ipv4, icmp, udp, and tcp.
 

@@ -11,9 +11,28 @@
 struct libos_FILE { int fd; int owned; int has_pushback; int eof; int error; unsigned char pushback; };
 static struct libos_FILE in_file={0,0,0,0,0,0},out_file={1,0,0,0,0,0},err_file={2,0,0,0,0,0};
 FILE *stdin=&in_file,*stdout=&out_file,*stderr=&err_file;
-static int parse_mode(const char*m,int create){if(!m)return -1;char op=m[0];if((m[1]=='\0')||((m[1]=='b'||m[1]=='t')&&m[2]=='\0')){if(op=='r')return O_RDONLY;if(op=='w')return O_WRONLY|(create?(O_CREAT|O_TRUNC):0);}return -1;}
+static int parse_mode(const char *mode, int create)
+{
+    int flags, plus = 0;
+    if (mode == NULL || *mode == '\0') return -1;
+    for (const char *p = mode + 1; *p; p++) {
+        if (*p == '+' && !plus) plus = 1;
+        else if (*p != 'b' && *p != 't') return -1;
+    }
+    switch (*mode) {
+    case 'r': flags = plus ? O_RDWR : O_RDONLY; break;
+    case 'w': flags = plus ? O_RDWR : O_WRONLY;
+        if (create) flags |= O_CREAT | O_TRUNC;
+        break;
+    case 'a': flags = (plus ? O_RDWR : O_WRONLY) | O_APPEND;
+        if (create) flags |= O_CREAT;
+        break;
+    default: return -1;
+    }
+    return flags;
+}
 FILE *fopen(const char*p,const char*m){int flags=parse_mode(m,1);if(flags<0){errno=EINVAL;return 0;}int fd=open(p,flags,0666);if(fd<0)return 0;FILE*f=malloc(sizeof(*f));if(!f){close(fd);return 0;}f->fd=fd;f->owned=1;f->has_pushback=f->eof=f->error=0;return f;}
-FILE *fdopen(int fd,const char*m){int flags=parse_mode(m,0);if(flags<0){errno=EINVAL;return 0;}int current=fcntl(fd,F_GETFL);if(current<0)return 0;if((flags==O_RDONLY&&(current&O_ACCMODE)==O_WRONLY)||(flags==O_WRONLY&&(current&O_ACCMODE)==O_RDONLY)){errno=EBADF;return 0;}FILE*f=malloc(sizeof(*f));if(!f)return 0;f->fd=fd;f->owned=1;f->has_pushback=f->eof=f->error=0;return f;}
+FILE *fdopen(int fd,const char*m){int flags=parse_mode(m,0);if(flags<0){errno=EINVAL;return 0;}int current=fcntl(fd,F_GETFL);if(current<0)return 0;if(((flags&O_ACCMODE)==O_RDONLY&&(current&O_ACCMODE)==O_WRONLY)||((flags&O_ACCMODE)==O_WRONLY&&(current&O_ACCMODE)==O_RDONLY)||((flags&O_ACCMODE)==O_RDWR&&(current&O_ACCMODE)!=O_RDWR)){errno=EBADF;return 0;}FILE*f=malloc(sizeof(*f));if(!f)return 0;f->fd=fd;f->owned=1;f->has_pushback=f->eof=f->error=0;return f;}
 int fileno(FILE*f){if(!f){errno=EINVAL;return -1;}return f->fd;}
 int fseek(FILE*f,long offset,int whence){if(!f){errno=EINVAL;return -1;}if(lseek(f->fd,offset,whence)<0)return -1;f->has_pushback=0;return 0;}
 long ftell(FILE*f){if(!f){errno=EINVAL;return -1;}return (long)lseek(f->fd,0,SEEK_CUR);}

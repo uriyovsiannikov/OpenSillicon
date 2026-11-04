@@ -54,6 +54,8 @@ static inline int __libos_toupper(int c)
 }
 
 #define isascii(c) __libos_ctype_ascii((unsigned char)(c))
+static inline int __libos_isblank(int c) { return c == ' ' || c == '\t'; }
+#define isblank(c) __libos_isblank(c)
 #define isupper(c) __libos_isupper((unsigned char)(c))
 #define islower(c) __libos_islower((unsigned char)(c))
 #define isdigit(c) __libos_isdigit((unsigned char)(c))
