@@ -5,6 +5,7 @@
 #include "kernel/devfs.h"
 #include "kernel/heap.h"
 #include "kernel/log.h"
+#include "kernel/random.h"
 #include "kernel/tty.h"
 
 #define DEVFS_EINVAL 22
@@ -16,8 +17,11 @@
 enum devfs_device {
 	DEVFS_DIRECTORY,
 	DEVFS_CONSOLE,
+	DEVFS_TTY,
 	DEVFS_NULL,
-	DEVFS_ZERO
+	DEVFS_ZERO,
+	DEVFS_RANDOM,
+	DEVFS_URANDOM
 };
 
 struct devfs_node {
@@ -132,12 +136,23 @@ devfs_read(struct vnode *vnode, uint64_t offset, void *buffer, size_t length,
 	node = devfs_from_vnode(vnode);
 	switch (node->device) {
 	case DEVFS_CONSOLE:
+	case DEVFS_TTY:
 		return tty_read(buffer, length, read_length);
 	case DEVFS_NULL:
 		return 0;
 	case DEVFS_ZERO:
 		if (length != 0)
 			memset(buffer, 0, length);
+		*read_length = length;
+		return 0;
+	case DEVFS_RANDOM:
+	case DEVFS_URANDOM:
+		if (length > KERNEL_RANDOM_MAX_REQUEST)
+			length = KERNEL_RANDOM_MAX_REQUEST;
+		if (length == 0)
+			return 0;
+		if (!kernel_random_bytes(buffer, length))
+			return -11;
 		*read_length = length;
 		return 0;
 	case DEVFS_DIRECTORY:
@@ -160,6 +175,7 @@ devfs_write(struct vnode *vnode, uint64_t offset, const void *buffer,
 	node = devfs_from_vnode(vnode);
 	switch (node->device) {
 	case DEVFS_CONSOLE:
+	case DEVFS_TTY:
 		if (!tty_write(buffer, length) || !serial_write(buffer, length))
 			return -DEVFS_EIO;
 		*write_length = length;
@@ -168,6 +184,9 @@ devfs_write(struct vnode *vnode, uint64_t offset, const void *buffer,
 	case DEVFS_ZERO:
 		*write_length = length;
 		return 0;
+	case DEVFS_RANDOM:
+	case DEVFS_URANDOM:
+		return -DEVFS_EINVAL;
 	case DEVFS_DIRECTORY:
 		return -DEVFS_EINVAL;
 	}
@@ -207,8 +226,11 @@ devfs_create_root(void)
 		enum devfs_device device;
 	} devices[] = {
 		{ "console", DEVFS_CONSOLE },
+		{ "tty", DEVFS_TTY },
 		{ "null", DEVFS_NULL },
-		{ "zero", DEVFS_ZERO }
+		{ "zero", DEVFS_ZERO },
+		{ "random", DEVFS_RANDOM },
+		{ "urandom", DEVFS_URANDOM }
 	};
 	struct devfs_node *root;
 	struct devfs_node **tail;

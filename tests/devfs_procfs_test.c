@@ -166,7 +166,9 @@ contains(const char *buffer, size_t length, const char *needle)
 static void
 test_devfs(void)
 {
-	static const char expected_names[][8] = { "console", "null", "zero" };
+	static const char expected_names[][8] = {
+		"console", "tty", "null", "zero", "random", "urandom"
+	};
 	struct fd_table table;
 	struct fd_metadata metadata;
 	struct vfs_dirent entry;
@@ -177,7 +179,7 @@ test_devfs(void)
 
 	fd_table_init_standard(&table);
 	directory = open_fd(&table, "/dev", VFS_O_RDONLY | VFS_O_DIRECTORY);
-	for (size_t i = 0; i < 3; i++) {
+	for (size_t i = 0; i < sizeof(expected_names) / sizeof(expected_names[0]); i++) {
 		assert(fd_readdir(&table, (uint64_t)directory, &entry) == 1);
 		assert(strcmp(entry.name, expected_names[i]) == 0);
 		assert(entry.type == VNODE_DEVICE);
@@ -256,6 +258,8 @@ test_procfs(void)
 	assert(strcmp(entry.name, "uptime") == 0 && entry.type == VNODE_REGULAR);
 	assert(fd_readdir(&table, (uint64_t)directory, &entry) == 1);
 	assert(strcmp(entry.name, "meminfo") == 0 && entry.type == VNODE_REGULAR);
+	assert(fd_readdir(&table, (uint64_t)directory, &entry) == 1);
+	assert(strcmp(entry.name, "cpuinfo") == 0 && entry.type == VNODE_REGULAR);
 	assert(vfs_lookup("/proc/meminfo", &lookup_node) == 0);
 	assert(lookup_node->inode == entry.inode);
 	vnode_put(lookup_node);

@@ -12,14 +12,15 @@
 #define PROCFS_ENOENT 2
 #define PROCFS_ENOMEM 12
 #define PROCFS_ENOTDIR 20
-#define PROCFS_CONTENT_MAX 128U
+#define PROCFS_CONTENT_MAX 512U
 #define PROCFS_TICK_HZ 100U
 
 enum procfs_entry {
 	PROCFS_ROOT,
 	PROCFS_SELF,
 	PROCFS_UPTIME,
-	PROCFS_MEMINFO
+	PROCFS_MEMINFO,
+	PROCFS_CPUINFO
 };
 
 struct procfs_node {
@@ -29,6 +30,7 @@ struct procfs_node {
 	uint64_t self_inode;
 	uint64_t uptime_inode;
 	uint64_t meminfo_inode;
+	uint64_t cpuinfo_inode;
 	char name[16];
 	char content[PROCFS_CONTENT_MAX];
 };
@@ -192,6 +194,80 @@ procfs_make_meminfo(uint64_t inode, struct procfs_node **result)
 	return 0;
 }
 
+static void
+procfs_cpuid(uint32_t leaf, uint32_t *eax, uint32_t *ebx, uint32_t *ecx,
+	uint32_t *edx)
+{
+	__asm__ volatile ("cpuid" : "=a" (*eax), "=b" (*ebx), "=c" (*ecx),
+	    "=d" (*edx) : "a" (leaf), "c" (0) : "memory");
+}
+
+static void
+procfs_store_word(char *buffer, size_t offset, uint32_t word)
+{
+	for (size_t i = 0; i < 4; i++)
+		buffer[offset + i] = (char)(word >> (i * 8U));
+}
+
+static int
+procfs_make_cpuinfo(uint64_t inode, struct procfs_node **result)
+{
+	struct procfs_node *node = procfs_allocate("cpuinfo", PROCFS_CPUINFO,
+	    VNODE_REGULAR, inode);
+	uint32_t max_leaf, eax, ebx, ecx, edx;
+	uint32_t signature = 0;
+	uint32_t base_family, family, base_model, model, stepping;
+	char vendor[13] = "UnknownCPU";
+	char brand[49] = "Unknown processor";
+	size_t brand_start = 0;
+
+	if (node == NULL)
+		return -PROCFS_ENOMEM;
+	procfs_cpuid(0, &max_leaf, &ebx, &ecx, &edx);
+	if (max_leaf >= 1U) {
+		procfs_cpuid(1, &signature, &ebx, &ecx, &edx);
+		procfs_store_word(vendor, 0, ebx);
+		procfs_store_word(vendor, 4, edx);
+		procfs_store_word(vendor, 8, ecx);
+		vendor[12] = '\0';
+	}
+	procfs_cpuid(0x80000000U, &max_leaf, &ebx, &ecx, &edx);
+	if (max_leaf >= 0x80000004U) {
+		for (uint32_t i = 0; i < 3U; i++) {
+			uint32_t leaf = 0x80000002U + i;
+			procfs_cpuid(leaf, &eax, &ebx, &ecx, &edx);
+			procfs_store_word(brand, i * 16U, eax);
+			procfs_store_word(brand, i * 16U + 4U, ebx);
+			procfs_store_word(brand, i * 16U + 8U, ecx);
+			procfs_store_word(brand, i * 16U + 12U, edx);
+		}
+		brand[48] = '\0';
+	}
+	for (size_t i = strlen(brand); i != 0 && brand[i - 1U] == ' '; i--)
+		brand[i - 1U] = '\0';
+	while (brand[brand_start] == ' ')
+		brand_start++;
+	base_family = (signature >> 8) & 0x0fU;
+	base_model = (signature >> 4) & 0x0fU;
+	family = base_family == 0x0fU ? base_family +
+	    ((signature >> 20) & 0xffU) : base_family;
+	model = (base_family == 0x06U || base_family == 0x0fU) ?
+	    base_model | (((signature >> 16) & 0x0fU) << 4) : base_model;
+	stepping = signature & 0x0fU;
+	if (!append_text(node, "processor: 0\nvendor_id: ") ||
+	    !append_text(node, vendor) || !append_text(node, "\ncpu family: ") ||
+	    !append_u64(node, family) || !append_text(node, "\nmodel: ") ||
+	    !append_u64(node, model) || !append_text(node, "\nstepping: ") ||
+	    !append_u64(node, stepping) || !append_text(node, "\nmodel name: ") ||
+	    !append_text(node, brand + brand_start) || !append_text(node, "\n")) {
+		vnode_put(&node->vnode);
+		return -PROCFS_EINVAL;
+	}
+	node->vnode.size = node->content_length;
+	*result = node;
+	return 0;
+}
+
 static int
 procfs_lookup(struct vnode *directory, const char *name, size_t name_length,
 	struct vnode **result)
@@ -231,6 +307,14 @@ procfs_lookup(struct vnode *directory, const char *name, size_t name_length,
 			*result = &meminfo->vnode;
 		return error;
 	}
+	if (name_length == 7 && memcmp(name, "cpuinfo", 7) == 0) {
+		struct procfs_node *cpuinfo;
+
+		error = procfs_make_cpuinfo(node->cpuinfo_inode, &cpuinfo);
+		if (error == 0)
+			*result = &cpuinfo->vnode;
+		return error;
+	}
 	return -PROCFS_ENOENT;
 }
 
@@ -263,7 +347,9 @@ static int
 procfs_readdir(struct vnode *directory, uint64_t index,
 	struct vfs_dirent *entry)
 {
-	static const char *const names[] = { "self", "uptime", "meminfo" };
+	static const char *const names[] = {
+		"self", "uptime", "meminfo", "cpuinfo"
+	};
 	struct procfs_node *node;
 
 	if (directory == NULL || directory->type != VNODE_DIRECTORY)
@@ -275,7 +361,8 @@ procfs_readdir(struct vnode *directory, uint64_t index,
 	node = procfs_from_vnode(directory);
 	memset(entry, 0, sizeof(*entry));
 	entry->inode = index == 0 ? node->self_inode :
-	    index == 1 ? node->uptime_inode : node->meminfo_inode;
+	    index == 1 ? node->uptime_inode : index == 2 ? node->meminfo_inode :
+	    node->cpuinfo_inode;
 	entry->mode = 0444U;
 	entry->type = VNODE_REGULAR;
 	memcpy(entry->name, names[index], strlen(names[index]) + 1U);
@@ -300,8 +387,9 @@ procfs_mount(const char *path)
 	root->self_inode = vfs_allocate_inode();
 	root->uptime_inode = vfs_allocate_inode();
 	root->meminfo_inode = vfs_allocate_inode();
+	root->cpuinfo_inode = vfs_allocate_inode();
 	if (root->self_inode == 0 || root->uptime_inode == 0 ||
-	    root->meminfo_inode == 0) {
+	    root->meminfo_inode == 0 || root->cpuinfo_inode == 0) {
 		vnode_put(&root->vnode);
 		return -PROCFS_ENOMEM;
 	}

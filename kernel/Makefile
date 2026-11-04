@@ -148,7 +148,7 @@ $(BUILD_DIR)/vfs.o: kernel/fs/vfs/vfs.c include/kernel/vfs.h \
 
 $(BUILD_DIR)/devfs.o: kernel/fs/devfs/devfs.c include/kernel/devfs.h \
 		include/kernel/vfs.h include/kernel/fd.h include/kernel/heap.h \
-		include/kernel/tty.h include/kernel/log.h | $(BUILD_DIR)
+		include/kernel/tty.h include/kernel/log.h include/kernel/random.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/procfs.o: kernel/fs/procfs/procfs.c include/kernel/procfs.h \
