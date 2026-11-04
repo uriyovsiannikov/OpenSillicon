@@ -306,7 +306,8 @@ $(BUILD_DIR)/root.img: x11-apps-ready $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.e
 		$(BUILD_DIR)/coreutils/dirname.elf $(BUILD_DIR)/coreutils/kill.elf \
 		$(BUILD_DIR)/coreutils/sleep.elf $(BUILD_DIR)/coreutils/which.elf \
 		$(BUILD_DIR)/coreutils/ps.elf $(BUILD_DIR)/coreutils/netdiag.elf \
-		$(BUILD_DIR)/coreutils/ping.elf; \
+		$(BUILD_DIR)/coreutils/ping.elf \
+		$(BUILD_DIR)/coreutils/poweroff.elf $(BUILD_DIR)/coreutils/reboot.elf; \
 	mv -f "$$image_tmp" '$@'
 
 endif

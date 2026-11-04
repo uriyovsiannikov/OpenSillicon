@@ -64,6 +64,8 @@ long u_exec_path_argv(const char *path, size_t argc,
 long u_waitpid(uint64_t pid, uint8_t *status)
 { return syscall3(SYSCALL_WAITPID, pid, (uintptr_t)status, 0); }
 long u_sleep_ticks(uint64_t ticks) { return syscall3(SYSCALL_SLEEP_TICKS, ticks, 0, 0); }
+long u_power_control(uint64_t command)
+{ return syscall3(SYSCALL_POWER_CONTROL, command, 0, 0); }
 long u_pipe(uint32_t descriptors[2])
 { return syscall3(SYSCALL_PIPE, (uintptr_t)descriptors, 0, 0); }
 long u_getpid(void) { return syscall3(SYSCALL_GETPID, 0, 0, 0); }

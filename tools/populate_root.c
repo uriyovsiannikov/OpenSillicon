@@ -288,7 +288,8 @@ main(int argc, char **argv)
 		static const char *names[] = {
 			"ls", "cat", "echo", "pwd", "true", "false", "clear", "uname",
 			"fetch", "head", "wc", "stat", "basename", "dirname",
-			"kill", "sleep", "which", "ps", "netdiag", "ping"
+			"kill", "sleep", "which", "ps", "netdiag", "ping",
+			"poweroff", "reboot"
 		};
 		int index;
 		if (coreutils_count !=

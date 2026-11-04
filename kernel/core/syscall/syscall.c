@@ -715,6 +715,29 @@ syscall_interrupt(struct interrupt_frame *frame)
 	case SYSCALL_GET_ABI_VERSION:
 		frame->rax = SYSCALL_ABI_VERSION;
 		break;
+	case SYSCALL_POWER_CONTROL:
+		if (frame->rdi == POWER_CONTROL_POWEROFF) {
+			/* QEMU/Bochs power-management ports. */
+			__asm__ volatile ("outw %0, %1" : : "a" ((uint16_t)0x2000),
+			    "Nd" ((uint16_t)0x0604));
+			__asm__ volatile ("outw %0, %1" : : "a" ((uint16_t)0x2000),
+			    "Nd" ((uint16_t)0xb004));
+		} else if (frame->rdi == POWER_CONTROL_REBOOT) {
+			uint8_t reset = 0x02;
+			__asm__ volatile ("outb %0, %1" : : "a" (reset),
+			    "Nd" ((uint16_t)0x0cf9));
+			for (volatile unsigned int delay = 0; delay < 100000; delay++)
+				__asm__ volatile ("pause");
+			reset = 0x06;
+			__asm__ volatile ("outb %0, %1" : : "a" (reset),
+			    "Nd" ((uint16_t)0x0cf9));
+		} else {
+			syscall_error(frame, ERRNO_EINVAL);
+			break;
+		}
+		/* If firmware did not act, stop this CPU instead of returning success. */
+		for (;;)
+			__asm__ volatile ("cli; hlt" : : : "memory");
 	case SYSCALL_FRAMEBUFFER_INFO:
 		{
 			struct os_framebuffer_info info;

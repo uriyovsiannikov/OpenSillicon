@@ -23,6 +23,8 @@
 #define U_TIOCSRAW 0x4f530001U
 #define U_TIOCCANON 0x4f530002U
 #define U_ICMP_ECHO_PAYLOAD_MAX 32U
+#define U_POWER_CONTROL_POWEROFF 1U
+#define U_POWER_CONTROL_REBOOT 2U
 
 struct u_sigaction {
 	uint64_t handler;
@@ -99,6 +101,7 @@ long u_exec_path_argv(const char *path, size_t argc,
 	const char *const argv[]);
 long u_waitpid(uint64_t pid, uint8_t *status);
 long u_sleep_ticks(uint64_t ticks);
+long u_power_control(uint64_t command);
 long u_pipe(uint32_t descriptors[2]);
 long u_getpid(void);
 long u_process_snapshot(struct u_process_info *entries, size_t capacity);
