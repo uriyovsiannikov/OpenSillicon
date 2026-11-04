@@ -422,7 +422,8 @@ udp_socket_poll(void)
 		    netstack_process_frame_ex(&protocol_stack, data, length,
 		    timer_ticks(), generated, sizeof(generated), &generated_length,
 		    &view, &icmp);
-		if (event == NETSTACK_UDP_DATAGRAM) {
+		if (event == NETSTACK_UDP_DATAGRAM &&
+		    view.payload_length <= UDP_SOCKET_PAYLOAD_LIMIT) {
 			for (size_t i = 0; i < UDP_SOCKET_LIMIT; i++) {
 				struct udp_socket_state *state = &sockets[i];
 				struct udp_queue_entry *entry;

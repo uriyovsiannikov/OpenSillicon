@@ -128,7 +128,7 @@ udp_checksum(const uint8_t source[4], const uint8_t destination[4],
 static bool
 valid_unicast_ipv4(const uint8_t address[4])
 {
-	return !is_zero(address, 4) && address[0] < 224 &&
+	return address[0] != 0 && address[0] != 127 && address[0] < 224 &&
 	    !(address[0] == 255 && address[1] == 255 &&
 	    address[2] == 255 && address[3] == 255);
 }
@@ -210,7 +210,9 @@ netstack_route_ipv4(const struct netstack *stack,
 	    !valid_unicast_ipv4(destination) ||
 	    bytes_equal(destination, stack->config.address, 4))
 		return false;
-	if (on_link(stack, destination) && valid_unicast_host(stack, destination))
+	if (on_link(stack, destination) && !valid_unicast_host(stack, destination))
+		return false;
+	if (on_link(stack, destination))
 		route = destination;
 	else if (!is_zero(stack->config.gateway, sizeof(stack->config.gateway)))
 		route = stack->config.gateway;
@@ -464,7 +466,7 @@ process_arp(struct netstack *stack, const uint8_t *frame, size_t length,
 		return NETSTACK_IGNORED;
 	operation = read_be16(arp + 6);
 	if ((operation != ARP_OPERATION_REQUEST && operation != ARP_OPERATION_REPLY) ||
-	    !valid_unicast_mac(arp + 8) || !valid_unicast_ipv4(arp + 14) ||
+	    !valid_unicast_mac(arp + 8) || !valid_unicast_host(stack, arp + 14) ||
 	    bytes_equal(arp + 8, stack->config.mac, 6) ||
 	    !on_link(stack, arp + 14) || !bytes_equal(frame + 6, arp + 8, 6) ||
 	    (operation == ARP_OPERATION_REQUEST &&
@@ -523,6 +525,7 @@ process_ipv4(struct netstack *stack, const uint8_t *frame, size_t length,
 		udp_length = read_be16(udp + 4);
 		if (udp_length < 8 || udp_length !=
 		    ip_length - NETSTACK_IPV4_HEADER ||
+		    udp_length - 8 > NETSTACK_UDP_MAX_PAYLOAD ||
 		    (read_be16(udp + 6) != 0 &&
 		    udp_checksum(ip + 12, ip + 16, udp, udp_length) != 0))
 			return NETSTACK_IGNORED;

@@ -316,4 +316,13 @@ libos-qemu-test: libos-build
 		-no-reboot -no-shutdown; status=$$?; test $$status -eq 124
 	grep -F 'OpenSillicon: libos fixture exited with status zero' \
 		$(LIBOS_QEMU_BUILD_DIR)/serial.log
+
+.PHONY: netstack-security-test
+NETSTACK_TEST_CC ?= clang
+netstack-security-test: $(BUILD_DIR)/netstack_security_test
+	$<
+
+$(BUILD_DIR)/netstack_security_test: tests/netstack_security_test.c kernel/net/core/netstack.c kernel/net/tcp/tcp_wire.c include/kernel/netstack.h include/kernel/tcp_wire.h | $(BUILD_DIR)
+	$(NETSTACK_TEST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -Iinclude tests/netstack_security_test.c kernel/net/core/netstack.c kernel/net/tcp/tcp_wire.c -o $@
+
 endif
