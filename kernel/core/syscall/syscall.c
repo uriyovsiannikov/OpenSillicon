@@ -7,6 +7,8 @@
 #include "arch/x86_64/user.h"
 #include "kernel/fd.h"
 #include "kernel/errno.h"
+#include "kernel/heap.h"
+#include "kernel/module.h"
 #include "kernel/log.h"
 #include "kernel/pipe.h"
 #include "kernel/process.h"
@@ -154,6 +156,23 @@ static uint64_t
 errno_from_kernel(int error)
 {
 	return error < 0 ? (uint64_t)(-error) : ERRNO_EINVAL;
+}
+
+static uint64_t
+errno_from_module(enum kernel_module_error error)
+{
+	switch (error) {
+	case KERNEL_MODULE_OK: return 0;
+	case KERNEL_MODULE_NO_MEMORY: return 12U;
+	case KERNEL_MODULE_ALREADY_LOADED: return 17U;
+	case KERNEL_MODULE_NOT_FOUND: return 2U;
+	case KERNEL_MODULE_BUSY: return 16U;
+	case KERNEL_MODULE_INIT_FAILED: return 6U;
+	case KERNEL_MODULE_IO_ERROR: return 5U;
+	case KERNEL_MODULE_UNSUPPORTED:
+	case KERNEL_MODULE_UNSUPPORTED_RELOCATION: return 95U;
+	default: return ERRNO_EINVAL;
+	}
 }
 
 static int
@@ -1157,6 +1176,115 @@ syscall_interrupt(struct interrupt_frame *frame)
 			}
 			if (result != 0)
 				syscall_error(frame, errno_from_kernel(result));
+			else
+				frame->rax = 0;
+		}
+		break;
+	case SYSCALL_KLDLOAD:
+		{
+			char path[VFS_PATH_MAX], canonical[VFS_PATH_MAX];
+			char name[KERNEL_MODULE_NAME_MAX + 1U];
+			struct os_credentials credentials;
+			struct vnode *node = NULL;
+			struct fd_object *file = NULL;
+			void *image = NULL;
+			size_t image_size, offset = 0, name_length;
+			int result;
+			enum kernel_module_error module_error;
+			if (!process_current_credentials(&credentials) ||
+			    credentials.effective_uid != 0) {
+				syscall_error(frame, 1U);
+				break;
+			}
+			result = copy_user_string(frame->rdi, path, sizeof(path));
+			if (result == 0)
+				result = process_resolve_path(path, canonical,
+				    sizeof(canonical));
+			if (result == 0)
+				result = vfs_lookup_as(canonical, 0, 0, &node);
+			if (result != 0) {
+				syscall_error(frame, errno_from_kernel(result));
+				break;
+			}
+			if (node->type != VNODE_REGULAR || node->size == 0 ||
+			    node->size > 8U * 1024U * 1024U || node->size > SIZE_MAX) {
+				vnode_put(node);
+				syscall_error(frame, ERRNO_EINVAL);
+				break;
+			}
+			image_size = (size_t)node->size;
+			vnode_put(node);
+			name_length = strlen(canonical);
+			while (name_length != 0 && canonical[name_length - 1U] != '/')
+				name_length--;
+			{
+				size_t begin = name_length;
+				name_length = strlen(canonical) - begin;
+				if (name_length > 3U &&
+				    canonical[begin + name_length - 3U] == '.' &&
+				    canonical[begin + name_length - 2U] == 'k' &&
+				    canonical[begin + name_length - 1U] == 'o')
+					name_length -= 3U;
+				if (name_length == 0 || name_length > KERNEL_MODULE_NAME_MAX) {
+					syscall_error(frame, ERRNO_EINVAL);
+					break;
+				}
+				memcpy(name, canonical + begin, name_length);
+				name[name_length] = '\0';
+			}
+			result = vfs_open_as(canonical, VFS_O_RDONLY, 0, 0, 0, &file);
+			if (result != 0) {
+				syscall_error(frame, errno_from_kernel(result));
+				break;
+			}
+			image = kheap_alloc(image_size);
+			if (image == NULL) {
+				fd_object_put(file);
+				syscall_error(frame, ERRNO_ENOMEM);
+				break;
+			}
+			while (offset < image_size) {
+				size_t amount = 0;
+				result = fd_object_read(file, (uint8_t *)image + offset,
+				    image_size - offset, &amount);
+				if (result != 0 || amount == 0)
+					break;
+				offset += amount;
+			}
+			fd_object_put(file);
+			if (result != 0 || offset != image_size) {
+				(void)kheap_free(image);
+				syscall_error(frame, result == 0 ? 5U :
+				    errno_from_kernel(result));
+				break;
+			}
+			module_error = kernel_module_load(name, image, image_size);
+			(void)kheap_free(image);
+			if (module_error != KERNEL_MODULE_OK)
+				syscall_error(frame, errno_from_module(module_error));
+			else
+				frame->rax = 0;
+		}
+		break;
+	case SYSCALL_KLDUNLOAD:
+		{
+			char name[KERNEL_MODULE_NAME_MAX + 1U];
+			struct os_credentials credentials;
+			enum kernel_module_error module_error;
+			int result;
+			if (!process_current_credentials(&credentials) ||
+			    credentials.effective_uid != 0) {
+				syscall_error(frame, 1U);
+				break;
+			}
+			result = copy_user_string(frame->rdi, name, sizeof(name));
+			if (result != 0) {
+				syscall_error(frame, (uint64_t)-result);
+				break;
+			}
+			module_error = kernel_module_unload(name);
+			if (module_error != KERNEL_MODULE_OK)
+				syscall_error(frame, errno_from_module(module_error));
 			else
 				frame->rax = 0;
 		}

@@ -291,6 +291,7 @@ x11-apps-ready: $(TINYX_BINARY) $(LIBOS_ARCHIVE) $(LIBZ_ARCHIVE) \
 	sh tools/build_x11_if_needed.sh
 
 $(BUILD_DIR)/root.img: x11-apps-ready $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.elf \
+		$(MODULE_OBJECTS) \
 		$(BUILD_DIR)/nano/nano \
 		$(BUILD_DIR)/startx.elf \
 		$(BUILD_DIR)/populate_root \
@@ -308,7 +309,7 @@ $(BUILD_DIR)/root.img: x11-apps-ready $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.e
 		--startx $(BUILD_DIR)/startx.elf \
 		--twm $(BUILD_DIR)/x11/twm/src/twm --xterm $(BUILD_DIR)/x11/xterm/xterm \
 		--xeyes $(BUILD_DIR)/x11/xeyes/xeyes --feh $(BUILD_DIR)/x11/feh/src/feh \
-		--nano $(BUILD_DIR)/nano/nano --coreutils \
+		--nano $(BUILD_DIR)/nano/nano --module $(BUILD_DIR)/modules/hello.ko --coreutils \
 		$(BUILD_DIR)/coreutils/ls.elf $(BUILD_DIR)/coreutils/cat.elf \
 		$(BUILD_DIR)/coreutils/echo.elf $(BUILD_DIR)/coreutils/pwd.elf \
 		$(BUILD_DIR)/coreutils/true.elf $(BUILD_DIR)/coreutils/false.elf \
@@ -321,7 +322,9 @@ $(BUILD_DIR)/root.img: x11-apps-ready $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.e
 		$(BUILD_DIR)/coreutils/ps.elf $(BUILD_DIR)/coreutils/netdiag.elf \
 		$(BUILD_DIR)/coreutils/ping.elf \
 		$(BUILD_DIR)/coreutils/poweroff.elf $(BUILD_DIR)/coreutils/reboot.elf \
-		$(BUILD_DIR)/coreutils/host.elf; \
+		$(BUILD_DIR)/coreutils/host.elf \
+		$(BUILD_DIR)/coreutils/kldstat.elf $(BUILD_DIR)/coreutils/kldload.elf \
+		$(BUILD_DIR)/coreutils/kldunload.elf; \
 	mv -f "$$image_tmp" '$@'
 
 endif

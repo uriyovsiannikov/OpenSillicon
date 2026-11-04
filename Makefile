@@ -3,6 +3,7 @@
 OPEN_SILLICON_ROOT := $(CURDIR)
 include mk/common.mk
 include kernel/Makefile
+include kernel/module/Makefile
 include user/Makefile
 include tests/Makefile
 

@@ -38,7 +38,7 @@ USER_CFLAGS := -std=c11 -O2 -ffreestanding -fno-builtin -fno-stack-protector \
 	-fno-pic -fno-pie -m64 -mno-red-zone -mcmodel=small \
 	-Wall -Wextra -Werror -Iinclude -Iuser
 
-COREUTILS := ls cat echo pwd true false clear uname fetch head wc stat basename dirname kill sleep which ps netdiag ping poweroff reboot host
+COREUTILS := ls cat echo pwd true false clear uname fetch head wc stat basename dirname kill sleep which ps netdiag ping poweroff reboot host kldstat kldload kldunload
 COREUTILS_ELFS := $(addprefix $(BUILD_DIR)/coreutils/,$(addsuffix .elf,$(COREUTILS)))
 
 ACPICA_ROOT := kernel/arch/x86_64/firmware/acpica/source

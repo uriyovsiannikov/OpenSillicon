@@ -224,9 +224,14 @@ validate_layout(const struct boot_info *info)
 		return false;
 	if (info->hhdm_offset < HEAP_END && HEAP_BASE < hhdm_end)
 		return false;
+	if (info->hhdm_offset < VMM_MODULE_ARENA_END &&
+	    VMM_MODULE_ARENA_START < hhdm_end)
+		return false;
 	if (kernel_end <= kernel_start ||
 	    (kernel_start < VMALLOC_END && VMALLOC_BASE < kernel_end) ||
-	    (kernel_start < HEAP_END && HEAP_BASE < kernel_end))
+	    (kernel_start < HEAP_END && HEAP_BASE < kernel_end) ||
+	    (kernel_start < VMM_MODULE_ARENA_END &&
+	    VMM_MODULE_ARENA_START < kernel_end))
 		return false;
 	return true;
 }
@@ -386,7 +391,9 @@ vmm_map_page(struct address_space *space, uint64_t virtual_address,
 	if ((flags & VMM_USER) == 0 &&
 	    (virtual_address < KERNEL_BASE ||
 	    !((virtual_address >= VMALLOC_BASE && virtual_address < VMALLOC_END) ||
-	    (virtual_address >= HEAP_BASE && virtual_address < HEAP_END))))
+	    (virtual_address >= HEAP_BASE && virtual_address < HEAP_END) ||
+	    (virtual_address >= VMM_MODULE_ARENA_START &&
+	    virtual_address < VMM_MODULE_ARENA_END))))
 		return false;
 	if (kernel_mapping)
 		kernel_lock_flags = spinlock_lock_irqsave(&kernel_mapping_lock);
@@ -610,7 +617,9 @@ unmap_user_page(struct address_space *space, uint64_t virtual_address,
 	    (virtual_address >= USER_END && virtual_address < KERNEL_BASE) ||
 	    (virtual_address >= KERNEL_BASE &&
 	    !((virtual_address >= VMALLOC_BASE && virtual_address < VMALLOC_END) ||
-	    (virtual_address >= HEAP_BASE && virtual_address < HEAP_END))))
+	    (virtual_address >= HEAP_BASE && virtual_address < HEAP_END) ||
+	    (virtual_address >= VMM_MODULE_ARENA_START &&
+	    virtual_address < VMM_MODULE_ARENA_END))))
 		return false;
 	if (virtual_address < KERNEL_BASE && space == &kernel_space)
 		return false;
@@ -2369,6 +2378,18 @@ uint64_t
 vmm_vmalloc_device_end(void)
 {
 	return VMALLOC_END;
+}
+
+uint64_t
+vmm_module_arena_start(void)
+{
+	return VMM_MODULE_ARENA_START;
+}
+
+uint64_t
+vmm_module_arena_end(void)
+{
+	return VMM_MODULE_ARENA_END;
 }
 
 bool

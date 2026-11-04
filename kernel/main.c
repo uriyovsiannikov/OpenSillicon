@@ -26,6 +26,8 @@
 #include "kernel/fd.h"
 #include "kernel/syscall.h"
 #include "kernel/elf.h"
+#include "kernel/module.h"
+#include "kernel/driver_api.h"
 #include "kernel/process.h"
 #include "kernel/vfs.h"
 #include "kernel/devfs.h"
@@ -536,6 +538,11 @@ _start(void)
 		kernel_halt();
 	}
 	klog_status("heap", true, NULL);
+	if (!kernel_driver_api_export()) {
+		klog_status("kernel module exports", false, "export registration failed");
+		kernel_halt();
+	}
+	klog_status("kernel module exports", true, "driver API 1.0");
 	if (!tty_init(info.framebuffer)) {
 		klog_status("console", false, "terminal initialization failed");
 		kernel_halt();

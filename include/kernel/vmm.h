@@ -35,6 +35,11 @@ struct address_space {
 /* The top 1 GiB of vmalloc is reserved for bounded PCI MMIO leases. */
 #define VMM_DEVICE_WINDOW_SIZE (1ULL << 30)
 
+/* A 1 GiB kernel-module arena placed close enough to kernel text for x86-64
+ * PC-relative relocations to reach exported kernel symbols. */
+#define VMM_MODULE_ARENA_START 0xffffffffa0000000ULL
+#define VMM_MODULE_ARENA_END 0xffffffffe0000000ULL
+
 #define VMM_WRITE 0x01U
 #define VMM_USER 0x02U
 #define VMM_EXEC 0x04U
@@ -138,6 +143,8 @@ uint64_t vmm_vmalloc_start(void);
 uint64_t vmm_vmalloc_end(void);
 uint64_t vmm_vmalloc_device_start(void);
 uint64_t vmm_vmalloc_device_end(void);
+uint64_t vmm_module_arena_start(void);
+uint64_t vmm_module_arena_end(void);
 /* Accepts a range wholly covered by Limine RESERVED memory or wholly absent
  * from the memory map; all overlaps with described RAM/boot memory are denied. */
 bool vmm_physical_range_mmio_safe(uint64_t physical_address, uint64_t length);

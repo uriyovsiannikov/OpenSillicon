@@ -20,7 +20,7 @@ $(BUILD_DIR)/main.o: kernel/main.c include/kernel/boot.h include/kernel/log.h \
 		include/kernel/timer.h include/kernel/scheduler.h include/kernel/smp.h \
 		include/arch/x86_64/lapic.h include/arch/x86_64/interrupts.h \
 		include/arch/x86_64/user.h include/kernel/fd.h include/kernel/syscall.h \
-		include/kernel/elf.h include/kernel/process.h include/kernel/vfs.h \
+		include/kernel/elf.h include/kernel/module.h include/kernel/process.h include/kernel/vfs.h \
 		include/arch/x86_64/acpi.h include/arch/x86_64/ioapic.h \
 		include/arch/x86_64/pci.h \
 		include/kernel/dma.h \
@@ -154,7 +154,7 @@ $(BUILD_DIR)/devfs.o: kernel/fs/devfs/devfs.c include/kernel/devfs.h \
 
 $(BUILD_DIR)/procfs.o: kernel/fs/procfs/procfs.c include/kernel/procfs.h \
 		include/kernel/vfs.h include/kernel/process.h include/kernel/timer.h \
-		include/kernel/heap.h include/kernel/pmm.h | $(BUILD_DIR)
+		include/kernel/heap.h include/kernel/pmm.h include/kernel/module.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/ramfs.o: kernel/fs/ramfs/ramfs.c include/kernel/vfs.h \
@@ -174,6 +174,7 @@ $(BUILD_DIR)/syscall.o: kernel/core/syscall/syscall.c include/kernel/syscall.h \
 		include/abi/syscall.h include/abi/select.h \
 		include/kernel/fd.h include/kernel/vmm.h include/kernel/log.h \
 		include/kernel/process.h include/kernel/vfs.h include/kernel/udp_socket.h \
+		include/kernel/module.h include/kernel/heap.h \
 		include/kernel/icmp_echo.h include/kernel/unix_socket.h \
 		include/kernel/network_service.h \
 		include/kernel/framebuffer_device.h include/abi/framebuffer.h \
@@ -183,6 +184,14 @@ $(BUILD_DIR)/syscall.o: kernel/core/syscall/syscall.c include/kernel/syscall.h \
 
 $(BUILD_DIR)/elf.o: kernel/proc/elf.c include/kernel/elf.h include/kernel/vmm.h \
 		include/kernel/heap.h include/kernel/pmm.h include/kernel/shm.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/module.o: kernel/module/module.c include/kernel/module.h | $(BUILD_DIR)
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/module_loader.o: kernel/module/loader.c include/kernel/module.h \
+		include/kernel/vmm.h include/kernel/pmm.h include/kernel/heap.h \
+		include/kernel/spinlock.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/process.o: kernel/proc/process.c include/kernel/process.h \
@@ -387,6 +396,8 @@ KERNEL_OBJECTS := $(BUILD_DIR)/main.o $(BUILD_DIR)/boot.o $(BUILD_DIR)/boot_entr
 	$(BUILD_DIR)/user_entry.o \
 	$(BUILD_DIR)/user_entry_c.o \
 	$(BUILD_DIR)/elf.o \
+	$(BUILD_DIR)/module.o \
+	$(BUILD_DIR)/module_loader.o $(BUILD_DIR)/driver_api.o \
 	$(BUILD_DIR)/process.o \
 	$(BUILD_DIR)/signal_state.o \
 	$(BUILD_DIR)/string.o $(BUILD_DIR)/vfs.o $(BUILD_DIR)/ramfs.o \
@@ -419,4 +430,7 @@ endif
 
 $(BUILD_DIR)/pty.o: kernel/tty/pty.c include/kernel/pty.h include/kernel/pipe.h \
 		include/kernel/fd.h
+	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
+
+$(BUILD_DIR)/driver_api.o: kernel/module/driver_api.c | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
