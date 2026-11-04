@@ -2075,7 +2075,7 @@ syscall_interrupt(struct interrupt_frame *frame)
 					syscall_error(frame, ETIMEDOUT);
 					return frame;
 				}
-				__asm__ volatile ("pause" : : : "memory");
+				timer_wait_for_interrupt();
 			}
 			if (datagram.length > frame->rdx) {
 				syscall_error(frame, EMSGSIZE);

@@ -68,3 +68,14 @@ timer_ap_initial_count(void)
 	return __atomic_load_n(&initialized, __ATOMIC_ACQUIRE) ?
 	    ap_initial_count : 0;
 }
+
+void
+timer_wait_for_interrupt(void)
+{
+	uint64_t flags;
+	__asm__ volatile ("pushfq; popq %0; cli" : "=r" (flags) : : "memory");
+	if (__atomic_load_n(&initialized, __ATOMIC_ACQUIRE))
+		__asm__ volatile ("sti; hlt; cli" : : : "memory");
+	if ((flags & (1ULL << 9)) != 0)
+		__asm__ volatile ("sti" : : : "memory");
+}

@@ -545,7 +545,7 @@ resolve_neighbor(const uint8_t address[4], uint8_t mac[6])
 		state_guard_leave(flags);
 		if (found)
 			return 0;
-		__asm__ volatile ("pause" : : : "memory");
+		timer_wait_for_interrupt();
 	}
 		return -ETIMEDOUT;
 }
@@ -651,7 +651,7 @@ network_icmp_echo(struct icmp_echo_request *request)
 		result = udp_socket_poll();
 		if (result < 0 && result != -EAGAIN)
 			break;
-		__asm__ volatile ("pause" : : : "memory");
+		timer_wait_for_interrupt();
 	}
 finish:
 	flags = state_guard_enter();
