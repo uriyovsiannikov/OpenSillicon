@@ -13,6 +13,7 @@
 #define DNS_PACKET_MAX 512U
 #define DNS_PORT 53U
 #define DNS_ANSWER_LIMIT 8U
+#define LIBOS_UDP_PAYLOAD_MAX 512U
 
 struct resolver_endpoint {
 	uint8_t address[4];
@@ -164,13 +165,14 @@ dns_lookup_a(const char *name, uint8_t addresses[DNS_ANSWER_LIMIT][4],
 	uint8_t response[DNS_PACKET_MAX];
 	uint8_t encoded_name[256];
 	uint8_t server[4];
-	struct resolver_endpoint destination = {.port = DNS_PORT};
-	struct resolver_endpoint source = {0};
+	struct sockaddr_in destination = {0};
+	struct sockaddr_in source = {0};
+	socklen_t source_length = sizeof(source);
 	size_t query_length = 12;
 	size_t encoded_length = 0;
 	uint16_t identifier = (uint16_t)((uint32_t)getpid() * 257U +
 	    ++dns_sequence);
-	long descriptor;
+	int descriptor;
 	long result;
 
 	*address_count = 0;
@@ -188,23 +190,25 @@ dns_lookup_a(const char *name, uint8_t addresses[DNS_ANSWER_LIMIT][4],
 	dns_write_u16(query + query_length, 1);
 	dns_write_u16(query + query_length + 2U, 1);
 	query_length += 4U;
-	memcpy(destination.address, server, sizeof(server));
-	descriptor = __libos_call(SYSCALL_UDP_SOCKET, AF_INET, SOCK_DGRAM,
-	    IPPROTO_UDP, 0, 0, 0);
+	destination.sin_family = AF_INET;
+	destination.sin_port = htons(DNS_PORT);
+	destination.sin_addr.s_addr = htonl(((uint32_t)server[0] << 24) |
+	    ((uint32_t)server[1] << 16) | ((uint32_t)server[2] << 8) | server[3]);
+	descriptor = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 	if (descriptor < 0)
 		return EAI_AGAIN;
-	result = __libos_call(SYSCALL_UDP_SENDTO, descriptor, (long)query,
-	    (long)query_length, (long)&destination, 0, 0);
+	result = sendto(descriptor, query, query_length, 0,
+	    (struct sockaddr *)&destination, sizeof(destination));
 	if (result < 0) {
-		(void)close((int)descriptor);
+		(void)close(descriptor);
 		return EAI_AGAIN;
 	}
-	result = __libos_call(SYSCALL_UDP_RECVFROM, descriptor, (long)response,
-	    sizeof(response), (long)&source, 0, 0);
-	(void)close((int)descriptor);
+	result = recvfrom(descriptor, response, sizeof(response), 0,
+	    (struct sockaddr *)&source, &source_length);
+	(void)close(descriptor);
 	if (result < 12 || (size_t)result > sizeof(response) ||
-	    memcmp(source.address, server, sizeof(server)) != 0 ||
-	    source.port != DNS_PORT || dns_read_u16(response) != identifier ||
+	    source.sin_addr.s_addr != destination.sin_addr.s_addr ||
+	    source.sin_port != htons(DNS_PORT) || dns_read_u16(response) != identifier ||
 	    (dns_read_u16(response + 2) & 0xf800U) != 0x8000U ||
 	    (dns_read_u16(response + 2) & 0x0200U) != 0 ||
 	    dns_read_u16(response + 4) != 1)
@@ -430,6 +434,15 @@ recv(int fd, void *buffer, size_t length, int flags)
 int
 socket(int domain, int type, int protocol)
 {
+	if (domain == AF_INET) {
+		if (type != SOCK_DGRAM ||
+		    (protocol != 0 && protocol != IPPROTO_UDP)) {
+			errno = EPROTONOSUPPORT;
+			return -1;
+		}
+		return (int)__libos_call(SYSCALL_UDP_SOCKET, domain, type,
+		    IPPROTO_UDP, 0, 0, 0);
+	}
 	return (int)__libos_call(SYSCALL_UNIX_SOCKET, domain, type, protocol,
 	    0, 0, 0);
 }
@@ -437,8 +450,92 @@ socket(int domain, int type, int protocol)
 int
 bind(int fd, const struct sockaddr *address, socklen_t length)
 {
+	if (address != NULL && address->sa_family == AF_INET) {
+		const struct sockaddr_in *internet_address =
+		    (const struct sockaddr_in *)address;
+		struct resolver_endpoint endpoint;
+		uint32_t host_address;
+		if (length < sizeof(*internet_address)) {
+			errno = EINVAL;
+			return -1;
+		}
+		host_address = ntohl(internet_address->sin_addr.s_addr);
+		endpoint.address[0] = (uint8_t)(host_address >> 24);
+		endpoint.address[1] = (uint8_t)(host_address >> 16);
+		endpoint.address[2] = (uint8_t)(host_address >> 8);
+		endpoint.address[3] = (uint8_t)host_address;
+		endpoint.port = ntohs(internet_address->sin_port);
+		return (int)__libos_call(SYSCALL_UDP_BIND, fd, (long)&endpoint,
+		    sizeof(endpoint), 0, 0, 0);
+	}
 	return (int)__libos_call(SYSCALL_UNIX_BIND, fd, (long)address, length,
 	    0, 0, 0);
+}
+
+ssize_t
+sendto(int fd, const void *buffer, size_t length, int flags,
+	const struct sockaddr *destination, socklen_t destination_length)
+{
+	const struct sockaddr_in *internet_address =
+	    (const struct sockaddr_in *)destination;
+	struct resolver_endpoint endpoint;
+	uint32_t host_address;
+	if (flags != 0) {
+		errno = EOPNOTSUPP;
+		return -1;
+	}
+	if (destination == NULL || destination->sa_family != AF_INET ||
+	    destination_length < sizeof(*internet_address) ||
+	    (length != 0 && buffer == NULL)) {
+		errno = EINVAL;
+		return -1;
+	}
+	host_address = ntohl(internet_address->sin_addr.s_addr);
+	endpoint.address[0] = (uint8_t)(host_address >> 24);
+	endpoint.address[1] = (uint8_t)(host_address >> 16);
+	endpoint.address[2] = (uint8_t)(host_address >> 8);
+	endpoint.address[3] = (uint8_t)host_address;
+	endpoint.port = ntohs(internet_address->sin_port);
+	return (ssize_t)__libos_call(SYSCALL_UDP_SENDTO, fd, (long)buffer,
+	    (long)length, (long)&endpoint, 0, 0);
+}
+
+ssize_t
+recvfrom(int fd, void *buffer, size_t length, int flags,
+	struct sockaddr *source, socklen_t *source_length)
+{
+	struct resolver_endpoint endpoint;
+	long result;
+	if (flags != 0) {
+		errno = EOPNOTSUPP;
+		return -1;
+	}
+	if ((buffer == NULL && length != 0) ||
+	    ((source == NULL) != (source_length == NULL))) {
+		errno = EINVAL;
+		return -1;
+	}
+	if (length > LIBOS_UDP_PAYLOAD_MAX)
+		length = LIBOS_UDP_PAYLOAD_MAX;
+	result = __libos_call(SYSCALL_UDP_RECVFROM, fd, (long)buffer,
+	    (long)length, (long)&endpoint, 0, 0);
+	if (result < 0)
+		return -1;
+	if (source != NULL) {
+		struct sockaddr_in address = {0};
+		uint32_t host_address = ((uint32_t)endpoint.address[0] << 24) |
+		    ((uint32_t)endpoint.address[1] << 16) |
+		    ((uint32_t)endpoint.address[2] << 8) | endpoint.address[3];
+		socklen_t copy_length = *source_length;
+		address.sin_family = AF_INET;
+		address.sin_port = htons(endpoint.port);
+		address.sin_addr.s_addr = htonl(host_address);
+		if (copy_length > sizeof(address))
+			copy_length = sizeof(address);
+		memcpy(source, &address, copy_length);
+		*source_length = sizeof(address);
+	}
+	return (ssize_t)result;
 }
 
 int
