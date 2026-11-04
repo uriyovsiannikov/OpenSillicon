@@ -39,6 +39,10 @@ and bounded `poll` for descriptors in the kernel's 32-entry descriptor table;
 buffer options are also available. `fcntl(F_GETFL/F_SETFL)` reports and changes
 `O_NONBLOCK`; other `fcntl` commands are unsupported. `ioctl(FIONREAD)` reports
 queued bytes on an `AF_UNIX` stream socket.
+`getaddrinfo` resolves IPv4 A records through the native UDP socket syscalls
+using the first `nameserver` entry in `/etc/resolv.conf`; numeric IPv4 nodes
+work without DNS. IPv6, TCP sockets, search domains, and DNS-over-TCP fallback
+are not implemented.
 The x86_64 math subset provides the functions declared in `math.h` for TinyX;
 trigonometric arguments with magnitude at least 2^63 return NaN because the
 hardware range reducer cannot process them.

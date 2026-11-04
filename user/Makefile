@@ -54,6 +54,18 @@ $(BUILD_DIR)/coreutils/netdiag.o: user/coreutils/netdiag.c \
 	mkdir -p $(@D)
 	$(CC) $(USER_CFLAGS) -Iuser -c $< -o $@
 
+$(BUILD_DIR)/coreutils/host.o: user/coreutils/host.c user/include/os.h \
+		user/libos/include/netdb.h user/libos/include/netinet/in.h | $(BUILD_DIR)
+	mkdir -p $(@D)
+	$(CC) $(USER_CFLAGS) -Iuser/libos/include -c $< -o $@
+
+$(BUILD_DIR)/coreutils/host.elf: $(BUILD_DIR)/user_start.o \
+		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
+		$(BUILD_DIR)/coreutils/host.o $(LIBOS_ARCHIVE) user/c_linker.ld
+	$(LD) $(USER_C_LDFLAGS) $(BUILD_DIR)/user_start.o \
+		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
+		$(BUILD_DIR)/coreutils/host.o $(LIBOS_ARCHIVE) -o $@
+
 $(BUILD_DIR)/coreutils/ping.elf: $(BUILD_DIR)/user_start.o \
 		$(BUILD_DIR)/user_os.o $(BUILD_DIR)/user_path.o \
 		$(BUILD_DIR)/netdiag_args.o $(BUILD_DIR)/coreutils/ping.o \
@@ -308,7 +320,8 @@ $(BUILD_DIR)/root.img: x11-apps-ready $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.e
 		$(BUILD_DIR)/coreutils/sleep.elf $(BUILD_DIR)/coreutils/which.elf \
 		$(BUILD_DIR)/coreutils/ps.elf $(BUILD_DIR)/coreutils/netdiag.elf \
 		$(BUILD_DIR)/coreutils/ping.elf \
-		$(BUILD_DIR)/coreutils/poweroff.elf $(BUILD_DIR)/coreutils/reboot.elf; \
+		$(BUILD_DIR)/coreutils/poweroff.elf $(BUILD_DIR)/coreutils/reboot.elf \
+		$(BUILD_DIR)/coreutils/host.elf; \
 	mv -f "$$image_tmp" '$@'
 
 endif

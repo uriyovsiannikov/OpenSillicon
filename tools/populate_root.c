@@ -289,7 +289,7 @@ main(int argc, char **argv)
 			"ls", "cat", "echo", "pwd", "true", "false", "clear", "uname",
 			"fetch", "head", "wc", "stat", "basename", "dirname",
 			"kill", "sleep", "which", "ps", "netdiag", "ping",
-			"poweroff", "reboot"
+			"poweroff", "reboot", "host"
 		};
 		int index;
 		if (coreutils_count !=
@@ -318,8 +318,11 @@ main(int argc, char **argv)
 		    "root:*:0:0:OpenSillicon root:/:/bin/sh\n"
 		    "user:*:1000:1000:OpenSillicon user:/tmp:/bin/sh\n";
 		static const char group[] = "root:*:0:\nuser:*:1000:\n";
+		static const char resolv_conf[] = "nameserver 10.15.3.3\n";
 		if (add_data("/etc/passwd", passwd, sizeof(passwd) - 1, 0644) != 0 ||
-		    add_data("/etc/group", group, sizeof(group) - 1, 0644) != 0) {
+		    add_data("/etc/group", group, sizeof(group) - 1, 0644) != 0 ||
+		    add_data("/etc/resolv.conf", resolv_conf,
+		    sizeof(resolv_conf) - 1, 0644) != 0) {
 			fclose(image);
 			return 1;
 		}

@@ -146,8 +146,9 @@ print_capabilities(void)
 	u_puts("netdiag: userspace has no API to query the active IPv4 configuration\n");
 	u_puts("netdiag: documented QEMU test profile: guest 10.15.3.1/24, peer 10.15.3.2\n");
 	u_puts("netdiag: UDP payload limit 512 bytes; receive queue 4 datagrams/socket\n");
-	u_puts("netdiag: bounded ICMP Echo diagnostics available via ping (on-link IPv4)\n");
-	u_puts("netdiag: TCP, DNS, DHCP, HTTP, HTTPS/TLS, and Internet routing unavailable\n");
+	u_puts("netdiag: bounded ICMP Echo and UDP can use the configured IPv4 gateway\n");
+	u_puts("netdiag: IPv4 DNS A queries are available through host/getaddrinfo\n");
+	u_puts("netdiag: TCP, DHCP, HTTP, and HTTPS/TLS are unavailable\n");
 }
 
 int
