@@ -89,7 +89,7 @@ framebuffer_device_present_rect(const struct os_framebuffer_rect *rect)
 	uint32_t staging[FRAMEBUFFER_COPY_CHUNK / sizeof(uint32_t)];
 	uint8_t *destination;
 	struct address_space *space = vmm_active_address_space();
-	uint64_t x_offset, row_bytes;
+	uint64_t x_offset, row_bytes, source_span;
 
 	if (active_framebuffer == NULL || space == NULL)
 		return -FRAMEBUFFER_DEVICE_ENODEV;
@@ -107,15 +107,29 @@ framebuffer_device_present_rect(const struct os_framebuffer_rect *rect)
 	    row_bytes > active_framebuffer->pitch - x_offset ||
 	    rect->source == 0 || rect->source > UINT64_MAX - active_framebuffer_size)
 		return -FRAMEBUFFER_DEVICE_EINVAL;
+	if (rect->source_pitch != 0 && rect->source_pitch < row_bytes)
+		return -FRAMEBUFFER_DEVICE_EINVAL;
+	if (rect->source_pitch != 0 && rect->height - 1U >
+	    (UINT64_MAX - row_bytes) / rect->source_pitch)
+		return -FRAMEBUFFER_DEVICE_EINVAL;
+	source_span = rect->source_pitch == 0 ? active_framebuffer_size :
+	    (uint64_t)(rect->height - 1U) * rect->source_pitch + row_bytes;
+	if (rect->source > UINT64_MAX - source_span)
+		return -FRAMEBUFFER_DEVICE_EINVAL;
 	destination = active_framebuffer->address;
 	for (uint32_t row = 0; row < rect->height; row++) {
-		uint64_t source_offset = ((uint64_t)rect->y + row) *
-		    active_framebuffer->pitch + x_offset;
+		uint64_t source_offset = rect->source_pitch == 0 ?
+		    ((uint64_t)rect->y + row) * active_framebuffer->pitch + x_offset :
+		    (uint64_t)row * rect->source_pitch;
 		uint64_t destination_offset = source_offset;
 		uint64_t copied = 0;
+		if (rect->source_pitch != 0)
+			destination_offset = ((uint64_t)rect->y + row) *
+			    active_framebuffer->pitch + x_offset;
 
-		if (source_offset > active_framebuffer_size ||
-		    row_bytes > active_framebuffer_size - source_offset ||
+		if ((rect->source_pitch == 0 &&
+		    (source_offset > active_framebuffer_size ||
+		    row_bytes > active_framebuffer_size - source_offset)) ||
 		    rect->source > UINT64_MAX - source_offset ||
 		    !vmm_validate_user_read(space, rect->source + source_offset,
 		    (size_t)row_bytes))

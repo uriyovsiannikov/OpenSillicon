@@ -24,6 +24,8 @@ struct os_framebuffer_rect {
 	uint32_t y;
 	uint32_t width;
 	uint32_t height;
+	/* Zero keeps the legacy full-framebuffer source layout. */
+	uint64_t source_pitch;
 };
 
 #endif

@@ -19,7 +19,8 @@ $(BUILD_DIR)/user_os.o: user/include/os.c user/include/os.h include/abi/syscall.
 $(BUILD_DIR)/user_path.o: user/path.c user/include/os.h | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/user_init.o: user/init/init.c user/include/os.h | $(BUILD_DIR)
+$(BUILD_DIR)/user_init.o: user/init/init.c user/init/logo_pixels.h \
+		user/include/os.h other/logo.png | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/user_shell.o: user/shell/shell.c user/include/os.h | $(BUILD_DIR)

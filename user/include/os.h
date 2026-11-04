@@ -109,6 +109,7 @@ long u_getpid(void);
 long u_process_snapshot(struct u_process_info *entries, size_t capacity);
 long u_framebuffer_info(struct os_framebuffer_info *info);
 long u_framebuffer_present(const void *pixels, size_t length);
+long u_framebuffer_present_rect(const struct os_framebuffer_rect *rect);
 long u_keyboard_poll(struct os_keyboard_event *event);
 long u_kill(uint64_t pid, uint64_t signo);
 long u_sigaction(uint64_t signo, const struct u_sigaction *new_action,

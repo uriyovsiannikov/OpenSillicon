@@ -79,6 +79,8 @@ long u_framebuffer_info(struct os_framebuffer_info *info)
 { return syscall3(SYSCALL_FRAMEBUFFER_INFO, (uintptr_t)info, 0, 0); }
 long u_framebuffer_present(const void *pixels, size_t length)
 { return syscall3(SYSCALL_FRAMEBUFFER_PRESENT, (uintptr_t)pixels, length, 0); }
+long u_framebuffer_present_rect(const struct os_framebuffer_rect *rect)
+{ return syscall3(SYSCALL_FRAMEBUFFER_PRESENT_RECT, (uintptr_t)rect, 0, 0); }
 long u_keyboard_poll(struct os_keyboard_event *event)
 { return syscall3(SYSCALL_KEYBOARD_POLL, (uintptr_t)event, 0, 0); }
 long u_kill(uint64_t pid, uint64_t signo)
