@@ -91,7 +91,8 @@ $(BUILD_DIR)/heap.o: kernel/mm/heap.c include/kernel/heap.h \
 		include/kernel/spinlock.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/log.o: kernel/core/log/log.c include/kernel/log.h include/kernel/tty.h | $(BUILD_DIR)
+$(BUILD_DIR)/log.o: kernel/core/log/log.c include/kernel/log.h include/kernel/tty.h \
+		include/kernel/framebuffer.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/fd.o: kernel/proc/fd.c include/kernel/fd.h include/kernel/log.h \

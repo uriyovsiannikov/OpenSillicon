@@ -6,6 +6,7 @@
 #include "arch/x86_64/user.h"
 #include "kernel/log.h"
 #include "kernel/process.h"
+#include "kernel/smp.h"
 
 #define IDT_ENTRIES 256
 #define KERNEL_CODE_SELECTOR 0x08
@@ -30,6 +31,29 @@ struct table_pointer {
 static struct idt_gate idt[IDT_ENTRIES];
 static interrupt_handler handlers[IDT_ENTRIES];
 extern void *isr_stub_table[IDT_ENTRIES];
+
+static size_t
+append_text(char *buffer, size_t length, const char *text)
+{
+	while (*text != '\0' && length + 1U < 384U)
+		buffer[length++] = *text++;
+	return length;
+}
+
+static size_t
+append_u64(char *buffer, size_t length, uint64_t value)
+{
+	char digits[20];
+	size_t count = 0;
+
+	do {
+		digits[count++] = (char)('0' + value % 10U);
+		value /= 10U;
+	} while (value != 0 && count < sizeof(digits));
+	while (count != 0 && length + 1U < 384U)
+		buffer[length++] = digits[--count];
+	return length;
+}
 
 static void
 idt_set_gate(unsigned int vector, uintptr_t address)
@@ -124,20 +148,49 @@ interrupt_dispatch(struct interrupt_frame *frame)
 		if ((frame->cs & 3U) == 3U)
 			return process_prepare_user_return(
 			    process_user_exception(frame));
-		klog("OpenSillicon exception: vector ");
-		klog_u64(frame->vector);
-		klog(" error ");
-		klog_u64(frame->error_code);
-		klog(" rip ");
-		klog_u64(frame->rip);
-		if (frame->vector == 14) {
-			uintptr_t fault_address;
+		{
+			char diagnostic[384];
+			size_t length = 0;
+			const struct smp_cpu *cpu;
+			uintptr_t fault_address = 0;
+			uintptr_t kernel_rsp = 0;
 
-			__asm__ volatile ("mov %%cr2, %0" : "=r" (fault_address));
-			klog(" cr2 ");
-			klog_u64(fault_address);
+			length = append_text(diagnostic, length,
+			    "OpenSillicon exception: vector ");
+			length = append_u64(diagnostic, length, frame->vector);
+			length = append_text(diagnostic, length, " error ");
+			length = append_u64(diagnostic, length, frame->error_code);
+			length = append_text(diagnostic, length, " rip ");
+			length = append_u64(diagnostic, length, frame->rip);
+			length = append_text(diagnostic, length, " cs ");
+			length = append_u64(diagnostic, length, frame->cs);
+			length = append_text(diagnostic, length, " rflags ");
+			length = append_u64(diagnostic, length, frame->rflags);
+			length = append_text(diagnostic, length, " frame ");
+			length = append_u64(diagnostic, length, (uintptr_t)frame);
+			if ((frame->cs & 3U) == 0) {
+				kernel_rsp = frame->user_rsp;
+				length = append_text(diagnostic, length, " kernel_rsp ");
+				length = append_u64(diagnostic, length, kernel_rsp);
+			}
+			length = append_text(diagnostic, length, " pid ");
+			length = append_u64(diagnostic, length,
+			    process_current_pid());
+			cpu = smp_current_cpu();
+			if (cpu != NULL) {
+				length = append_text(diagnostic, length, " cpu ");
+				length = append_u64(diagnostic, length, cpu->logical_id);
+			}
+			if (frame->vector == 14) {
+				__asm__ volatile ("mov %%cr2, %0" : "=r" (fault_address));
+				length = append_text(diagnostic, length, " cr2 ");
+				length = append_u64(diagnostic, length,
+				    fault_address);
+			}
+			length = append_text(diagnostic, length, "\n");
+			diagnostic[length] = '\0';
+			klog(diagnostic);
 		}
-		klog("\n");
 	} else if (frame->vector == 255) {
 		return process_prepare_user_return(frame);
 	} else if (frame->vector < IDT_ENTRIES && handlers[frame->vector] != NULL) {

@@ -3,17 +3,23 @@
 
 #include "kernel/log.h"
 #include "kernel/fd.h"
+#include "kernel/framebuffer.h"
 #include "kernel/spinlock.h"
 #include "kernel/vfs.h"
 
 #define COM1 0x3f8
 #define BOOT_LOG_BUFFER_SIZE (64U * 1024U)
+#define PANIC_CONTEXT_SIZE 1024U
 
 static char boot_log[BOOT_LOG_BUFFER_SIZE];
 static size_t boot_log_length;
 static bool boot_log_overflow;
 static bool boot_log_flushed;
 static struct spinlock log_lock = SPINLOCK_INITIALIZER;
+static volatile char panic_context[PANIC_CONTEXT_SIZE];
+static volatile size_t panic_context_next;
+static volatile size_t panic_context_length;
+static volatile uint32_t panic_started;
 
 static inline void
 outb(uint16_t port, uint8_t value)
@@ -70,10 +76,20 @@ log_write(const char *buffer, size_t length)
 	uint64_t flags = spinlock_lock_irqsave(&log_lock);
 	size_t i;
 
+	/* Keep boot messages off COM1 while retaining their panic context. */
 	for (i = 0; i < length; i++) {
-		if (buffer[i] == '\n')
-			serial_putc('\r');
-		serial_putc(buffer[i]);
+		panic_context[panic_context_next] = buffer[i];
+		panic_context_next = (panic_context_next + 1U) %
+		    PANIC_CONTEXT_SIZE;
+		if (panic_context_length < PANIC_CONTEXT_SIZE)
+			panic_context_length++;
+	}
+	if (boot_log_flushed) {
+		for (i = 0; i < length; i++) {
+			if (buffer[i] == '\n')
+				serial_putc('\r');
+			serial_putc(buffer[i]);
+		}
 	}
 	if (!boot_log_flushed) {
 		if (length <= sizeof(boot_log) - boot_log_length) {
@@ -99,16 +115,16 @@ void
 klog_u64(uint64_t value)
 {
 	char digits[20];
+	char output[20];
 	size_t count = 0;
 
 	do {
 		digits[count++] = (char)('0' + value % 10);
 		value /= 10;
 	} while (value != 0 && count < sizeof(digits));
-	while (count != 0) {
-		char digit = digits[--count];
-		log_write(&digit, 1);
-	}
+	for (size_t i = 0; i < count; i++)
+		output[i] = digits[count - i - 1U];
+	log_write(output, count);
 }
 
 void
@@ -157,6 +173,10 @@ klog_flush_boot_log(void)
 
 	/* Freeze the buffer before filesystem I/O; later logs stay on serial. */
 	boot_log_flushed = true;
+	/* Boot messages are preserved in /tmp/btlog.log, but must not be replayed
+	 * to COM1 or the panic screen if a later runtime panic occurs. */
+	panic_context_next = 0;
+	panic_context_length = 0;
 	spinlock_unlock_irqrestore(&log_lock, flags);
 	error = vfs_open("/tmp/btlog.log",
 	    VFS_O_WRONLY | VFS_O_CREAT | VFS_O_TRUNC, 0644, &file);
@@ -182,6 +202,27 @@ klog_flush_boot_log(void)
 _Noreturn void
 kernel_halt(void)
 {
+	static const char serial_header[] =
+	    "\n*** OpenSillicon KERNEL PANIC / HALT ***\nRecent kernel diagnostics:\n";
+	char diagnostic[PANIC_CONTEXT_SIZE + 1U];
+	size_t length, begin;
+	__asm__ volatile ("cli" : : : "memory");
+	if (__atomic_exchange_n(&panic_started, 1U, __ATOMIC_ACQ_REL) != 0) {
+		for (;;)
+			__asm__ volatile ("hlt");
+	}
+	length = panic_context_length;
+	begin = (panic_context_next + PANIC_CONTEXT_SIZE - length) %
+	    PANIC_CONTEXT_SIZE;
+	for (size_t i = 0; i < length; i++)
+		diagnostic[i] = panic_context[(begin + i) % PANIC_CONTEXT_SIZE];
+	diagnostic[length] = '\0';
+	(void)serial_write(serial_header, sizeof(serial_header) - 1U);
+	if (length != 0)
+		(void)serial_write(diagnostic, length);
+	if (length == 0 || diagnostic[length - 1U] != '\n')
+		(void)serial_write("\n", 1);
+	framebuffer_panic_screen(diagnostic);
 	for (;;) {
 		__asm__ volatile ("cli; hlt");
 	}

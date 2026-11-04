@@ -170,3 +170,67 @@ framebuffer_text_draw(void *context, unsigned int terminal,
 		}
 	}
 }
+
+static void
+panic_draw_char(unsigned int column, unsigned int row, uint8_t character)
+{
+	uint64_t origin_x = (uint64_t)column * FONT_WIDTH;
+	uint64_t origin_y = (uint64_t)row * FONT_HEIGHT;
+	unsigned int glyph = character < 0x80U ? character : 224U;
+
+	for (unsigned int y = 0; y < FONT_HEIGHT; y++) {
+		uint16_t bits = gallant12x22[glyph][y];
+		for (unsigned int x = 0; x < FONT_WIDTH; x++)
+			put_pixel(origin_x + x, origin_y + y,
+			    (bits & (0x800U >> x)) != 0 ? 0xffffffU : 0x880000U);
+	}
+}
+
+static void
+panic_draw_text(unsigned int *column, unsigned int *row, const char *text)
+{
+	while (*text != '\0' && *row < framebuffer_rows) {
+		if ((uint8_t)*text == 0x1bU) {
+			text++;
+			if (*text == '[') {
+				text++;
+				while (*text != '\0' && !(*text >= '@' && *text <= '~'))
+					text++;
+				if (*text != '\0')
+					text++;
+			}
+			continue;
+		}
+		if (*text == '\n' || *column >= framebuffer_columns - 1U) {
+			*column = 2;
+			(*row)++;
+			if (*text == '\n') {
+				text++;
+				continue;
+			}
+		}
+		if (*row >= framebuffer_rows)
+			break;
+		panic_draw_char((*column)++, (*row), (uint8_t)*text++);
+	}
+}
+
+void
+framebuffer_panic_screen(const char *diagnostic)
+{
+	unsigned int column = 2;
+	unsigned int row = 2;
+	if (active_framebuffer == NULL || framebuffer_columns < 24U ||
+	    framebuffer_rows < 5U)
+		return;
+	fill(0x880000U);
+	panic_draw_text(&column, &row, "*** KERNEL PANIC ***\n\n");
+	panic_draw_text(&column, &row,
+	    "The system halted. Recent kernel diagnostics:\n\n");
+	if (diagnostic != NULL && diagnostic[0] != '\0')
+		panic_draw_text(&column, &row, diagnostic);
+	else
+		panic_draw_text(&column, &row, "No diagnostic text was recorded.\n");
+	panic_draw_text(&column, &row,
+	    "\n\nThe same diagnostic was written to the serial console.\n");
+}
