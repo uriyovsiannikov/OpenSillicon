@@ -197,6 +197,31 @@ lapic_send_ipi(uint32_t apic_id, uint8_t vector)
 }
 
 bool
+lapic_send_nmi(uint32_t apic_id)
+{
+	uint32_t polls;
+
+	if (lapic_registers == NULL || apic_id > UINT8_MAX)
+		return false;
+	for (polls = 0; polls < LAPIC_IPI_POLL_LIMIT; polls++) {
+		if ((lapic_read(LAPIC_ICR_LOW) & (1U << 12)) == 0)
+			break;
+		__asm__ volatile ("pause" : : : "memory");
+	}
+	if (polls == LAPIC_IPI_POLL_LIMIT)
+		return false;
+	lapic_write(LAPIC_ICR_HIGH, apic_id << 24);
+	__atomic_thread_fence(__ATOMIC_RELEASE);
+	lapic_write(LAPIC_ICR_LOW, 4U << 8);
+	for (polls = 0; polls < LAPIC_IPI_POLL_LIMIT; polls++) {
+		if ((lapic_read(LAPIC_ICR_LOW) & (1U << 12)) == 0)
+			return true;
+		__asm__ volatile ("pause" : : : "memory");
+	}
+	return false;
+}
+
+bool
 lapic_timer_calibrate(uint32_t frequency, uint32_t *initial_count)
 {
 	uint32_t pit_count;

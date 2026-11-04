@@ -17,7 +17,7 @@ kernel: $(BUILD_DIR)/kernel.elf
 $(BUILD_DIR)/main.o: kernel/main.c include/kernel/boot.h include/kernel/log.h \
 		include/kernel/pmm.h include/kernel/vmm.h include/kernel/heap.h \
 		include/kernel/errno.h \
-		include/kernel/timer.h include/kernel/scheduler.h \
+		include/kernel/timer.h include/kernel/scheduler.h include/kernel/smp.h \
 		include/arch/x86_64/lapic.h include/arch/x86_64/interrupts.h \
 		include/arch/x86_64/user.h include/kernel/fd.h include/kernel/syscall.h \
 		include/kernel/elf.h include/kernel/process.h include/kernel/vfs.h \
@@ -68,6 +68,7 @@ $(BUILD_DIR)/pmm.o: kernel/mm/pmm.c include/kernel/pmm.h \
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/vmm.o: kernel/mm/vmm.c include/kernel/vmm.h \
+		include/arch/x86_64/copy.h \
 		include/kernel/pmm.h include/kernel/boot.h include/kernel/log.h \
 		include/kernel/shm.h include/kernel/smp.h include/kernel/spinlock.h \
 		limine/limine.h | $(BUILD_DIR)
@@ -207,7 +208,8 @@ $(BUILD_DIR)/gdt.o: kernel/arch/x86_64/cpu/gdt.c include/arch/x86_64/gdt.h \
 
 $(BUILD_DIR)/smp.o: kernel/arch/x86_64/cpu/smp.c include/kernel/smp.h \
 		include/arch/x86_64/interrupts.h include/arch/x86_64/lapic.h \
-		include/kernel/spinlock.h include/kernel/log.h include/kernel/vmm.h | $(BUILD_DIR)
+		include/kernel/spinlock.h include/kernel/log.h include/kernel/vmm.h \
+		include/kernel/scheduler.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -Ilimine -c $< -o $@
 
 $(BUILD_DIR)/smp_topology.o: kernel/arch/x86_64/cpu/smp_topology.c \
@@ -327,7 +329,7 @@ $(BUILD_DIR)/timer.o: kernel/arch/x86_64/timer/timer.c \
 
 $(BUILD_DIR)/scheduler.o: kernel/sched/scheduler.c \
 		include/kernel/scheduler.h include/kernel/heap.h include/kernel/vmm.h \
-		include/kernel/smp.h \
+		include/kernel/smp.h include/kernel/spinlock.h \
 		include/kernel/log.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
@@ -343,7 +345,8 @@ $(BUILD_DIR)/context.o: kernel/arch/x86_64/context/context.S | $(BUILD_DIR)
 $(BUILD_DIR)/user_entry.o: kernel/arch/x86_64/context/user_entry.S | $(BUILD_DIR)
 	$(CC) $(KERNEL_ASFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/user_entry_c.o: kernel/arch/x86_64/context/user_entry.c | $(BUILD_DIR)
+$(BUILD_DIR)/user_entry_c.o: kernel/arch/x86_64/context/user_entry.c \
+		include/arch/x86_64/user.h include/kernel/smp.h include/kernel/log.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/acpica/%.o: $(ACPICA_ROOT)/%.c \

@@ -124,6 +124,15 @@ process_current_slot(void)
 	return cpu == NULL ? &fallback_current_process : &cpu->current_process;
 }
 
+/* The process table and its scheduler are still owned by the BSP. */
+static bool
+process_table_owned_here(void)
+{
+	struct smp_cpu *cpu = smp_current_cpu();
+
+	return cpu == NULL || cpu->bsp;
+}
+
 #define current_process (*process_current_slot())
 #ifdef KERNEL_TEST_SHM_LIFECYCLE
 static uint64_t test_shm_reap_releases;
@@ -627,11 +636,13 @@ map_process_stack(struct elf_loaded_image *image, bool startup_stack,
 void
 process_system_init(void)
 {
+	if (!process_table_owned_here())
+		return;
 	process_head = NULL;
 	current_process = NULL;
 	next_process_id = 1;
-	user_preemptions = 0;
-	pipe_blocked_ticks = 0;
+	__atomic_store_n(&user_preemptions, 0, __ATOMIC_RELAXED);
+	__atomic_store_n(&pipe_blocked_ticks, 0, __ATOMIC_RELAXED);
 #ifdef KERNEL_TEST_SHM_LIFECYCLE
 	test_shm_reap_releases = 0;
 	test_shm_exec_releases = 0;
@@ -696,6 +707,8 @@ process_snapshot(struct process_snapshot_entry *entries, size_t capacity)
 {
 	struct process *process;
 	size_t count = 0;
+	if (!process_table_owned_here())
+		return -(int)PROCESS_ERROR_EBUSY;
 	if (entries == NULL || capacity == 0 || capacity > PROCESS_SNAPSHOT_MAX)
 		return -(int)PROCESS_ERROR_EINVAL;
 	if (process_head == NULL)
@@ -723,6 +736,8 @@ process_kill(uint64_t pid, unsigned int signo)
 {
 	struct process *process;
 
+	if (!process_table_owned_here())
+		return PROCESS_ERROR_EBUSY;
 	if (pid == 0 || (int64_t)pid < 0)
 		return PROCESS_ERROR_EINVAL;
 	if (signo != 0 && !os_signal_valid(signo))
@@ -956,13 +971,13 @@ process_sigreturn(struct interrupt_frame *frame, uint64_t *error)
 uint64_t
 process_user_preemptions(void)
 {
-	return user_preemptions;
+	return __atomic_load_n(&user_preemptions, __ATOMIC_RELAXED);
 }
 
 uint64_t
 process_pipe_blocked_ticks(void)
 {
-	return pipe_blocked_ticks;
+	return __atomic_load_n(&pipe_blocked_ticks, __ATOMIC_RELAXED);
 }
 
 #ifdef KERNEL_TEST_SHM_LIFECYCLE
@@ -986,7 +1001,8 @@ process_run_elf_internal(const void *image, size_t image_size,
 	struct process *root;
 	uint64_t status;
 
-	if (!initialized || process_head != NULL || image == NULL)
+	if (!process_table_owned_here() || !initialized || process_head != NULL ||
+	    image == NULL)
 		return UINT64_MAX;
 	root = kheap_alloc(sizeof(*root));
 	if (root == NULL)
@@ -1124,7 +1140,8 @@ process_run_path(const char *path, bool startup_stack)
 	int error;
 	uint64_t result;
 
-	if (path == NULL || vfs_stat_path(path, &status) != 0 ||
+	if (!process_table_owned_here() || path == NULL ||
+	    vfs_stat_path(path, &status) != 0 ||
 	    status.type != VNODE_REGULAR || (status.mode & 0111U) == 0 ||
 	    status.size == 0 || status.size > SIZE_MAX ||
 	    vfs_open(path, VFS_O_RDONLY, 0, &file) != 0)
@@ -1165,7 +1182,7 @@ process_timer_preempt(struct interrupt_frame *frame)
 	current_process->state = PROCESS_READY;
 	next = find_next_ready(current_process);
 	if (next != NULL && next != current_process)
-		user_preemptions++;
+		__atomic_add_fetch(&user_preemptions, 1, __ATOMIC_RELAXED);
 	return schedule_from(current_process);
 }
 
@@ -1716,7 +1733,7 @@ process_wake_channel(void *channel)
 {
 	struct process *process;
 
-	if (channel == NULL || process_head == NULL)
+	if (!process_table_owned_here() || channel == NULL || process_head == NULL)
 		return;
 	process = process_head;
 	do {
@@ -1734,13 +1751,15 @@ process_timer_wakeup(uint64_t ticks)
 {
 	struct process *process;
 
-	if (process_head == NULL)
+	if (!process_table_owned_here() || process_head == NULL)
 		return;
 	process = process_head;
 	do {
 		if (process->state == PROCESS_BLOCKED &&
-		    process->blocked_channel != NULL && pipe_blocked_ticks != UINT64_MAX)
-			pipe_blocked_ticks++;
+		    process->blocked_channel != NULL &&
+		    __atomic_load_n(&pipe_blocked_ticks, __ATOMIC_RELAXED) !=
+		    UINT64_MAX)
+			__atomic_add_fetch(&pipe_blocked_ticks, 1, __ATOMIC_RELAXED);
 		if (process->state == PROCESS_BLOCKED && process->wake_tick != 0 &&
 		    ticks >= process->wake_tick) {
 			process->wake_tick = 0;

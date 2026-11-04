@@ -89,6 +89,23 @@ interrupt_register_handler(uint8_t vector, interrupt_handler handler)
 	return available;
 }
 
+bool
+interrupt_register_nmi_handler(interrupt_handler handler)
+{
+	uint64_t flags;
+	bool available;
+
+	if (handler == NULL)
+		return false;
+	__asm__ volatile ("pushfq; popq %0; cli" : "=r" (flags) : : "memory");
+	available = handlers[2] == NULL;
+	if (available)
+		handlers[2] = handler;
+	if ((flags & (1ULL << 9)) != 0)
+		__asm__ volatile ("sti" : : : "memory");
+	return available;
+}
+
 struct interrupt_frame *
 interrupt_dispatch(struct interrupt_frame *frame)
 {
@@ -98,7 +115,12 @@ interrupt_dispatch(struct interrupt_frame *frame)
 		klog("OpenSillicon panic: missing interrupt frame\n");
 		kernel_halt();
 	}
-	if (frame->vector < 32) {
+	if (frame->vector == 2 && handlers[2] != NULL) {
+		next = handlers[2](frame);
+		if (next != NULL)
+			return next;
+		klog("OpenSillicon panic: NMI handler returned no frame\n");
+	} else if (frame->vector < 32) {
 		if ((frame->cs & 3U) == 3U)
 			return process_prepare_user_return(
 			    process_user_exception(frame));

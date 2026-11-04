@@ -323,12 +323,30 @@ report_smp_bootstrap(void)
 		klog_u64(smp_discovered_count());
 		klog(" online ");
 		klog_u64(smp_online_count());
-		klog("; APs idle with TLB shootdown IPI enabled\n");
+		klog("; APs waiting for kernel work and TLB shootdown NMIs\n");
 		if (!smp_tlb_shootdown_all()) {
 			klog("OpenSillicon panic: SMP TLB shootdown acknowledgement timed out\n");
 			kernel_halt();
 		}
 		klog("OpenSillicon: SMP TLB shootdown acknowledged by all online APs\n");
+#ifdef KERNEL_TEST_SMP_SCHEDULER
+		if (!smp_verify_ap_idle_timers()) {
+			klog("OpenSillicon panic: AP idle timer verification failed\n");
+			kernel_halt();
+		}
+		klog("OpenSillicon: AP idle timer ticks verified\n");
+#endif
+#ifdef KERNEL_TEST_SMP_TLB_ROUNDS
+		for (unsigned int round = 0; round < KERNEL_TEST_SMP_TLB_ROUNDS; round++) {
+			if (!smp_tlb_shootdown_all()) {
+				klog("OpenSillicon panic: repeated SMP TLB shootdown failed\n");
+				kernel_halt();
+			}
+		}
+		klog("OpenSillicon: repeated SMP TLB shootdowns acknowledged rounds ");
+		klog_u64(KERNEL_TEST_SMP_TLB_ROUNDS);
+		klog("\n");
+#endif
 		if (smp_online_count() == smp_discovered_count())
 			klog("OpenSillicon: SMP bootstrap verified discovered ");
 		else
@@ -686,6 +704,26 @@ virtio_rng_probe_done:
 	}
 	klog_status("scheduler", true, NULL);
 	__asm__ volatile ("sti" : : : "memory");
+	if (!scheduler_start_secondary_cpus()) {
+		klog("OpenSillicon panic: secondary CPU scheduler initialization failed\n");
+		kernel_halt();
+	}
+	if (smp_current_cpu() != NULL && smp_online_count() > 1)
+		klog("OpenSillicon: AP cooperative kernel schedulers ready\n");
+#ifdef KERNEL_TEST_SMP_SCHEDULER
+	if (!scheduler_verify_cpu_queues()) {
+		klog("OpenSillicon panic: CPU-local scheduler verification failed\n");
+		kernel_halt();
+	}
+	klog("OpenSillicon: CPU-local scheduler threads, yields and reaping verified\n");
+#endif
+	if (smp_current_cpu() != NULL) {
+		if (!smp_verify_work_dispatch()) {
+			klog("OpenSillicon panic: online CPU work dispatch verification failed\n");
+			kernel_halt();
+		}
+		klog("OpenSillicon: SMP kernel work dispatch verified on all online CPUs\n");
+	}
 	klog("OpenSillicon: UEFI boot information parsed\n");
 	klog("OpenSillicon: memory map entries ");
 	klog_u64(info.memmap->entry_count);

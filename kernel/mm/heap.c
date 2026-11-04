@@ -69,6 +69,8 @@ grow_heap(uint64_t minimum)
 	uint64_t mapped = 0;
 	struct heap_block *previous = last_block();
 
+	/* vmm_map_page serializes shared kernel page-table updates and performs a
+	 * synchronous shootdown on every other online CPU. */
 	if (minimum > UINT64_MAX - (PAGE_SIZE - 1) || growth < minimum ||
 	    heap_end > vmm_heap_end() ||
 	    growth > vmm_heap_end() - heap_end ||

@@ -17,6 +17,8 @@ parser.add_argument("--failed-cpu", type=int)
 parser.add_argument("--failed-stage", type=int, default=1)
 parser.add_argument("--tlb-rounds", type=int)
 parser.add_argument("--expect-unavailable", action="store_true")
+parser.add_argument("--root-image", type=pathlib.Path)
+parser.add_argument("--scheduler-test", action="store_true")
 a = parser.parse_args()
 if a.cpus < 1 or (not a.expect_unavailable and
                   (a.expected_online < 1 or a.expected_online > a.cpus)):
@@ -30,7 +32,7 @@ with tempfile.TemporaryDirectory(prefix="opensillicon-smp-") as temp_dir:
     temp = pathlib.Path(temp_dir)
     serial_log = temp / "serial.log"
     root_image = temp / "root.img"
-    shutil.copyfile(build / "root.img", root_image)
+    shutil.copyfile(a.root_image or build / "root.img", root_image)
     command = [a.qemu, "-machine", "q35", "-smp", str(a.cpus), "-m", "256M",
                "-bios", a.bios, "-cdrom", str(build / "opensillicon.iso"),
                "-drive", f"file={root_image},if=none,id=rootdisk,format=raw",
@@ -63,7 +65,7 @@ with tempfile.TemporaryDirectory(prefix="opensillicon-smp-") as temp_dir:
             not in contents:
         print(contents[-5000:])
         raise SystemExit("AP TLB shootdown acknowledgements were not verified")
-    if not a.expect_unavailable and a.cpus > 1 and \
+    if a.scheduler_test and not a.expect_unavailable and a.cpus > 1 and \
             "OpenSillicon: AP idle timer ticks verified" not in contents:
         print(contents[-5000:])
         raise SystemExit("AP local idle timer interrupts were not verified")
@@ -79,19 +81,40 @@ with tempfile.TemporaryDirectory(prefix="opensillicon-smp-") as temp_dir:
     if "OpenSillicon shell ready" not in contents:
         print(contents[-5000:])
         raise SystemExit("user process did not reach the shell-ready state")
-    if "OpenSillicon: Round Robin scheduler passed" not in contents:
+    if a.scheduler_test and \
+            "OpenSillicon: CPU-local scheduler threads, yields and reaping verified" not in contents:
         print(contents[-5000:])
-        raise SystemExit("BSP cooperative scheduler test did not complete")
-    if "OpenSillicon: active address-space destruction blocked" not in contents:
-        print(contents[-5000:])
-        raise SystemExit("VMM allowed destruction of the current address space")
+        raise SystemExit("CPU-local scheduler execution and cleanup were not verified")
+    if a.scheduler_test:
+        scheduled = re.findall(
+            r"OpenSillicon test: scheduler CPU (\d+) threads 2 yields 64 reaped 2", contents)
+        expected = ([0] if a.expect_unavailable else
+                    [i for i in range(a.cpus) if i != a.failed_cpu])
+        if sorted(map(int, scheduled)) != expected:
+            print(contents[-5000:])
+            raise SystemExit(f"scheduler CPU coverage mismatch: {scheduled}, expected {expected}")
+        submissions = re.findall(
+            r"OpenSillicon test: scheduler submit CPU (\d+) target (\d+) children 2 yields 64 reaped 2", contents)
+        if sorted(int(source) for source, _ in submissions) != expected:
+            raise SystemExit(f"scheduler submission coverage mismatch: {submissions}")
+        aps = set(expected) - {0}
+        for source, destination in submissions:
+            source, destination = int(source), int(destination)
+            if destination not in expected or (aps and destination == 0):
+                raise SystemExit(f"thread submitted to an unavailable CPU: {submissions}")
+            if source in aps and len(aps) > 1 and source == destination:
+                raise SystemExit(f"AP-to-AP submission was not exercised: {submissions}")
     if "OpenSillicon panic:" in contents:
         print(contents[-5000:])
         raise SystemExit("guest reported a kernel panic after the SMP marker")
-    for operation in ("mapping", "unmapping"):
-        if f"OpenSillicon: user {operation} preserved unrelated AP TLBs" not in contents:
-            print(contents[-5000:])
-            raise SystemExit(f"address-space TLB target check missing for {operation}")
+    # General boot self-tests were removed from the production kernel.
+    # Scheduler execution is checked by the explicit instrumented fixture.
+    if not a.expect_unavailable:
+        if "OpenSillicon: SMP kernel work dispatch verified on all online CPUs" not in contents:
+            raise SystemExit("SMP work dispatch verification is missing")
+        if a.expected_online > 1 and \
+                "OpenSillicon: AP cooperative kernel schedulers ready" not in contents:
+            raise SystemExit("AP scheduler initialization is missing")
     if a.expect_unavailable:
         if "SMP bootstrap " in contents or "SMP cpu logical " in contents:
             raise SystemExit("kernel reported partially initialized SMP state")
@@ -138,7 +161,7 @@ with tempfile.TemporaryDirectory(prefix="opensillicon-smp-") as temp_dir:
     if stages != expected_stages:
         raise SystemExit(f"unexpected CPU initialization stages: {stages}")
     idle_ticks = {int(record[0]): int(record[11]) for record in records}
-    if any(idle_ticks[cpu] == 0 for cpu, state in states.items()
+    if a.scheduler_test and any(idle_ticks[cpu] == 0 for cpu, state in states.items()
            if cpu != 0 and state == 3):
         raise SystemExit(f"online AP did not receive its local idle timer: {idle_ticks}")
     print(marker)

@@ -10,17 +10,19 @@
 #define PIC_MASTER_DATA 0x21U
 #define PIC_SLAVE_DATA 0xa1U
 
-static volatile uint64_t ticks;
+static uint64_t ticks;
 static uint32_t ap_initial_count;
 static bool initialized;
 
 static struct interrupt_frame *
 timer_interrupt(struct interrupt_frame *frame)
 {
-	if (ticks != UINT64_MAX)
-		ticks++;
+	uint64_t current = __atomic_load_n(&ticks, __ATOMIC_RELAXED);
+
+	if (current != UINT64_MAX)
+		current = __atomic_add_fetch(&ticks, 1, __ATOMIC_RELAXED);
 	lapic_eoi();
-	process_timer_wakeup(ticks);
+	process_timer_wakeup(current);
 	return process_timer_preempt(frame);
 }
 
@@ -32,7 +34,7 @@ timer_init(void)
 	bool success = false;
 
 	__asm__ volatile ("pushfq; popq %0; cli" : "=r" (flags) : : "memory");
-	if (initialized)
+	if (__atomic_load_n(&initialized, __ATOMIC_ACQUIRE))
 		goto out;
 	__asm__ volatile ("outb %0, %1" : : "a" ((uint8_t)0xff),
 	    "Nd" ((uint16_t)PIC_MASTER_DATA));
@@ -42,10 +44,10 @@ timer_init(void)
 	    !interrupt_register_handler(TIMER_VECTOR, timer_interrupt))
 		goto out;
 	ap_initial_count = initial_count;
-	ticks = 0;
+	__atomic_store_n(&ticks, 0, __ATOMIC_RELAXED);
 	if (!lapic_timer_start(TIMER_VECTOR, initial_count))
 		goto out;
-	initialized = true;
+	__atomic_store_n(&initialized, true, __ATOMIC_RELEASE);
 	success = true;
 out:
 	if ((flags & (1ULL << 9)) != 0)
@@ -56,11 +58,13 @@ out:
 uint64_t
 timer_ticks(void)
 {
-	return initialized ? ticks : 0;
+	return __atomic_load_n(&initialized, __ATOMIC_ACQUIRE) ?
+	    __atomic_load_n(&ticks, __ATOMIC_RELAXED) : 0;
 }
 
 uint32_t
 timer_ap_initial_count(void)
 {
-	return initialized ? ap_initial_count : 0;
+	return __atomic_load_n(&initialized, __ATOMIC_ACQUIRE) ?
+	    ap_initial_count : 0;
 }

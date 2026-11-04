@@ -1,5 +1,6 @@
 #include <stddef.h>
 #include <stdint.h>
+#include "arch/x86_64/copy.h"
 
 #include "kernel/log.h"
 #include "kernel/errno.h"
@@ -39,6 +40,7 @@ static struct address_space *fallback_active_space;
 static struct address_space *address_spaces;
 static bool initialized;
 static struct spinlock address_space_lifecycle_lock = SPINLOCK_INITIALIZER;
+static struct spinlock kernel_mapping_lock = SPINLOCK_INITIALIZER;
 static bool unmap_user_page(struct address_space *space,
 	uint64_t virtual_address, uint64_t *physical_address, bool allow_private);
 #ifdef KERNEL_TEST_SHM_FORK_FAILURE
@@ -67,6 +69,26 @@ address_space_valid(const struct address_space *space)
 			return true;
 	}
 	return false;
+}
+
+/* Address-space mutation stays BSP-owned until remote TLB shootdowns and
+ * page-table publication are synchronized for every AP. */
+static bool
+vmm_mutation_allowed(void)
+{
+	struct smp_cpu *cpu = smp_current_cpu();
+
+	return cpu == NULL || cpu->bsp;
+}
+
+static bool
+vmm_ap_heap_mapping_allowed(const struct address_space *space,
+	uint64_t virtual_address)
+{
+	struct smp_cpu *cpu = smp_current_cpu();
+
+	return cpu != NULL && !cpu->bsp && space == &kernel_space &&
+	    virtual_address >= HEAP_BASE && virtual_address < HEAP_END;
 }
 
 static struct address_space **
@@ -120,9 +142,8 @@ canonical(uint64_t address)
 static void
 shootdown_tlbs(const struct address_space *space)
 {
-	/* APs remain on kernel_space throughout this milestone. Before remote
-	 * address-space activation is allowed, all mutation paths must acquire
-	 * lifecycle ownership while publishing mappings and selecting targets. */
+	/* Kernel mappings are published under kernel_mapping_lock. User address
+	 * spaces remain BSP-only until their full lifecycle is SMP-safe. */
 	if (!(space == NULL || space == &kernel_space ? smp_tlb_shootdown_all() :
 	    smp_tlb_shootdown_space(space))) {
 		klog("OpenSillicon panic: remote TLB shootdown failed\n");
@@ -338,7 +359,12 @@ bool
 vmm_map_page(struct address_space *space, uint64_t virtual_address,
 	uint64_t physical_address, unsigned int flags)
 {
-	if (!initialized || !address_space_valid(space) || (flags & ~0x1fU) != 0 ||
+	bool kernel_mapping = (flags & VMM_USER) == 0;
+	uint64_t kernel_lock_flags = 0;
+
+	if ((!vmm_mutation_allowed() &&
+	    !vmm_ap_heap_mapping_allowed(space, virtual_address)) || !initialized ||
+	    !address_space_valid(space) || (flags & ~0x1fU) != 0 ||
 	    (flags & (VMM_WRITE | VMM_EXEC)) == (VMM_WRITE | VMM_EXEC) ||
 	    (virtual_address & (PAGE_SIZE - 1)) != 0 ||
 	    (physical_address & (PAGE_SIZE - 1)) != 0 ||
@@ -362,15 +388,23 @@ vmm_map_page(struct address_space *space, uint64_t virtual_address,
 	    !((virtual_address >= VMALLOC_BASE && virtual_address < VMALLOC_END) ||
 	    (virtual_address >= HEAP_BASE && virtual_address < HEAP_END))))
 		return false;
-	if (!map_in_root((flags & VMM_USER) != 0 ? space->root_physical :
-	    kernel_space.root_physical, virtual_address, physical_address,
-	    flags))
+	if (kernel_mapping)
+		kernel_lock_flags = spinlock_lock_irqsave(&kernel_mapping_lock);
+	if (!map_in_root(kernel_mapping ? kernel_space.root_physical :
+	    space->root_physical, virtual_address, physical_address,
+	    flags)) {
+		if (kernel_mapping)
+			spinlock_unlock_irqrestore(&kernel_mapping_lock,
+			    kernel_lock_flags);
 		return false;
-	if ((flags & VMM_USER) == 0)
+	}
+	if (kernel_mapping)
 		sync_kernel_mapping(virtual_address);
 	__asm__ volatile ("invlpg (%0)" : : "r" ((void *)(uintptr_t)virtual_address)
 	    : "memory");
-	shootdown_tlbs((flags & VMM_USER) != 0 ? space : NULL);
+	shootdown_tlbs(kernel_mapping ? NULL : space);
+	if (kernel_mapping)
+		spinlock_unlock_irqrestore(&kernel_mapping_lock, kernel_lock_flags);
 	return true;
 }
 
@@ -464,7 +498,8 @@ vmm_map_shared_object(struct address_space *space, uint64_t base,
 	size_t installed = 0;
 	size_t i;
 
-	if (!initialized || !address_space_valid(space) || space == &kernel_space ||
+	if (!vmm_mutation_allowed() || !initialized ||
+	    !address_space_valid(space) || space == &kernel_space ||
 	    object == NULL || object->references == 0 || object->page_count == 0 ||
 	    object->page_count > UINT64_MAX / PAGE_SIZE ||
 	    (base & (PAGE_SIZE - 1)) != 0)
@@ -498,7 +533,8 @@ vmm_map_shared_object(struct address_space *space, uint64_t base,
 bool
 vmm_unmap_shared_object(struct address_space *space, uint64_t base)
 {
-	if (!initialized || !address_space_valid(space) || space == &kernel_space)
+	if (!vmm_mutation_allowed() || !initialized ||
+	    !address_space_valid(space) || space == &kernel_space)
 		return false;
 	return shm_mapping_detach(&space->shared_mappings, base,
 	    unmap_shared_page, space);
@@ -516,7 +552,8 @@ vmm_shm_create(struct address_space *space, uint64_t size,
 	uint64_t next;
 	size_t page_count;
 
-	if (base_out == NULL || !initialized || !address_space_valid(space) ||
+	if (!vmm_mutation_allowed() || base_out == NULL || !initialized ||
+	    !address_space_valid(space) ||
 	    space == &kernel_space || size == 0 ||
 	    size > UINT64_MAX - (PAGE_SIZE - 1))
 		return -EINVAL;
@@ -549,7 +586,8 @@ vmm_shm_create(struct address_space *space, uint64_t size,
 int
 vmm_shm_detach(struct address_space *space, uint64_t base)
 {
-	if (!initialized || !address_space_valid(space) || space == &kernel_space ||
+	if (!vmm_mutation_allowed() || !initialized ||
+	    !address_space_valid(space) || space == &kernel_space ||
 	    base < SHM_ARENA_START + PAGE_SIZE ||
 	    base >= SHM_ARENA_END - PAGE_SIZE ||
 	    (base & (PAGE_SIZE - 1)) != 0 ||
@@ -656,7 +694,19 @@ bool
 vmm_unmap_page(struct address_space *space, uint64_t virtual_address,
 	uint64_t *physical_address)
 {
-	return unmap_user_page(space, virtual_address, physical_address, false);
+	bool kernel_mapping = virtual_address >= KERNEL_BASE;
+	uint64_t kernel_lock_flags = 0;
+	bool result;
+
+	if (!vmm_mutation_allowed() &&
+	    !vmm_ap_heap_mapping_allowed(space, virtual_address))
+		return false;
+	if (kernel_mapping)
+		kernel_lock_flags = spinlock_lock_irqsave(&kernel_mapping_lock);
+	result = unmap_user_page(space, virtual_address, physical_address, false);
+	if (kernel_mapping)
+		spinlock_unlock_irqrestore(&kernel_mapping_lock, kernel_lock_flags);
+	return result;
 }
 
 static struct private_mapping *
@@ -749,7 +799,8 @@ vmm_private_map(struct address_space *space, uint64_t size,
 	size_t i;
 	int error = -ENOMEM;
 
-	if (base_out == NULL || !initialized || !address_space_valid(space) ||
+	if (!vmm_mutation_allowed() || base_out == NULL || !initialized ||
+	    !address_space_valid(space) ||
 	    space == &kernel_space || size == 0 ||
 	    size > UINT64_MAX - (PAGE_SIZE - 1))
 		return -EINVAL;
@@ -918,7 +969,8 @@ vmm_private_unmap(struct address_space *space, uint64_t base,
 	struct private_mapping *mapping;
 	size_t i;
 
-	if (!initialized || !address_space_valid(space) || space == &kernel_space ||
+	if (!vmm_mutation_allowed() || !initialized ||
+	    !address_space_valid(space) || space == &kernel_space ||
 	    requested_size == 0 || (base & (PAGE_SIZE - 1)) != 0 ||
 	    base < PRIVATE_MAP_USABLE_START || base >= PRIVATE_MAP_USABLE_END)
 		return -EINVAL;
@@ -980,7 +1032,8 @@ vmm_private_unmap_complete(struct address_space *space, uint64_t base,
 {
 	struct private_mapping *mapping;
 
-	if (!initialized || !address_space_valid(space) || space == &kernel_space ||
+	if (!vmm_mutation_allowed() || !initialized ||
+	    !address_space_valid(space) || space == &kernel_space ||
 	    length == 0 ||
 	    (base & (PAGE_SIZE - 1)) != 0 || base < PRIVATE_MAP_USABLE_START ||
 	    base >= PRIVATE_MAP_USABLE_END)
@@ -1146,19 +1199,22 @@ vmm_test_remove_private_collision(struct address_space *space)
 }
 #endif
 
-bool
-address_space_create(struct address_space *space)
+static bool
+address_space_create_locked(struct address_space *space)
 {
 	uint64_t *root;
 	uint64_t physical;
 	uint64_t *kernel_root;
+	uint64_t lock_flags;
 	unsigned int i;
 
 	if (!initialized || space == NULL || address_space_valid(space) ||
 	    !new_table(&physical, &root))
 		return false;
+	lock_flags = spinlock_lock_irqsave(&kernel_mapping_lock);
 	kernel_root = table_virtual(kernel_space.root_physical);
 	if (kernel_root == NULL) {
+		spinlock_unlock_irqrestore(&kernel_mapping_lock, lock_flags);
 		(void)pmm_free_page(physical);
 		return false;
 	}
@@ -1171,15 +1227,33 @@ address_space_create(struct address_space *space)
 	space->private_mappings = NULL;
 	space->next = address_spaces;
 	address_spaces = space;
+	spinlock_unlock_irqrestore(&kernel_mapping_lock, lock_flags);
 	return true;
+}
+
+bool
+address_space_create(struct address_space *space)
+{
+	uint64_t lock_flags;
+	bool result;
+
+	if (!vmm_mutation_allowed())
+		return false;
+	lock_flags = spinlock_lock_irqsave(&address_space_lifecycle_lock);
+	result = address_space_create_locked(space);
+	spinlock_unlock_irqrestore(&address_space_lifecycle_lock, lock_flags);
+	return result;
 }
 
 bool
 address_space_activate(const struct address_space *space)
 {
-	uint64_t lock_flags = spinlock_lock_irqsave(&address_space_lifecycle_lock);
+	uint64_t lock_flags;
 	bool result = false;
 
+	if (!vmm_mutation_allowed())
+		return false;
+	lock_flags = spinlock_lock_irqsave(&address_space_lifecycle_lock);
 	if (!initialized || !address_space_valid(space) || space->root_physical == 0 ||
 	    (space->root_physical & (PAGE_SIZE - 1)) != 0 ||
 	    table_virtual(space->root_physical) == NULL)
@@ -1511,6 +1585,7 @@ static bool
 destroy_address_space_tables(struct address_space *space)
 {
 	uint64_t *root;
+	uint64_t kernel_lock_flags;
 	unsigned int i;
 
 	if (!initialized || !address_space_valid(space) || space->root_physical == 0 ||
@@ -1537,16 +1612,20 @@ destroy_address_space_tables(struct address_space *space)
 		if ((entry & PTE_PRESENT) != 0)
 			free_user_tables(entry & PTE_ADDRESS, 3);
 	}
-	if (!pmm_free_page(space->root_physical))
-		return false;
 	{
+		uint64_t root_physical = space->root_physical;
 		struct address_space **link = &address_spaces;
 
+		kernel_lock_flags = spinlock_lock_irqsave(&kernel_mapping_lock);
 		while (*link != NULL && *link != space)
 			link = &(*link)->next;
-		if (*link != space)
+		if (*link != space || !pmm_free_page(root_physical)) {
+			spinlock_unlock_irqrestore(&kernel_mapping_lock,
+			    kernel_lock_flags);
 			return false;
+		}
 		*link = space->next;
+		spinlock_unlock_irqrestore(&kernel_mapping_lock, kernel_lock_flags);
 	}
 	space->root_physical = 0;
 	space->shm_next_address = 0;
@@ -1586,8 +1665,13 @@ address_space_destroy_locked(struct address_space *space)
 bool
 address_space_destroy(struct address_space *space)
 {
-	uint64_t lock_flags = spinlock_lock_irqsave(&address_space_lifecycle_lock);
-	bool result = address_space_destroy_locked(space);
+	uint64_t lock_flags;
+	bool result;
+
+	if (!vmm_mutation_allowed())
+		return false;
+	lock_flags = spinlock_lock_irqsave(&address_space_lifecycle_lock);
+	result = address_space_destroy_locked(space);
 
 	spinlock_unlock_irqrestore(&address_space_lifecycle_lock, lock_flags);
 	return result;
@@ -1663,8 +1747,7 @@ vmm_copy_from_user(const struct address_space *space, void *destination,
 	while (remaining != 0) {
 		uint64_t physical;
 		uint64_t chunk = PAGE_SIZE - (current & (PAGE_SIZE - 1));
-		const volatile uint8_t *input;
-		uint64_t i;
+		const void *input;
 
 		if (chunk > remaining)
 			chunk = remaining;
@@ -1673,10 +1756,9 @@ vmm_copy_from_user(const struct address_space *space, void *destination,
 		    chunk - 1 > UINTPTR_MAX - (uintptr_t)(hhdm_offset + physical +
 		    (current & (PAGE_SIZE - 1))))
 			return false;
-		input = (const volatile uint8_t *)(uintptr_t)(hhdm_offset + physical +
+		input = (const void *)(uintptr_t)(hhdm_offset + physical +
 		    (current & (PAGE_SIZE - 1)));
-		for (i = 0; i < chunk; i++)
-			((uint8_t *)output)[i] = input[i];
+		x86_copy_ram((void *)output, input, (size_t)chunk);
 		output += chunk;
 		current += chunk;
 		remaining -= chunk;
@@ -2048,8 +2130,13 @@ address_space_destroy_with_pages_locked(struct address_space *space)
 bool
 address_space_destroy_with_pages(struct address_space *space)
 {
-	uint64_t lock_flags = spinlock_lock_irqsave(&address_space_lifecycle_lock);
-	bool result = address_space_destroy_with_pages_locked(space);
+	uint64_t lock_flags;
+	bool result;
+
+	if (!vmm_mutation_allowed())
+		return false;
+	lock_flags = spinlock_lock_irqsave(&address_space_lifecycle_lock);
+	result = address_space_destroy_with_pages_locked(space);
 
 	spinlock_unlock_irqrestore(&address_space_lifecycle_lock, lock_flags);
 	return result;
@@ -2181,7 +2268,7 @@ address_space_clone_locked(const struct address_space *source,
 		klog("OpenSillicon: private fork source metadata validation failed\n");
 		return false;
 	}
-	if (!address_space_create(destination))
+	if (!address_space_create_locked(destination))
 		return false;
 	destination->shm_next_address = source->shm_next_address;
 	destination->private_map_cursor = source->private_map_cursor;
@@ -2218,8 +2305,13 @@ bool
 address_space_clone(const struct address_space *source,
 	struct address_space *destination)
 {
-	uint64_t lock_flags = spinlock_lock_irqsave(&address_space_lifecycle_lock);
-	bool result = address_space_clone_locked(source, destination);
+	uint64_t lock_flags;
+	bool result;
+
+	if (!vmm_mutation_allowed())
+		return false;
+	lock_flags = spinlock_lock_irqsave(&address_space_lifecycle_lock);
+	result = address_space_clone_locked(source, destination);
 
 	spinlock_unlock_irqrestore(&address_space_lifecycle_lock, lock_flags);
 	return result;

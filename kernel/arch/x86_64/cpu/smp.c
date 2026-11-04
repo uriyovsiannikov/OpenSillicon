@@ -1,7 +1,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "arch/x86_64/interrupts.h"
 #include "arch/x86_64/lapic.h"
+#include "kernel/log.h"
+#include "kernel/scheduler.h"
 #include "kernel/smp.h"
 #include "kernel/spinlock.h"
 #include "kernel/vmm.h"
@@ -61,11 +64,11 @@ static struct descriptor_pointer smp_ap_idle_idtr;
 static uint8_t cpu_stacks[SMP_MAX_CPUS][SMP_STACK_SIZE]
 	__attribute__((aligned(16)));
 static size_t discovered_count;
-static size_t online_count;
 static uint64_t startup_tsc_frequency;
 static uint32_t ap_idle_timer_count;
 static uint64_t tlb_generation;
 static struct spinlock tlb_shootdown_lock = SPINLOCK_INITIALIZER;
+static volatile uint32_t work_dispatch_busy;
 
 extern void gdt_load(const struct descriptor_pointer *pointer);
 extern void idt_load(void);
@@ -74,7 +77,16 @@ extern void smp_ap_entry_trampoline(struct limine_mp_info *info);
 extern void smp_ap_exception_halt(void);
 extern void smp_ap_tlb_shootdown_entry(void);
 extern void smp_ap_idle_timer_entry(void);
+extern void smp_ap_work_ipi_entry(void);
 extern void smp_ap_spurious_iret(void);
+void smp_ap_tlb_shootdown_handler(void);
+
+static struct interrupt_frame *
+smp_bsp_tlb_shootdown_interrupt(struct interrupt_frame *frame)
+{
+	smp_ap_tlb_shootdown_handler();
+	return frame;
+}
 
 static bool
 current_apic_id(uint32_t *apic_id)
@@ -159,6 +171,16 @@ prepare_ap_startup_idt(void)
 	};
 	handler = (uintptr_t)smp_ap_idle_timer_entry;
 	ap_idle_idt[SMP_AP_IDLE_TIMER_VECTOR] = (struct idt_gate){
+		.offset_low = handler & 0xffffU,
+		.selector = GDT_BOOTSTRAP_CODE_SELECTOR,
+		.ist = 0,
+		.type_attributes = IDT_INTERRUPT_GATE,
+		.offset_middle = (handler >> 16) & 0xffffU,
+		.offset_high = handler >> 32,
+		.reserved = 0
+	};
+	handler = (uintptr_t)smp_ap_work_ipi_entry;
+	ap_idle_idt[SMP_WORK_IPI_VECTOR] = (struct idt_gate){
 		.offset_low = handler & 0xffffU,
 		.selector = GDT_BOOTSTRAP_CODE_SELECTOR,
 		.ist = 0,
@@ -274,12 +296,14 @@ smp_init(struct limine_mp_response *response, uint64_t tsc_frequency,
 	discovered_count = cpu_count;
 	if (!initialize_cpu_tables(&cpus[0], true))
 		return false;
+	if (!interrupt_register_nmi_handler(
+	    smp_bsp_tlb_shootdown_interrupt))
+		return false;
 	__atomic_store_n(&cpus[0].active_address_space,
 	    vmm_active_address_space(), __ATOMIC_RELEASE);
 	__atomic_store_n(&cpus[0].stage, SMP_CPU_STAGE_LOCAL_READY,
 	    __ATOMIC_RELEASE);
 	__atomic_store_n(&cpus[0].state, SMP_CPU_ONLINE, __ATOMIC_RELEASE);
-	online_count = 1;
 	prepare_ap_startup_idt();
 
 	for (size_t i = 1; i < discovered_count; i++) {
@@ -327,10 +351,8 @@ smp_init(struct limine_mp_response *response, uint64_t tsc_frequency,
 	for (size_t i = 1; i < discovered_count; i++) {
 		uint32_t expected = SMP_CPU_STARTING;
 
-		if (!__atomic_compare_exchange_n(&cpus[i].state, &expected,
-		    SMP_CPU_FAILED, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE) &&
-		    expected == SMP_CPU_ONLINE)
-			online_count++;
+		(void)__atomic_compare_exchange_n(&cpus[i].state, &expected,
+		    SMP_CPU_FAILED, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
 	}
 	return smp_current_cpu() == &cpus[0];
 }
@@ -397,8 +419,43 @@ smp_ap_online(struct smp_cpu *cpu)
 	__atomic_store_n(&cpu->stage, SMP_CPU_STAGE_LOCAL_READY, __ATOMIC_RELEASE);
 	(void)__atomic_compare_exchange_n(&cpu->state, &expected, SMP_CPU_ONLINE,
 	    false, __ATOMIC_RELEASE, __ATOMIC_RELAXED);
-	for (;;)
-		__asm__ volatile ("sti; hlt" : : : "memory");
+	for (;;) {
+		uint64_t request;
+		uint64_t acknowledged;
+		smp_work_function function;
+		void *argument;
+
+		/* Check queued work with interrupts disabled so an IPI cannot be
+		 * consumed between the check and the atomic sti/hlt idle sequence.
+		 * Runnable cooperative threads must not wait for the next timer tick. */
+		__asm__ volatile ("cli" : : : "memory");
+		request = __atomic_load_n(&cpu->work_request, __ATOMIC_ACQUIRE);
+		acknowledged = __atomic_load_n(&cpu->work_acknowledged,
+		    __ATOMIC_RELAXED);
+		if (request == acknowledged && !scheduler_has_work())
+			__asm__ volatile ("sti; hlt" : : : "memory");
+		else
+			__asm__ volatile ("sti" : : : "memory");
+		request = __atomic_load_n(&cpu->work_request, __ATOMIC_ACQUIRE);
+		acknowledged = __atomic_load_n(&cpu->work_acknowledged,
+		    __ATOMIC_RELAXED);
+		if (request == acknowledged) {
+			scheduler_idle();
+			continue;
+		}
+		function = cpu->work_function;
+		argument = cpu->work_argument;
+		if (function == NULL) {
+			klog("OpenSillicon panic: SMP work request has no callback\n");
+			kernel_halt();
+		}
+		function(argument);
+		cpu->work_function = NULL;
+		cpu->work_argument = NULL;
+		__atomic_store_n(&cpu->work_acknowledged, request,
+		    __ATOMIC_RELEASE);
+		scheduler_idle();
+	}
 }
 
 void
@@ -414,7 +471,6 @@ smp_ap_tlb_shootdown_handler(void)
 			__asm__ volatile ("cli; hlt" : : : "memory");
 	__asm__ volatile ("mov %%cr3, %0" : "=r" (cr3));
 	__asm__ volatile ("mov %0, %%cr3" : : "r" (cr3) : "memory");
-	lapic_eoi();
 	generation = __atomic_load_n(&cpu->tlb_request, __ATOMIC_ACQUIRE);
 	__atomic_store_n(&cpu->tlb_acknowledged, generation, __ATOMIC_RELEASE);
 }
@@ -430,6 +486,117 @@ smp_ap_idle_timer_handler(void)
 			__asm__ volatile ("cli; hlt" : : : "memory");
 	__atomic_add_fetch(&cpu->idle_timer_ticks, 1, __ATOMIC_RELAXED);
 	lapic_eoi();
+}
+
+void
+smp_ap_work_ipi_handler(void)
+{
+	struct smp_cpu *cpu = cpu_from_gs_base();
+
+	if (cpu == NULL || cpu->bsp ||
+	    __atomic_load_n(&cpu->state, __ATOMIC_RELAXED) != SMP_CPU_ONLINE)
+		for (;;)
+			__asm__ volatile ("cli; hlt" : : : "memory");
+	lapic_eoi();
+}
+
+bool
+smp_run_on_all_cpus(smp_work_function function, void *argument)
+{
+	struct smp_cpu *current = smp_current_cpu();
+	uint64_t requests[SMP_MAX_CPUS] = {0};
+	bool targets[SMP_MAX_CPUS] = {false};
+	uint64_t start;
+	uint64_t flags;
+	uint32_t expected = 0;
+
+	__asm__ volatile ("pushfq; popq %0" : "=r" (flags));
+	if (current != &cpus[0] || (flags & (1ULL << 9)) == 0 ||
+	    function == NULL || discovered_count == 0)
+		return false;
+	if (!__atomic_compare_exchange_n(&work_dispatch_busy, &expected, 1, false,
+	    __ATOMIC_ACQUIRE, __ATOMIC_RELAXED))
+		return false;
+	for (size_t i = 1; i < discovered_count; i++) {
+		struct smp_cpu *target = &cpus[i];
+		if (__atomic_load_n(&target->state, __ATOMIC_ACQUIRE) !=
+		    SMP_CPU_ONLINE)
+			continue;
+		requests[i] = __atomic_load_n(&target->work_request,
+		    __ATOMIC_RELAXED) + 1U;
+		if (requests[i] == 0)
+			requests[i] = 1;
+		target->work_function = function;
+		target->work_argument = argument;
+		__atomic_store_n(&target->work_request, requests[i],
+		    __ATOMIC_RELEASE);
+		targets[i] = true;
+	}
+	for (size_t i = 1; i < discovered_count; i++) {
+		if (targets[i] && !lapic_send_ipi(cpus[i].apic_id,
+		    SMP_WORK_IPI_VECTOR)) {
+			klog("OpenSillicon panic: failed to send SMP work IPI\n");
+			kernel_halt();
+		}
+	}
+	/* Start the BSP copy after all APs have received their work, so the same
+	 * callback can process one disjoint shard per online processor. */
+	function(argument);
+	start = read_tsc();
+	for (uint32_t polls = 0; polls < STARTUP_POLL_LIMIT; polls++) {
+		bool pending = false;
+		for (size_t i = 1; i < discovered_count; i++) {
+			if (targets[i] && __atomic_load_n(&cpus[i].work_acknowledged,
+			    __ATOMIC_ACQUIRE) != requests[i]) {
+				pending = true;
+				break;
+			}
+		}
+		if (!pending) {
+			__atomic_store_n(&work_dispatch_busy, 0, __ATOMIC_RELEASE);
+			return true;
+		}
+		if (read_tsc() - start >= startup_tsc_frequency)
+			break;
+		__asm__ volatile ("pause" : : : "memory");
+	}
+	klog("OpenSillicon panic: SMP work callback acknowledgement timed out\n");
+	kernel_halt();
+}
+
+static void
+record_work_dispatch(void *argument)
+{
+	uint64_t *seen = argument;
+	struct smp_cpu *cpu = smp_current_cpu();
+
+	if (cpu != NULL && cpu->logical_id < SMP_MAX_CPUS)
+		__atomic_or_fetch(seen, UINT64_C(1) << cpu->logical_id,
+		    __ATOMIC_RELAXED);
+}
+
+bool
+smp_verify_work_dispatch(void)
+{
+	uint64_t seen = 0;
+	uint64_t expected_mask = 0;
+
+	for (size_t i = 0; i < discovered_count; i++) {
+		if (__atomic_load_n(&cpus[i].state, __ATOMIC_ACQUIRE) == SMP_CPU_ONLINE)
+			expected_mask |= UINT64_C(1) << i;
+	}
+	return expected_mask != 0 && smp_run_on_all_cpus(record_work_dispatch,
+	    &seen) && __atomic_load_n(&seen, __ATOMIC_RELAXED) == expected_mask;
+}
+
+bool
+smp_kick_cpu(size_t logical_id)
+{
+	if (logical_id == 0 || logical_id >= discovered_count ||
+	    __atomic_load_n(&cpus[logical_id].state, __ATOMIC_ACQUIRE) !=
+	    SMP_CPU_ONLINE)
+		return false;
+	return lapic_send_ipi(cpus[logical_id].apic_id, SMP_WORK_IPI_VECTOR);
 }
 
 bool
@@ -472,10 +639,14 @@ tlb_shootdown(const struct address_space *space)
 		result = true;
 		goto out;
 	}
-	if (current != &cpus[0])
+	if (current == NULL || current->logical_id >= discovered_count ||
+	    current != &cpus[current->logical_id] ||
+	    __atomic_load_n(&current->state, __ATOMIC_ACQUIRE) != SMP_CPU_ONLINE)
 		goto out;
 	generation = __atomic_add_fetch(&tlb_generation, 1, __ATOMIC_RELAXED);
-	for (size_t i = 1; i < discovered_count; i++) {
+	for (size_t i = 0; i < discovered_count; i++) {
+		if (&cpus[i] == current)
+			continue;
 		if (__atomic_load_n(&cpus[i].state, __ATOMIC_ACQUIRE) !=
 		    SMP_CPU_ONLINE)
 			continue;
@@ -484,13 +655,13 @@ tlb_shootdown(const struct address_space *space)
 			continue;
 		targets[i] = true;
 		__atomic_store_n(&cpus[i].tlb_request, generation, __ATOMIC_RELEASE);
-		if (!lapic_send_ipi(cpus[i].apic_id, SMP_TLB_SHOOTDOWN_VECTOR))
+		if (!lapic_send_nmi(cpus[i].apic_id))
 			goto out;
 	}
 	startup_start = read_tsc();
 	for (uint32_t polls = 0; polls < STARTUP_POLL_LIMIT; polls++) {
 		bool pending = false;
-		for (size_t i = 1; i < discovered_count; i++) {
+		for (size_t i = 0; i < discovered_count; i++) {
 			if (targets[i] && __atomic_load_n(
 			    &cpus[i].tlb_acknowledged, __ATOMIC_ACQUIRE) != generation) {
 				pending = true;
@@ -532,7 +703,14 @@ smp_discovered_count(void)
 size_t
 smp_online_count(void)
 {
-	return online_count;
+	size_t count = 0;
+
+	for (size_t i = 0; i < discovered_count; i++) {
+		if (__atomic_load_n(&cpus[i].state, __ATOMIC_ACQUIRE) ==
+		    SMP_CPU_ONLINE)
+			count++;
+	}
+	return count;
 }
 
 const struct smp_cpu *
