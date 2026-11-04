@@ -381,9 +381,6 @@ KERNEL_OBJECTS := $(BUILD_DIR)/main.o $(BUILD_DIR)/boot.o $(BUILD_DIR)/boot_entr
 	$(BUILD_DIR)/netstack.o \
 	$(BUILD_DIR)/tcp_core.o $(BUILD_DIR)/tcp_wire.o $(BUILD_DIR)/tcp_runtime.o \
 	$(BUILD_DIR)/udp_socket.o $(BUILD_DIR)/network_service.o \
-	$(BUILD_DIR)/e1000_profile.o $(BUILD_DIR)/e1000.o \
-	$(BUILD_DIR)/e1000_ring.o \
-	$(BUILD_DIR)/e1000_reset.o \
 	$(BUILD_DIR)/timer.o \
 	$(BUILD_DIR)/scheduler.o $(BUILD_DIR)/interrupts.o $(BUILD_DIR)/gdt_asm.o \
 	$(BUILD_DIR)/interrupts_asm.o $(BUILD_DIR)/context.o $(BUILD_DIR)/fd.o \

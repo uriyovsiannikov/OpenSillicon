@@ -10,8 +10,6 @@
 #include "kernel/errno.h"
 #include "kernel/pmm.h"
 #include "kernel/dma.h"
-#include "kernel/e1000.h"
-#include "kernel/e1000_profile.h"
 #include "kernel/netbuf.h"
 #include "kernel/netdev.h"
 #include "kernel/netstack.h"
@@ -181,7 +179,7 @@ switch_root_to_silliconfs(void)
 
 static uint64_t pci_device_count;
 static bool ahci_controller_found;
-static bool e1000_device_found;
+
 #ifdef OPEN_SILLICON_ENABLE_QEMU_VIRTIO_RNG
 static bool virtio_rng_device_found;
 static bool virtio_rng_device_ambiguous;
@@ -203,22 +201,6 @@ record_pci_device(const struct pci_device_info *device, void *context)
 		}
 	}
 #endif
-	if (device->class_code == 0x02 && device->subclass == 0x00) {
-		if (device->vendor_id == E1000_QEMU_VENDOR_ID &&
-		    device->device_id == E1000_QEMU_DEVICE_ID) {
-			if (e1000_device_found) {
-				(void)e1000_discover(device);
-				klog("OpenSillicon: duplicate supported e1000 profile found\n");
-			} else {
-				e1000_device_found = true;
-				(void)e1000_discover(device);
-			}
-		} else if (device->vendor_id == E1000_QEMU_VENDOR_ID) {
-			klog("OpenSillicon: unsupported Intel network device ID ");
-			klog_u64(device->device_id);
-			klog("; e1000 initialization skipped\n");
-		}
-	}
 	if (device->class_code == 0x01 && device->subclass == 0x06 &&
 	    device->programming_interface == 0x01 && !ahci_controller_found) {
 		ahci_device = *device;
@@ -654,45 +636,6 @@ virtio_rng_probe_done:
 	klog_u64(pci_device_count);
 	klog(" AHCI ");
 	klog(ahci_controller_found ? "found\n" : "not found\n");
-	if (e1000_device_found) {
-		struct net_device *network_device = e1000_network_device();
-		bool network_started = netbuf_pool_init() && network_device != NULL &&
-		    net_device_start(network_device) == NET_DEVICE_OK;
-
-		if (network_started && e1000_initialize()) {
-			klog_status("QEMU e1000 82540EM", true,
-			    "8086:100e rings initialized; identity DMA; bus mastering enabled; interrupts disabled");
-			{
-				struct netstack_config network_config = {
-					.mac = {0x52, 0x54, 0x00, 0x15, 0x03, 0x01},
-					.address = {10, 15, 3, 1},
-					.netmask = {255, 255, 255, 0},
-					.gateway = {10, 15, 3, 2}
-				};
-				if (udp_socket_system_init(network_device,
-				    &network_config) != 0)
-					klog("OpenSillicon: static UDP service unavailable; socket creation returns ENETDOWN\n");
-				else if (!network_service_init())
-					klog("OpenSillicon: deferred network service unavailable; syscall polling remains enabled\n");
-				else {
-					klog("OpenSillicon: static IPv4 profile 10.15.3.1/24 via 10.15.3.2 initialized; bounded deferred polling enabled\n");
-					if (!tcp_runtime_init())
-						klog("OpenSillicon: TCP core runtime owner unavailable; TCP remains disabled\n");
-					else
-						klog("OpenSillicon: inert TCP core table owner initialized; dispatch disabled\n");
-				}
-			}
-		} else {
-			klog("OpenSillicon: e1000 initialization failed, state ");
-			klog_u64(e1000_state());
-			klog(" reason ");
-			klog_u64(e1000_last_failure());
-			klog("; device left disabled where PCI config access permits\n");
-		}
-	} else {
-		klog_status("QEMU e1000 82540EM", false,
-		    "supported 8086:100e profile not found; no default NIC assumed");
-	}
 	if (!ahci_controller_found)
 		klog_status("AHCI", false, "no supported controller found");
 	if (!ahci_controller_found)
@@ -702,6 +645,17 @@ virtio_rng_probe_done:
 	initialize_filesystems(&info);
 	klog_status("VFS", true, NULL);
 	switch_root_to_silliconfs();
+	{
+		enum kernel_module_error result = kernel_module_load_path(
+		    "e1000", "/boot/modules/e1000.ko");
+		klog_status("e1000 module", result == KERNEL_MODULE_OK,
+		    "load from /boot/modules/e1000.ko");
+		if (result != KERNEL_MODULE_OK) {
+			klog("OpenSillicon: e1000 module load error ");
+			klog_u64(result);
+			klog("; boot continues without network\n");
+		}
+	}
 	if (block_flush(&ahci_block_device) != 0) {
 		klog("OpenSillicon: root block flush failed\n");
 		kernel_halt();

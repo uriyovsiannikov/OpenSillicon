@@ -17,6 +17,24 @@ the module list does not require root. Module names come from the filename with
 the `.ko` suffix removed. Loading an existing name fails; unloading a pinned
 module fails with `EBUSY`.
 
+## e1000 boot driver
+
+The e1000 driver is built only into `build/modules/e1000.ko`, including its
+profile, ring, reset, and module entry code. The disk image installs it in
+`/boot/modules`; the kernel loads it after mounting SilliconFS. A missing or
+invalid module allows boot to continue without networking.
+
+The module probes exactly one QEMU 8086:100e Ethernet device, checks the driver
+API version, starts the device, and attaches it to the existing static network
+profile (10.15.3.1/24, gateway 10.15.3.2, MAC 52:54:00:15:03:01).
+The driver code is absent from the core kernel ELF.
+
+e1000 currently refuses unloading with `EBUSY`: the network services retain its
+callbacks for the entire boot. It also remains resident when hardware startup
+or network attachment fails after initialization begins, since releasing code
+after a failed DMA stop would be unsafe. Inspect `/tmp/btlog.log` for those
+failures; a loaded module does not by itself guarantee a working link.
+
 ## Writing a module
 
 Place a C source in `kernel/module/examples/NAME.c`, then run

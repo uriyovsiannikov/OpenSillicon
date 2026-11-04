@@ -309,7 +309,8 @@ $(BUILD_DIR)/root.img: x11-apps-ready $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.e
 		--startx $(BUILD_DIR)/startx.elf \
 		--twm $(BUILD_DIR)/x11/twm/src/twm --xterm $(BUILD_DIR)/x11/xterm/xterm \
 		--xeyes $(BUILD_DIR)/x11/xeyes/xeyes --feh $(BUILD_DIR)/x11/feh/src/feh \
-		--nano $(BUILD_DIR)/nano/nano --module $(BUILD_DIR)/modules/hello.ko --coreutils \
+		--nano $(BUILD_DIR)/nano/nano --module $(BUILD_DIR)/modules/hello.ko \
+		--module $(BUILD_DIR)/modules/e1000.ko --coreutils \
 		$(BUILD_DIR)/coreutils/ls.elf $(BUILD_DIR)/coreutils/cat.elf \
 		$(BUILD_DIR)/coreutils/echo.elf $(BUILD_DIR)/coreutils/pwd.elf \
 		$(BUILD_DIR)/coreutils/true.elf $(BUILD_DIR)/coreutils/false.elf \
