@@ -393,6 +393,8 @@ KERNEL_OBJECTS := $(BUILD_DIR)/main.o $(BUILD_DIR)/boot.o $(BUILD_DIR)/boot_entr
 	$(BUILD_DIR)/devfs.o $(BUILD_DIR)/procfs.o \
 	$(ACPICA_OBJECTS)
 
+-include $(KERNEL_OBJECTS:.o=.d)
+
 $(BUILD_DIR)/kernel.elf: $(KERNEL_OBJECTS) kernel/arch/x86_64/boot/linker.ld
 	$(LD) $(KERNEL_LDFLAGS) $(KERNEL_OBJECTS) -o $@
 
@@ -414,5 +416,6 @@ $(BUILD_DIR)/opensillicon.iso: $(BUILD_DIR)/kernel.elf $(BUILD_DIR)/initramfs.cp
 
 endif
 
-$(BUILD_DIR)/pty.o: kernel/tty/pty.c include/kernel/pty.h include/kernel/pipe.h
+$(BUILD_DIR)/pty.o: kernel/tty/pty.c include/kernel/pty.h include/kernel/pipe.h \
+		include/kernel/fd.h
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@

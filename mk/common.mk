@@ -28,7 +28,7 @@ LIBOS_CFLAGS := -std=c11 -O2 -ffreestanding -fno-builtin -fno-stack-protector \
 KERNEL_CFLAGS := -std=c11 -O2 -g -ffreestanding -fno-stack-protector \
 	-fno-pic -fno-pie -m64 -mno-red-zone -mcmodel=kernel \
 	-mgeneral-regs-only -mno-mmx -mno-sse -mno-sse2 -msoft-float \
-	-Wall -Wextra -Werror -Ilimine
+	-Wall -Wextra -Werror -MMD -MP -Ilimine
 KERNEL_LDFLAGS := -nostdlib -static -no-pie -z max-page-size=0x1000 \
 	-T kernel/arch/x86_64/boot/linker.ld
 KERNEL_ASFLAGS := -m64 -mno-red-zone
