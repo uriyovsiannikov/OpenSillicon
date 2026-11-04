@@ -343,7 +343,7 @@ redraw_line(const char *line, size_t length, size_t cursor)
 {
 	u_puts("\r");
 	u_puts(current_directory);
-	u_puts("# ");
+	u_puts("% ");
 	if (cursor_visible && !xterm_cursor) {
 		u_putn(line, cursor);
 		u_puts("\033[0m_");
@@ -827,7 +827,6 @@ user_main(uint64_t argc, char **argv, const uint64_t *startup_stack)
 		u_puts("OpenSillicon shell: cannot enable interactive input mode\n");
 		u_exit(1);
 	}
-	u_puts("OpenSillicon shell ready\n");
 	for (;;) {
 		int result;
 		u_puts(current_directory);
@@ -856,3 +855,4 @@ user_main(uint64_t argc, char **argv, const uint64_t *startup_stack)
 		}
 	}
 }
+

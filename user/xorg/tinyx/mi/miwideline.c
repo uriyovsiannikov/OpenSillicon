@@ -2070,14 +2070,6 @@ miWideDash (pDrawable, pGC, mode, npt, pPts)
     Bool	    endIsFg = FALSE, startIsFg = FALSE;
     Bool            firstIsFg = FALSE, prevIsFg = FALSE;
 
-#if 0
-    /* XXX backward compatibility */
-    if (pGC->lineWidth == 0)
-    {
-	miZeroDashLine (pDrawable, pGC, mode, npt, pPts);
-	return;
-    }
-#endif
     if (pGC->lineStyle == LineDoubleDash &&
 	(pGC->fillStyle == FillOpaqueStippled || pGC->fillStyle == FillTiled))
     {

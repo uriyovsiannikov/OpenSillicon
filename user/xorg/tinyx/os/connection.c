@@ -69,7 +69,6 @@ SOFTWARE.
 #include <X11/Xproto.h>
 #define XSERV_t
 #define TRANS_SERVER
-#define TRANS_REOPEN
 #include <X11/Xtrans/Xtrans.h>
 #include <errno.h>
 #include <signal.h>
@@ -83,15 +82,6 @@ SOFTWARE.
 
 
 
-#if defined(TCPCONN)
-# include <netinet/in.h>
-# include <arpa/inet.h>
-#   ifdef CSRG_BASED
-#    include <sys/param.h>
-#   endif
-#     include <netinet/tcp.h>
-# include <arpa/inet.h>
-#endif
 
 #include <sys/uio.h>
 #include "misc.h"		/* for typedef of pointer */
@@ -166,24 +156,8 @@ InitConnectionLimits(void)
 
 
 
-#ifdef OPEN_SILLICON
     /* OpenSillicon currently provides a fixed 32-descriptor table. */
     lastfdesc = 31;
-#else
-#if !defined(XNO_SYSCONF) && defined(_SC_OPEN_MAX)
-    lastfdesc = sysconf(_SC_OPEN_MAX) - 1;
-#endif
-
-#ifdef HAS_GETDTABLESIZE
-    if (lastfdesc < 0)
-	lastfdesc = getdtablesize() - 1;
-#endif
-
-#ifdef _NFILE
-    if (lastfdesc < 0)
-	lastfdesc = _NFILE - 1;
-#endif
-#endif /* OPEN_SILLICON */
 
 
 
@@ -294,9 +268,6 @@ CreateWellKnownSockets(void)
 	    kill (ParentProcess, SIGUSR1);
 	}
     }
-#ifdef XDMCP
-    XdmcpInit ();
-#endif
 }
 
 void
@@ -351,11 +322,7 @@ ResetWellKnownSockets (void)
 	}
     }
     /*
-     * restart XDMCP
      */
-#ifdef XDMCP
-    XdmcpReset ();
-#endif
 }
 
 void
@@ -388,26 +355,11 @@ AuthAudit (ClientPtr client, Bool letin,
 	switch (saddr->sa_family)
 	{
 	case AF_UNSPEC:
-#if defined(UNIXCONN) || defined(LOCALCONN)
+#ifdef UNIXCONN
 	case AF_UNIX:
 #endif
 	    strcpy(out, "local host");
 	    break;
-#if defined(TCPCONN)
-	case AF_INET:
-	    sprintf(out, "IP %s",
-		inet_ntoa(((struct sockaddr_in *) saddr)->sin_addr));
-	    break;
-#if defined(IPv6) && defined(AF_INET6)
-	case AF_INET6: {
-	    char ipaddr[INET6_ADDRSTRLEN];
-	    inet_ntop(AF_INET6, &((struct sockaddr_in6 *) saddr)->sin6_addr,
-	      ipaddr, sizeof(ipaddr));
-	    sprintf(out, "IP %s", ipaddr);
-	}
-	    break;
-#endif
-#endif
 	default:
 	    strcpy(out, "unknown address");
 	}
@@ -523,10 +475,6 @@ ClientAuthorized(ClientPtr client,
     priv->auth_id = auth_id;
     priv->conn_time = 0;
 
-#ifdef XDMCP
-    /* indicate to Xdmcp protocol that we've opened new client */
-    XdmcpOpenDisplay(priv->fd);
-#endif /* XDMCP */
     /* At this point, if the client is authorized to change the access control
      * list, we should getpeername() information, and add the client to
      * the selfhosts list.  It's not really the host machine, but the
@@ -821,9 +769,6 @@ CloseDownConnection(ClientPtr client)
 
     if (oc->output && oc->output->count)
 	FlushClient(client, oc, (char *)NULL, 0);
-#ifdef XDMCP
-    XdmcpCloseDisplay(oc->fd);
-#endif
     CloseDownFileDescriptor(oc);
     FreeOsBuffers(oc);
     client->osPrivate = (pointer)NULL;

@@ -9,10 +9,6 @@
 /* Building kdrive server. */
 #undef KDRIVESERVER
 
-/* Include framebuffer support in X servers */
-#undef KDRIVEFBDEV
-
-
 /* Verbose debugging output hilarity */
 #undef DEBUG
 

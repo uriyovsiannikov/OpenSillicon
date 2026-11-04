@@ -27,26 +27,38 @@ opensilliconFramebufferPresent(ScreenPtr pScreen, shadowBufPtr pBuf)
 	KdScreenInfo *screen = pScreenPriv->screen;
 	OpenSilliconCard *card = screen->card->driver;
 	RegionPtr damage = shadowDamage(pBuf);
-	BoxPtr extents;
+	BoxPtr boxes;
+	int count;
 	struct os_framebuffer_rect rect;
 
-	shadowUpdatePacked(pScreen, pBuf);
-	if (REGION_NUM_RECTS(damage) == 0)
-		return;
-	extents = REGION_EXTENTS(damage);
-	if (extents->x1 < 0 || extents->y1 < 0 || extents->x2 <= extents->x1 ||
-	    extents->y2 <= extents->y1)
-		return;
-	rect = (struct os_framebuffer_rect){
-		.source = (uintptr_t)card->pixels,
-		.x = extents->x1,
-		.y = extents->y1,
-		.width = extents->x2 - extents->x1,
-		.height = extents->y2 - extents->y1
-	};
-	if (os_syscall2(SYSCALL_FRAMEBUFFER_PRESENT_RECT,
-	    (uintptr_t)&rect, 0) < 0)
-		ErrorF("OpenSillicon: framebuffer present syscall failed\n");
+	/* With no rotation, the screen pixmap already uses card->pixels.
+	 * Avoid copying each damaged pixel back to the same address. */
+	if (pBuf->pPixmap->devPrivate.ptr != card->pixels ||
+	    pBuf->pPixmap->devKind != (int)card->info.pitch)
+		shadowUpdatePacked(pScreen, pBuf);
+	/* Keep disjoint damage disjoint all the way to the device.  Its bounding
+	 * box can cover most of the screen for two small, distant updates. */
+	count = REGION_NUM_RECTS(damage);
+	boxes = REGION_RECTS(damage);
+	for (int i = 0; i < count; i++) {
+		BoxPtr box = &boxes[i];
+
+		if (box->x1 < 0 || box->y1 < 0 || box->x2 <= box->x1 ||
+		    box->y2 <= box->y1)
+			continue;
+		rect = (struct os_framebuffer_rect){
+			.source = (uintptr_t)card->pixels,
+			.x = box->x1,
+			.y = box->y1,
+			.width = box->x2 - box->x1,
+			.height = box->y2 - box->y1
+		};
+		if (os_syscall2(SYSCALL_FRAMEBUFFER_PRESENT_RECT,
+		    (uintptr_t)&rect, 0) < 0) {
+			ErrorF("OpenSillicon: framebuffer present syscall failed\n");
+			return;
+		}
+	}
 }
 
 static void *

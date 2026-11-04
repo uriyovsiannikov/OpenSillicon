@@ -55,19 +55,6 @@ KdCardInfo *KdCardInfoLast(void)
 	return ci;
 }
 
-#if 0
-static void KdCardInfoDispose(KdCardInfo * ci)
-{
-	KdCardInfo **prev;
-
-	for (prev = &kdCardInfo; *prev; prev = &(*prev)->next)
-		if (*prev == ci) {
-			*prev = ci->next;
-			free(ci);
-			break;
-		}
-}
-#endif
 
 KdScreenInfo *KdScreenInfoAdd(KdCardInfo * ci)
 {
@@ -86,23 +73,6 @@ KdScreenInfo *KdScreenInfoAdd(KdCardInfo * ci)
 	return si;
 }
 
-#if 0
-static void KdScreenInfoDispose(KdScreenInfo * si)
-{
-	KdCardInfo *ci = si->card;
-
-	KdScreenInfo **prev;
-
-	for (prev = &ci->screenList; *prev; prev = &(*prev)->next)
-		if (*prev == si) {
-			*prev = si->next;
-			free(si);
-			if (!ci->screenList)
-				KdCardInfoDispose(ci);
-			break;
-		}
-}
-#endif
 
 KdMouseInfo *kdMouseInfo;
 
@@ -117,21 +87,3 @@ KdMouseInfo *KdMouseInfoAdd(void)
 	*prev = mi;
 	return mi;
 }
-
-#if 0
-static void KdMouseInfoDispose(KdMouseInfo * mi)
-{
-	KdMouseInfo **prev;
-
-	for (prev = &kdMouseInfo; *prev; prev = &(*prev)->next)
-		if (*prev == mi) {
-			*prev = mi->next;
-			if (mi->name)
-				free(mi->name);
-			if (mi->prot)
-				free(mi->prot);
-			free(mi);
-			break;
-		}
-}
-#endif

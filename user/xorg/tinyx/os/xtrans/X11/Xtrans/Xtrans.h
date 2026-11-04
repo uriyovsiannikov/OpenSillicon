@@ -54,9 +54,7 @@ from The Open Group.
 #include <X11/Xos.h>
 #include <X11/Xmd.h>
 
-#ifndef WIN32
 #include <sys/socket.h>
-#endif
 
 #ifdef __clang__
 /* Not all clients make use of all provided statics */
@@ -83,34 +81,6 @@ static const char *__xtransname = "_XSERVTrans";
 #define X11_t
 #endif /* XSERV_t */
 
-#ifdef XIM_t
-#define TRANS(func) _XimXTrans##func
-#ifdef XTRANSDEBUG
-static const char *__xtransname = "_XimTrans";
-#endif
-#endif /* XIM_t */
-
-#ifdef FS_t
-#define TRANS(func) _FSTrans##func
-#ifdef XTRANSDEBUG
-static const char *__xtransname = "_FSTrans";
-#endif
-#endif /* FS_t */
-
-#ifdef FONT_t
-#define TRANS(func) _FontTrans##func
-#ifdef XTRANSDEBUG
-static const char *__xtransname = "_FontTrans";
-#endif
-#endif /* FONT_t */
-
-#ifdef ICE_t
-#define TRANS(func) _IceTrans##func
-#ifdef XTRANSDEBUG
-static const char *__xtransname = "_IceTrans";
-#endif
-#endif /* ICE_t */
-
 #if !defined(TRANS)
 #define TRANS(func) _XTrans##func
 #ifdef XTRANSDEBUG
@@ -131,12 +101,6 @@ static const char *__xtransname = "_XTrans";
  * This structure needs to be independent of the socket/TLI interface used.
  */
 
-/* Temporary workaround for consumers whose configure scripts were
-   generated with pre-1.6 versions of xtrans.m4 */
-#if defined(IPv6) && !defined(HAVE_STRUCT_SOCKADDR_STORAGE)
-#define HAVE_STRUCT_SOCKADDR_STORAGE
-#endif
-
 #ifdef HAVE_STRUCT_SOCKADDR_STORAGE
 typedef struct sockaddr_storage Xtransaddr;
 #else
@@ -154,22 +118,7 @@ typedef long BytesReadable_t;
 #endif
 
 
-#if defined(WIN32)
-
-/*
- *      TRANS(Readv) and TRANS(Writev) use struct iovec, normally found
- *      in Berkeley systems in <sys/uio.h>.  See the readv(2) and writev(2)
- *      manual pages for details.
- */
-
-struct iovec {
-    caddr_t iov_base;
-    int iov_len;
-};
-
-#else
 #include <sys/uio.h>
-#endif
 
 typedef struct _XtransConnInfo *XtransConnInfo;
 
@@ -179,16 +128,6 @@ typedef struct _XtransConnInfo *XtransConnInfo;
  */
 
 #define TRANS_NONBLOCKING	1
-#define	TRANS_CLOSEONEXEC	2
-
-
-/*
- * Return values of Connect (0 is success)
- */
-
-#define TRANS_CONNECT_FAILED 	-1
-#define TRANS_TRY_CONNECT_AGAIN -2
-#define TRANS_IN_PROGRESS	-3
 
 
 /*
@@ -225,13 +164,6 @@ void TRANS(FreeConnInfo) (
     XtransConnInfo 	/* ciptr */
 );
 
-#ifdef TRANS_CLIENT
-
-XtransConnInfo TRANS(OpenCOTSClient)(
-    const char *	/* address */
-);
-
-#endif /* TRANS_CLIENT */
 
 #ifdef TRANS_SERVER
 
@@ -241,22 +173,6 @@ XtransConnInfo TRANS(OpenCOTSServer)(
 
 #endif /* TRANS_SERVER */
 
-#ifdef TRANS_REOPEN
-
-XtransConnInfo TRANS(ReopenCOTSServer)(
-    int,		/* trans_id */
-    int,		/* fd */
-    const char *	/* port */
-);
-
-int TRANS(GetReopenInfo)(
-    XtransConnInfo,	/* ciptr */
-    int *,		/* trans_id */
-    int *,		/* fd */
-    char **		/* port */
-);
-
-#endif /* TRANS_REOPEN */
 
 
 int TRANS(SetOption)(
@@ -273,19 +189,8 @@ int TRANS(CreateListener)(
     unsigned int	/* flags */
 );
 
-int TRANS(Received) (
-    const char*         /* protocol*/
-);
 
 int TRANS(NoListen) (
-    const char*         /* protocol*/
-);
-
-int TRANS(Listen) (
-    const char*         /* protocol*/
-);
-
-int TRANS(IsListening) (
     const char*         /* protocol*/
 );
 
@@ -300,14 +205,6 @@ XtransConnInfo TRANS(Accept)(
 
 #endif /* TRANS_SERVER */
 
-#ifdef TRANS_CLIENT
-
-int TRANS(Connect)(
-    XtransConnInfo,	/* ciptr */
-    const char *	/* address */
-);
-
-#endif /* TRANS_CLIENT */
 
 int TRANS(BytesReadable)(
     XtransConnInfo,	/* ciptr */
@@ -338,19 +235,11 @@ int TRANS(Writev)(
     int			/* size */
 );
 
-int TRANS(SendFd) (XtransConnInfo ciptr, int fd, int do_close);
-
-int TRANS(RecvFd) (XtransConnInfo ciptr);
-
 int TRANS(Disconnect)(
     XtransConnInfo	/* ciptr */
 );
 
 int TRANS(Close)(
-    XtransConnInfo	/* ciptr */
-);
-
-int TRANS(CloseForCloning)(
     XtransConnInfo	/* ciptr */
 );
 
@@ -395,19 +284,6 @@ int TRANS(ConvertAddress)(
 
 #endif /* X11_t */
 
-#ifdef ICE_t
-
-char *
-TRANS(GetMyNetworkId)(
-    XtransConnInfo	/* ciptr */
-);
-
-char *
-TRANS(GetPeerNetworkId)(
-    XtransConnInfo	/* ciptr */
-);
-
-#endif /* ICE_t */
 
 int
 TRANS(GetHostname) (
@@ -415,8 +291,5 @@ TRANS(GetHostname) (
     int 	/* maxlen */
 );
 
-#if defined(WIN32) && defined(TCPCONN)
-int TRANS(WSAStartup)();
-#endif
 
 #endif /* _XTRANS_H_ */

@@ -4,7 +4,6 @@
 
 #define XTRANS_TRANSPORT_C
 
-#define TRANS_REOPEN
 #define TRANS_SERVER
 #define XSERV_t
 #ifdef OPEN_SILLICON
@@ -31,10 +30,7 @@
 #endif
 #endif
 
-#ifdef LOCALCONN
-#include "xtrans/X11/Xtrans/Xtranslcl.c"
-#endif
-#if defined(TCPCONN) || defined(UNIXCONN)
+#ifdef UNIXCONN
 #include "xtrans/X11/Xtrans/Xtranssock.c"
 #endif
 #include "xtrans/X11/Xtrans/Xtrans.c"

@@ -15,8 +15,6 @@ libkdrive_a_SOURCES =	\
 	kinfo.c		\
 	kinput.c	\
 	kkeymap.h	\
-	kmap.c		\
-	kmode.c		\
 	kshadow.c	\
         ../../mi/miinitext.c
 

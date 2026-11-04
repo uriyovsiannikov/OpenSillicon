@@ -128,6 +128,23 @@ framebuffer_device_present_rect(const struct os_framebuffer_rect *rect)
 			    rect->source + source_offset + copied, amount))
 				return -14;
 			if (((uintptr_t)destination + destination_offset + copied) %
+			    sizeof(uint64_t) == 0) {
+				volatile uint64_t *pixels = (volatile uint64_t *)
+				    (destination + destination_offset + copied);
+				/* Read staging through memcpy to avoid alignment and
+				 * aliasing assumptions about its uint32_t elements. */
+				for (size_t index = 0; index < amount / sizeof(uint64_t);
+				    index++) {
+					uint64_t pair;
+					__builtin_memcpy(&pair, (const uint8_t *)staging +
+					    index * sizeof(pair), sizeof(pair));
+					pixels[index] = pair;
+				}
+				if (amount % sizeof(uint64_t) != 0)
+					*(volatile uint32_t *)(destination +
+					    destination_offset + copied + amount - 4) =
+					    staging[amount / sizeof(uint32_t) - 1];
+			} else if (((uintptr_t)destination + destination_offset + copied) %
 			    sizeof(uint32_t) == 0) {
 				volatile uint32_t *pixels = (volatile uint32_t *)
 				    (destination + destination_offset + copied);

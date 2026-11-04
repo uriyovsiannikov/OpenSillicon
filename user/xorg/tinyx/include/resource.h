@@ -247,10 +247,6 @@ unsigned int GetXIDList(
 extern RESTYPE lastResourceType;
 extern RESTYPE TypeMask;
 
-#ifdef XResExtension
-extern Atom *ResourceNames;
-void RegisterResourceName(RESTYPE type, char* name);
-#endif
 
 #endif /* RESOURCE_H */
 

@@ -59,18 +59,6 @@ static const struct protocol   protocols[] = {
 		MitAddCookie,	MitCheckCookie,	MitResetCookie,
 		MitToID,	MitFromID,	MitRemoveCookie,
 },
-#ifdef HASXDMAUTH
-{   (unsigned short) 19,    "XDM-AUTHORIZATION-1",
-		XdmAddCookie,	XdmCheckCookie,	XdmResetCookie,
-		XdmToID,	XdmFromID,	XdmRemoveCookie,
-},
-#endif
-#ifdef SECURE_RPC
-{   (unsigned short) 9,    "SUN-DES-1",
-		SecureRPCAdd,	SecureRPCCheck,	SecureRPCReset,
-		SecureRPCToID,	SecureRPCFromID,SecureRPCRemove,
-},
-#endif
 };
 
 # define NUM_AUTHORIZATION  (sizeof (protocols) /\
@@ -125,21 +113,6 @@ LoadAuthorization (void)
     return count;
 }
 
-#ifdef XDMCP
-/*
- * XdmcpInit calls this function to discover all authorization
- * schemes supported by the display
- */
-void
-RegisterAuthorizations (void)
-{
-    int	    i;
-
-    for (i = 0; i < NUM_AUTHORIZATION; i++)
-	XdmcpRegisterAuthorization (protocols[i].name,
-				    (int)protocols[i].name_length);
-}
-#endif
 
 XID
 CheckAuthorization (

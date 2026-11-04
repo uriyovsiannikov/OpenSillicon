@@ -100,32 +100,6 @@ _X_EXPORT int ScreenSaverBlanking;
 
 int ScreenSaverAllowExposures;
 
-#ifdef DPMSExtension
-# ifndef DEFAULT_STANDBY_TIME
-#  define DEFAULT_STANDBY_TIME DEFAULT_SCREEN_SAVER_TIME * 2
-# endif
-# ifndef DEFAULT_SUSPEND_TIME
-#  define DEFAULT_SUSPEND_TIME DEFAULT_SCREEN_SAVER_TIME * 3
-# endif
-# ifndef DEFAULT_OFF_TIME
-#  define DEFAULT_OFF_TIME DEFAULT_SCREEN_SAVER_TIME * 4
-# endif
-# ifndef DEFAULT_DPMS_ENABLED
-#  define DEFAULT_DPMS_ENABLED TRUE
-# endif
-
-_X_EXPORT CARD16 DPMSPowerLevel = 0;
-
-_X_EXPORT Bool DPMSEnabledSwitch = FALSE;       /* these denote the DPMS command */
-_X_EXPORT Bool DPMSDisabledSwitch = FALSE;      /* lind switch states */
-_X_EXPORT Bool DPMSCapableFlag = FALSE;
-
-_X_EXPORT CARD32 DPMSStandbyTime;
-_X_EXPORT CARD32 DPMSSuspendTime;
-_X_EXPORT CARD32 DPMSOffTime;
-
-_X_EXPORT Bool DPMSEnabled;
-#endif
 
 CARD32 defaultScreenSaverTime = DEFAULT_SCREEN_SAVER_TIME;
 
@@ -139,9 +113,6 @@ int defaultScreenSaverAllowExposures = DEFAULT_SCREEN_SAVER_EXPOSURES;
 int logoScreenSaver = DEFAULT_LOGO_SCREEN_SAVER;
 #endif
 
-#ifdef SCREENSAVER
-Bool screenSaverSuspended = FALSE;
-#endif
 
 char *defaultFontPath = COMPILEDDEFAULTFONTPATH;
 

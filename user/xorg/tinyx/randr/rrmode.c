@@ -207,9 +207,6 @@ RRModeInit(void)
     RRModeType = CreateNewResourceType(RRModeDestroyResource);
     if (!RRModeType)
         return FALSE;
-#ifdef XResExtension
-    RegisterResourceName(RRModeType, "MODE");
-#endif
     return TRUE;
 }
 

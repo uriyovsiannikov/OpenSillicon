@@ -17,6 +17,13 @@ and presents damaged framebuffer rectangles instead of copying the whole screen
 after each small update. feh uses the bundled static image loaders; caption-file
 editing and terminal stdin controls are unavailable on this OS.
 
+Presentation keeps disjoint damage rectangles separate and skips the shadow
+copy when the screen pixmap already uses the presentation buffer. The kernel
+copies validated user RAM in 64-bit blocks without SIMD, and writes aligned
+framebuffer pixels in pairs, with fallbacks for odd widths and unusual pitches.
+Run `make x86-copy-test framebuffer-device-test` for copy-boundary and rectangle
+coverage, and `make tinyx-qemu-test` for the graphical session smoke test.
+
 `startx` disables framebuffer rendering of text-console output while the X
 session owns the display. Kernel diagnostics still go to the serial console;
 the text framebuffer is restored when `startx` exits or is terminated.

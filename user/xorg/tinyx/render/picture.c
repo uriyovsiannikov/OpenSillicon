@@ -609,11 +609,6 @@ PictureInit(ScreenPtr pScreen, PictFormatPtr formats, int nformats)
             return FALSE;
         PictureWindowPrivateIndex = AllocateWindowPrivateIndex();
         PictureGeneration = serverGeneration;
-#ifdef XResExtension
-        RegisterResourceName(PictureType, "PICTURE");
-        RegisterResourceName(PictFormatType, "PICTFORMAT");
-        RegisterResourceName(GlyphSetType, "GLYPHSET");
-#endif
     }
     if (!AllocateWindowPrivate(pScreen, PictureWindowPrivateIndex, 0))
         return FALSE;

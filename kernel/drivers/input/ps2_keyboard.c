@@ -234,8 +234,10 @@ ps2_mouse_decode_byte(uint8_t byte)
 		return;
 	mouse_packet_count = 0;
 	first = mouse_packet[0];
-	dx = (int8_t)mouse_packet[1];
-	dy = -(int8_t)mouse_packet[2];
+	/* Movement is signed 9-bit data: the sign is in the first byte,
+	 * not bit 7 of the movement byte. Values beyond +/-127 are valid. */
+	dx = (int)mouse_packet[1] - ((first & 0x10U) ? 256 : 0);
+	dy = -((int)mouse_packet[2] - ((first & 0x20U) ? 256 : 0));
 	if ((first & 0x40U) != 0)
 		dx = 0;
 	if ((first & 0x80U) != 0)

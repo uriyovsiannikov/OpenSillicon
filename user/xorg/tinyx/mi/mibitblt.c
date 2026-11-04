@@ -358,14 +358,6 @@ miGetPlane(
 		 * Now get the bit and insert into a bitmap in XY format.
 		 */
 		bit = (pixel >> planeNum) & 1;
-#if 0
-		/* XXX assuming bit order == byte order */
-#if BITMAP_BIT_ORDER == LSBFirst
-		bit <<= k;
-#else
-		bit <<= ((BITMAP_SCANLINE_UNIT - 1) - k);
-#endif
-#else
 		/* XXX assuming byte order == LSBFirst */
 		if (screenInfo.bitmapBitOrder == LSBFirst)
 			bit <<= k;
@@ -374,7 +366,6 @@ miGetPlane(
 				 (k % screenInfo.bitmapScanlineUnit)) +
 				((k / screenInfo.bitmapScanlineUnit) *
 				 screenInfo.bitmapScanlineUnit);
-#endif
 		*pOut |= (OUT_TYPE) bit;
 		k++;
 		if (k == BITMAP_SCANLINE_UNIT)

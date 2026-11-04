@@ -57,13 +57,9 @@ SOFTWARE.
 #include <dix-config.h>
 #endif
 
-#if 0
-#define DEBUG_COMMUNICATION
-#endif
 #include <stdio.h>
 #define XSERV_t
 #define TRANS_SERVER
-#define TRANS_REOPEN
 #include <X11/Xtrans/Xtrans.h>
 #include <X11/Xmd.h>
 #include <errno.h>

@@ -45,12 +45,6 @@
 #include "randrstr.h"
 #include "globals.h"
 
-#define KD_DPMS_NORMAL	    0
-#define KD_DPMS_STANDBY	    1
-#define KD_DPMS_SUSPEND	    2
-#define KD_DPMS_POWERDOWN   3
-#define KD_DPMS_MAX	    KD_DPMS_POWERDOWN
-
 #ifndef KD_MAX_CARD_ADDRESS
 #define KD_MAX_CARD_ADDRESS 8
 #endif
@@ -117,7 +111,6 @@ typedef struct _KdCardFuncs {
 	Bool(*createRes) (ScreenPtr);	/* create screen resources */
 	void (*preserve) (KdCardInfo *);	/* save graphics card state */
 	 Bool(*enable) (ScreenPtr);	/* set up for rendering */
-	 Bool(*dpms) (ScreenPtr, int);	/* set DPMS screen saver */
 	void (*disable) (ScreenPtr);	/* turn off rendering */
 	void (*restore) (KdCardInfo *);	/* restore graphics card state */
 	void (*scrfini) (KdScreenInfo *);	/* close down screen */
@@ -149,8 +142,6 @@ typedef struct {
 	Bool enabled;
 	Bool closed;
 	int bytesPerPixel;
-
-	int dpmsState;
 
 	ColormapPtr pInstalledmap;	/* current colormap */
 	xColorItem systemPalette[KD_MAX_PSEUDO_SIZE];	/* saved windows colors */
@@ -223,29 +214,6 @@ typedef struct _KdOsFuncs {
 	void (*pollEvents) (void);
 } KdOsFuncs;
 
-typedef enum _KdSyncPolarity {
-	KdSyncNegative, KdSyncPositive
-} KdSyncPolarity;
-
-typedef struct _KdMonitorTiming {
-	/* label */
-	int horizontal;
-	int vertical;
-	int rate;
-	/* pixel clock */
-	int clock;		/* in KHz */
-	/* horizontal timing */
-	int hfp;		/* front porch */
-	int hbp;		/* back porch */
-	int hblank;		/* blanking */
-	KdSyncPolarity hpol;	/* polarity */
-	/* vertical timing */
-	int vfp;		/* front porch */
-	int vbp;		/* back porch */
-	int vblank;		/* blanking */
-	KdSyncPolarity vpol;	/* polarity */
-} KdMonitorTiming;
-
 typedef struct _KdMouseMatrix {
 	int matrix[2][3];
 } KdMouseMatrix;
@@ -267,7 +235,6 @@ extern int kdScreenPrivateIndex;
 extern Bool kdSwitchPending;
 extern Bool kdDisableZaphod;
 extern Bool kdDontZap;
-extern int kdVirtualTerminal;
 extern const KdOsFuncs *kdOsFuncs;
 
 #define KdGetScreenPriv(pScreen) ((KdPrivScreenPtr) \
@@ -380,27 +347,6 @@ void KdDisableInput(void);
 void KdEnableInput(void);
 
 void ProcessInputEvents(void);
-
-extern const KdMouseFuncs LinuxMouseFuncs;
-extern const KdKeyboardFuncs LinuxKeyboardFuncs;
-
-/* kmap.c */
-
-#define KD_MAPPED_MODE_REGISTERS    0
-#define KD_MAPPED_MODE_FRAMEBUFFER  1
-
-void *KdMapDevice(CARD32 addr, CARD32 size);
-
-void KdUnmapDevice(void *addr, CARD32 size);
-
-void KdSetMappedMode(CARD32 addr, CARD32 size, int mode);
-
-void KdResetMappedMode(CARD32 addr, CARD32 size, int mode);
-
-/* kmode.c */
-const KdMonitorTiming *KdFindMode(KdScreenInfo * screen,
-				  Bool(*supported) (KdScreenInfo *,
-						    const KdMonitorTiming *));
 
 /* kshadow.c */
 Bool KdShadowFbAlloc(KdScreenInfo * screen, Bool rotate);

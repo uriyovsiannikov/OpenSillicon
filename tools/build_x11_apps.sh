@@ -10,6 +10,17 @@ common_cpp="-DOPEN_SILLICON -nostdinc -I$gcc_include -I$root/user/libos/include 
 pkg_path="$prefix/lib/pkgconfig:$prefix/share/pkgconfig:/usr/share/pkgconfig:/usr/lib64/pkgconfig"
 export PKG_CONFIG_PATH=$pkg_path PKG_CONFIG_LIBDIR="$prefix/lib/pkgconfig:$prefix/share/pkgconfig:/usr/share/pkgconfig:/usr/lib64/pkgconfig"
 
+if [ "${1:-full}" = relink ]; then
+    rm -f "$root/build/x11/twm/src/twm" "$root/build/x11/xeyes/xeyes" \
+        "$root/build/x11/xterm/xterm" "$root/build/x11/feh/src/feh"
+    meson compile -C "$root/build/x11/twm"
+    meson compile -C "$root/build/x11/xeyes"
+    make -C "$root/build/x11/xterm" -j2 \
+        LIBS="-Wl,--start-group $root/build/libos/liblibos.a $prefix/lib/libi18n.a -lXaw7 -lXmu -lXt -lSM -lICE -lXext -lX11 -lxcb -lXau -lXpm -Wl,--end-group"
+    sh "$root/tools/build_feh.sh" relink
+    exit 0
+fi
+
 build_autotools() {
 	name=$1
 	shift

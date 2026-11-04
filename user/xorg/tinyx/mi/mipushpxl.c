@@ -108,7 +108,6 @@ miPushPixels(pGC, pBitMap, pDrawable, dx, dy, xOrg, yOrg)
     Bool 	fInBox;
     DDXPointRec	pt[NPT], ptThisLine;
     int		width[NPT];
-#if 1
     MiBits	startmask;
     if (screenInfo.bitmapBitOrder == IMAGE_BYTE_ORDER)
       if (screenInfo.bitmapBitOrder == LSBFirst)
@@ -124,7 +123,6 @@ miPushPixels(pGC, pBitMap, pDrawable, dx, dy, xOrg, yOrg)
       else
         startmask = (MiBits)(-1) ^
             LONG2CHARSDIFFORDER((MiBits)(-1) >> 1);
-#endif
 
     pwLineStart = (MiBits *)malloc(BitmapBytePad(dx));
     if (!pwLineStart)
@@ -148,11 +146,7 @@ miPushPixels(pGC, pBitMap, pDrawable, dx, dy, xOrg, yOrg)
 	while(pw  < pwEnd)
 	{
 	    w = *pw;
-#if 1
 	    msk = startmask;
-#else
-	    msk = (MiBits)(-1) ^ SCRRIGHT((MiBits)(-1), 1);
-#endif
 	    for(ib = 0; ib < PPW; ib++)
 	    {
 		if(w & msk)
@@ -181,7 +175,6 @@ miPushPixels(pGC, pBitMap, pDrawable, dx, dy, xOrg, yOrg)
 			fInBox = FALSE;
 		    }
 		}
-#if 1
     		/* This is not quite right, but it'll do for now */
 		if (screenInfo.bitmapBitOrder == IMAGE_BYTE_ORDER)
 		  if (screenInfo.bitmapBitOrder == LSBFirst)
@@ -193,9 +186,6 @@ miPushPixels(pGC, pBitMap, pDrawable, dx, dy, xOrg, yOrg)
 		    msk = LONG2CHARSDIFFORDER(LONG2CHARSDIFFORDER(msk) << 1);
 		  else
 		    msk = LONG2CHARSDIFFORDER(LONG2CHARSDIFFORDER(msk) >> 1);
-#else
-		msk = SCRRIGHT(msk, 1);
-#endif
 	    }
 	    pw++;
 	}
@@ -204,11 +194,7 @@ miPushPixels(pGC, pBitMap, pDrawable, dx, dy, xOrg, yOrg)
 	{
 	    /* Process final partial word on line */
 	    w = *pw;
-#if 1
 	    msk = startmask;
-#else
-	    msk = (MiBits)(-1) ^ SCRRIGHT((MiBits)(-1), 1);
-#endif
 	    for(ib = 0; ib < ibEnd; ib++)
 	    {
 		if(w & msk)
@@ -237,7 +223,6 @@ miPushPixels(pGC, pBitMap, pDrawable, dx, dy, xOrg, yOrg)
 			fInBox = FALSE;
 		    }
 		}
-#if 1
     		/* This is not quite right, but it'll do for now */
 		if (screenInfo.bitmapBitOrder == IMAGE_BYTE_ORDER)
 		  if (screenInfo.bitmapBitOrder == LSBFirst)
@@ -249,9 +234,6 @@ miPushPixels(pGC, pBitMap, pDrawable, dx, dy, xOrg, yOrg)
 		    msk = LONG2CHARSDIFFORDER(LONG2CHARSDIFFORDER(msk) << 1);
 		  else
 		    msk = LONG2CHARSDIFFORDER(LONG2CHARSDIFFORDER(msk) >> 1);
-#else
-		msk = SCRRIGHT(msk, 1);
-#endif
 	    }
 	}
 	/* If scanline ended with last bit set, end the box */

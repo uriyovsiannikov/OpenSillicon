@@ -38,11 +38,6 @@ from The Open Group.
 #include "pixmapstr.h"
 #include "dix.h"
 #include "miline.h"
-#ifndef OPEN_SILLICON
-#define _XSHM_SERVER_
-#include <X11/extensions/XShm.h>
-#include "shmint.h"
-#endif
 
 /* We use this structure to propogate some information from miScreenInit to
  * miCreateScreenResources.  miScreenInit allocates the structure, fills it

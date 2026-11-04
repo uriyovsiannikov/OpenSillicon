@@ -44,14 +44,12 @@ m4_ifdef([AM_PROG_AR], [AM_PROG_AR])
 AM_PROG_AS
 AC_PROG_INSTALL
 AC_PROG_LN_S
-AC_DISABLE_SHARED
-AC_PROG_LIBTOOL
+LT_INIT([disable-shared])
 PKG_PROG_PKG_CONFIG
-AC_PROG_LEX
+AC_PROG_LEX([noyywrap])
 AC_PROG_YACC
 
 AC_HEADER_DIRENT
-AC_HEADER_STDC
 AC_CHECK_HEADERS([fcntl.h stdlib.h string.h unistd.h])
 
 dnl Checks for typedefs, structures, and compiler characteristics.
@@ -71,10 +69,6 @@ AC_CHECK_FUNCS([geteuid getuid link memmove memset mkstemp strchr strrchr \
 		strtol getopt getopt_long vsnprintf])
 AC_FUNC_ALLOCA
 dnl Old HAS_* names used in os/*.c.
-AC_CHECK_FUNC([getdtablesize],
-	AC_DEFINE(HAS_GETDTABLESIZE, 1, [Have the `getdtablesize' function.]))
-AC_CHECK_FUNC([getifaddrs],
-	AC_DEFINE(HAS_GETIFADDRS, 1, [Have the `getifaddrs' function.]))
 AC_CHECK_FUNC([getpeereid],
 	AC_DEFINE(HAS_GETPEEREID, 1, [Have the `getpeereid' function.]))
 AC_CHECK_FUNC([getpeerucred],
@@ -84,135 +78,24 @@ AM_CONDITIONAL(NEED_STRLCAT, [test x$HAVE_STRLCAT = xno])
 
 AM_CONDITIONAL(NEED_VSNPRINTF, [test x$HAVE_VSNPRINTF = xno])
 
-dnl Check for mmap support for Xvfb
-AC_CHECK_FUNC([mmap], AC_DEFINE(HAS_MMAP, 1, [Have the `mmap' function.]))
-
 dnl Find the math libary
 AC_CHECK_LIB(m, sqrt)
-
-dnl APM header
-AC_CHECK_HEADERS([linux/apm_bios.h], LNXAPM=yes)
-AM_CONDITIONAL(LNXAPM, [test "x$LNXAPM" = xyes])
-
-dnl fbdev header
-AC_CHECK_HEADERS([linux/fb.h], FBDEV=yes)
-AM_CONDITIONAL(FBDEVHW, [test "x$FBDEV" = xyes])
-
-dnl MTRR header
-AC_CHECK_HEADERS([asm/mtrr.h], ac_cv_asm_mtrr_h=yes)
-if test "x$ac_cv_asm_mtrr_h" = xyes; then
-	HAVE_MTRR=yes
-fi
-
-dnl BSD MTRR header
-AC_CHECK_HEADERS([sys/memrange.h], ac_cv_memrange_h=yes)
-if test "x$ac_cv_memrange_h" = xyes; then
-	HAVE_MTRR=yes
-fi
-
-if test "x$HAVE_MTRR" = xyes; then
-	AC_DEFINE(HAS_MTRR_SUPPORT, 1, [MTRR support available])
-fi
-
-dnl A NetBSD MTRR header
-AC_CHECK_HEADERS([machine/mtrr.h], ac_cv_machine_mtrr_h=yes)
-if test "x$ac_cv_machine_mtrr_h" = xyes; then
-	AC_DEFINE(HAS_MTRR_BUILTIN, 1, [Define to 1 if NetBSD built-in MTRR
-		support is available])
-fi
-
-dnl ---------------------------------------------------------------------------
-dnl Bus options and CPU capabilities.  Replaces logic in
-dnl hw/xfree86/os-support/bus/Makefile.am, among others.
-dnl ---------------------------------------------------------------------------
-dnl Override defaults as needed for specific platforms:
-
-case $host_cpu in
-  alpha*)
-	ALPHA_VIDEO=yes
-	case $host_os in
-		*netbsd*)	AC_DEFINE(USE_ALPHA_PIO, 1, [NetBSD PIO alpha IO]) ;;
-	esac
-	;;
-  arm*)
-	ARM_VIDEO=yes
-	;;
-  i*86)
-	I386_VIDEO=yes
-	case $host_os in
-		*freebsd*)	AC_DEFINE(USE_DEV_IO) ;;
-		*netbsd*)	AC_DEFINE(USE_I386_IOPL)
-				SYS_LIBS=-li386
-				;;
-		*openbsd*)	AC_DEFINE(USE_I386_IOPL) 
-				SYS_LIBS=-li386
-				;;
-	esac
-        ;;
-  powerpc*)
-	PPC_VIDEO=yes
-	;;
-  sparc*)
-	xorg_loader_sparcmuldiv="yes"
-	SPARC64_VIDEO=yes
-	BSD_ARCH_SOURCES="sparc64_video.c ioperm_noop.c"
-	;;
-  x86_64*|amd64*)
-	I386_VIDEO=yes
-	case $host_os in
-		*freebsd*)	AC_DEFINE(USE_DEV_IO, 1, [BSD /dev/io]) ;;
-		*netbsd*)	AC_DEFINE(USE_I386_IOPL, 1, [BSD i386 iopl])
-				SYS_LIBS=-lx86_64
-				;;
-		*openbsd*)	AC_DEFINE(USE_AMD64_IOPL, 1, [BSD AMD64 iopl])
-				SYS_LIBS=-lamd64
-				;;
-	esac
-	;;
-esac
-
-dnl BSD *_video.c selection
-AM_CONDITIONAL(ALPHA_VIDEO, [test "x$ALPHA_VIDEO" = xyes])
-AM_CONDITIONAL(ARM_VIDEO, [test "x$ARM_VIDEO" = xyes])
-AM_CONDITIONAL(I386_VIDEO, [test "x$I386_VIDEO" = xyes])
-AM_CONDITIONAL(PPC_VIDEO, [test "x$PPC_VIDEO" = xyes])
-AM_CONDITIONAL(SPARC64_VIDEO, [test "x$SPARC64_VIDEO" = xyes])
-
-dnl it would be nice to autodetect these *CONS_SUPPORTs
-case $host_os in
-  *freebsd*)
-	case $host_os in
-		kfreebsd*-gnu) ;;
-		*) AC_DEFINE(CSRG_BASED, 1, [System is BSD-like]) ;;
-	esac
-	;;
-  *netbsd*)
-	AC_DEFINE(CSRG_BASED, 1, [System is BSD-like])
-	;;
-  *openbsd*)
-	AC_DEFINE(CSRG_BASED, 1, [System is BSD-like])
-	;;
-esac
 
 OSNAME=`uname -srm`
 AC_DEFINE_UNQUOTED(OSNAME, "$OSNAME", 
 	[Define to OS Name string to display for build OS in Xorg log])
 
-DEFAULT_VENDOR_NAME="TinyCore Linux"
-DEFAULT_VENDOR_NAME_SHORT="TinyCore"
+DEFAULT_VENDOR_NAME="OpenSillicon"
+DEFAULT_VENDOR_NAME_SHORT="OpenSillicon"
 VERSION_MAJOR=1
 VERSION_MINOR=0
 VERSION_PATCH=0
 VERSION_SNAP=0
 RELEASE_DATE="22 Sep 2015"
-DEFAULT_VENDOR_WEB="http://tinycorelinux.com"
 
 m4_ifdef([AS_HELP_STRING], , [m4_define([AS_HELP_STRING], m4_defn([AC_HELP_STRING]))])
 
 dnl Build options.
-AC_ARG_ENABLE(werror,        AS_HELP_STRING([--enable-werror],
-				  [Treat warnings as errors (default: disabled)]),
-			        [WERROR=$enableval], [WERROR=no])
 AC_ARG_ENABLE(debug,         AS_HELP_STRING([--enable-debug],
 				  [Enable debugging (default: disabled)]),
 			        [DEBUGGING=$enableval], [DEBUGGING=no])
@@ -224,10 +107,6 @@ AC_ARG_WITH(vendor-name-short, AS_HELP_STRING([--with-vendor-string-short=VENDOR
 				  [Short version of vendor string reported by the server]),
 			     	[ VENDOR_STRING_SHORT="$withval" ],
 			     	[ VENDOR_STRING_SHORT="$DEFAULT_VENDOR_NAME_SHORT" ])
-AC_ARG_WITH(vendor-web,      AS_HELP_STRING([--with-vendor-web=URL],
-				  [Vendor web address reported by the server]),
-				[ VENDOR_WEB="$withval" ],
-				[ VENDOR_WEB="$DEFAULT_VENDOR_WEB" ])
 AC_ARG_WITH(builder-addr,    AS_HELP_STRING([--with-builder-addr=ADDRESS],
 				  [Builder address (default: xorg@lists.freedesktop.org)]),
 				[ BUILDERADDR="$withval" ],
@@ -241,76 +120,20 @@ AC_ARG_WITH(default-font-path, AS_HELP_STRING([--with-default-font-path=PATH], [
 				[ FONTPATH="${DEFAULT_FONT_PATH}" ])
 
 dnl Extensions.
-AC_ARG_ENABLE(xres,           AS_HELP_STRING([--disable-xres], [Build XRes extension (default: enabled)]), [RES=$enableval], [RES=yes])
-AC_ARG_ENABLE(screensaver,    AS_HELP_STRING([--disable-screensaver], [Build ScreenSaver extension (default: enabled)]), [SCREENSAVER=$enableval], [SCREENSAVER=yes])
-AC_ARG_ENABLE(xdmcp,          AS_HELP_STRING([--disable-xdmcp], [Build XDMCP extension (default: auto)]), [XDMCP=$enableval], [XDMCP=auto])
-AC_ARG_ENABLE(xdm-auth-1,     AS_HELP_STRING([--disable-xdm-auth-1], [Build XDM-Auth-1 extension (default: auto)]), [XDMAUTH=$enableval], [XDMAUTH=auto])
-AC_ARG_ENABLE(dbe,            AS_HELP_STRING([--disable-dbe], [Build DBE extension (default: enabled)]), [DBE=$enableval], [DBE=yes])
-AC_ARG_ENABLE(xf86bigfont,    AS_HELP_STRING([--disable-xf86bigfont], [Build XF86 Big Font extension (default: enabled)]), [XF86BIGFONT=$enableval], [XF86BIGFONT=yes])
-AC_ARG_ENABLE(dpms,           AS_HELP_STRING([--disable-dpms], [Build DPMS extension (default: enabled)]), [DPMSExtension=$enableval], [DPMSExtension=yes])
 
 dnl kdrive and its subsystems
 AC_ARG_ENABLE(kdrive,         AS_HELP_STRING([--enable-kdrive], [Build kdrive servers (default: yes)]), [KDRIVE=$enableval], [KDRIVE=yes])
-AC_ARG_ENABLE(xfbdev,         AS_HELP_STRING([--disable-xfbdev], [Build Xfbdev server (default: yes)]), [XFBDEV=$enableval], [XFBDEV=yes])
 AC_ARG_ENABLE(xopensillicon,  AS_HELP_STRING([--enable-xopensillicon], [Build the OpenSillicon framebuffer server (default: no)]), [XOPENSILLICON=$enableval], [XOPENSILLICON=no])
 AC_ARG_VAR([OPEN_SILLICON_LIBS], [Target static runtime libraries for Xopensillicon])
 AC_ARG_VAR([OPEN_SILLICON_CRT0], [Target startup object for Xopensillicon])
 AC_ARG_VAR([OPEN_SILLICON_LDFLAGS], [Target linker flags for Xopensillicon])
 if test "x$XOPENSILLICON" = "xyes"; then
 	AC_DEFINE(OPEN_SILLICON, 1, [Build for the OpenSillicon OS backend])
-	AC_MSG_NOTICE([Disabling XDMCP and XF86BigFont for the OpenSillicon profile])
-	XDMCP=no
-	XDMAUTH=no
-	XF86BIGFONT=no
 fi
 AM_CONDITIONAL(OPEN_SILLICON, [test "x$XOPENSILLICON" = xyes])
 
 
-dnl chown/chmod to be setuid root as part of build
-dnl Replaces InstallXserverSetUID in imake
-AC_ARG_ENABLE(install-setuid, 
-    AS_HELP_STRING([--enable-install-setuid],
-       [Install Xorg server as owned by root with setuid bit (default: auto)]),
-    [SETUID=$enableval], [SETUID=auto])
-AC_MSG_CHECKING([to see if we can install the Xorg server as root])
-if test "x$SETUID" = "xauto" ; then
-	case $host_os in
-	    darwin*)		SETUID="no"  ;;
-	    *)
-	   	case $host_cpu in
-		    sparc)	SETUID="no"  ;;
-		    *)		SETUID="yes" ;;
-		esac
-	esac
-	if test "x$SETUID" = xyes; then
-		touch testfile
-		chown root testfile > /dev/null 2>&1 || SETUID="no"
-		rm -f testfile
-	fi
-fi
-AC_MSG_RESULT([$SETUID])
-AM_CONDITIONAL(INSTALL_SETUID, [test "x$SETUID" = "xyes"])
-
-dnl Issue an error if xtrans.m4 was not found and XTRANS_CONNECTION_FLAGS macro
-dnl was not expanded, since xorg-server with no transport types is rather useless.
-dnl
-dnl If you're seeing an error here, be sure you installed the lib/xtrans module
-dnl first and if it's not in the default location, that you set the ACLOCAL
-dnl environment variable to find it, such as:
-dnl	ACLOCAL="aclocal -I ${PREFIX}/share/aclocal"
-m4_pattern_forbid([^XTRANS_CONNECTION_FLAGS$])
-
-# Transport selection macro from xtrans.m4
-if test "x$XOPENSILLICON" = "xyes"; then
-	AC_MSG_NOTICE([Using UNIX domain sockets only; TCP and Secure RPC are unavailable])
-	AC_DEFINE(UNIXCONN, 1, [Support UNIX socket connections])
-	TCPCONN=no
-	SECURE_RPC=no
-else
-	XTRANS_CONNECTION_FLAGS
-	# Secure RPC detection macro from xtrans.m4
-	XTRANS_SECURE_RPC_FLAGS
-fi
+AC_DEFINE(UNIXCONN, 1, [Support UNIX socket connections])
 
 dnl ---------------------------------------------------------------------------
 dnl Extension section
@@ -320,35 +143,8 @@ XEXT_LIB='$(top_builddir)/Xext/libXext.la'
 XEXTXORG_LIB='$(top_builddir)/Xext/libXextbuiltin.la'
 
 dnl Core modules for most extensions, et al.
-REQUIRED_MODULES="[randrproto >= 1.2] renderproto [fixesproto >= 4.0] [damageproto >= 1.1] xcmiscproto xextproto xproto xtrans xf86bigfontproto [scrnsaverproto >= 1.1] bigreqsproto resourceproto fontsproto inputproto [kbproto >= 1.0.3]"
+REQUIRED_MODULES="[randrproto >= 1.2] renderproto [fixesproto >= 4.0] [damageproto >= 1.1] xcmiscproto xextproto xproto xtrans bigreqsproto fontsproto inputproto [kbproto >= 1.0.3]"
 REQUIRED_LIBS="xfont fontenc"
-
-AM_CONDITIONAL(SCREENSAVER, [test "x$SCREENSAVER" = xyes])
-if test "x$SCREENSAVER" = xyes; then
-	AC_DEFINE(SCREENSAVER, 1, [Support MIT-SCREEN-SAVER extension])
-fi
-
-AM_CONDITIONAL(RES, [test "x$RES" = xyes])
-if test "x$RES" = xyes; then
-	AC_DEFINE(RES, 1, [Support X resource extension])
-	REQUIRED_MODULES="$REQUIRED_MODULES resourceproto"
-fi
-
-AM_CONDITIONAL(DBE, [test "x$DBE" = xyes])
-if test "x$DBE" = xyes; then
-	AC_DEFINE(DBE, 1, [Support DBE extension])
-	DBE_LIB='$(top_builddir)/dbe/libdbe.la'
-fi
-
-AM_CONDITIONAL(XF86BIGFONT, [test "x$XF86BIGFONT" = xyes])
-if test "x$XF86BIGFONT" = xyes; then
-	AC_DEFINE(XF86BIGFONT, 1, [Support XF86 Big font extension])
-fi
-
-AM_CONDITIONAL(DPMSExtension, [test "x$DPMSExtension" = xyes])
-if test "x$DPMSExtension" = xyes; then
-	AC_DEFINE(DPMSExtension, 1, [Support DPMS extension])
-fi
 
 RENDER_LIB='$(top_builddir)/render/librender.la'
 RENDER_INC='-I$(top_srcdir)/render'
@@ -366,41 +162,6 @@ MIEXT_DAMAGE_INC='-I$(top_srcdir)/miext/damage'
 
 AC_CHECK_FUNC(strcasecmp, [], AC_DEFINE([NEED_STRCASECMP], 1,
                                         [Do not have `strcasecmp'.]))
-
-PKG_CHECK_MODULES([XDMCP], [xdmcp], [have_libxdmcp="yes"], [have_libxdmcp="no"])
-if test "x$have_libxdmcp" = xyes; then
-	AC_CHECK_LIB(Xdmcp, XdmcpWrap, [have_xdmcpwrap="yes"], [have_xdmcpwrap="no"], [$XDMCP_LIBS])
-fi
-if test "x$XDMCP" = xauto; then
-	if test "x$have_libxdmcp" = xyes; then
-		XDMCP=yes
-	else
-		XDMCP=no
-	fi
-fi
-if test "x$XDMAUTH" = xauto; then
-	if test "x$have_libxdmcp" = xyes && test "x$have_xdmcpwrap" = xyes; then
-		XDMAUTH=yes
-	else
-		XDMAUTH=no
-	fi
-fi
-
-AM_CONDITIONAL(XDMCP, [test "x$XDMCP" = xyes])
-if test "x$XDMCP" = xyes; then
-	AC_DEFINE(XDMCP, 1, [Support XDM Control Protocol])
-	REQUIRED_LIBS="$REQUIRED_LIBS xdmcp"
-	XDMCP_MODULES="xdmcp"
-fi
-
-AM_CONDITIONAL(XDMAUTH, [test "x$XDMAUTH" = xyes])
-if test "x$XDMAUTH" = xyes; then
-	AC_DEFINE(HASXDMAUTH,1,[Support XDM-AUTH*-1])
-	if ! test "x$XDMCP" = xyes; then
-		REQUIRED_LIBS="$REQUIRED_LIBS xdmcp"
-		XDMCP_MODULES="xdmcp"
-	fi
-fi
 
 VENDOR_RELEASE="((($VERSION_MAJOR) * 10000000) + (($VERSION_MINOR) * 100000) + (($VERSION_PATCH) * 1000) + $VERSION_SNAP)"
 
@@ -518,31 +279,6 @@ dnl ---------------------------------------------------------------------------
 dnl DDX section.
 dnl ---------------------------------------------------------------------------
 
-# XORG_CORE_LIBS is needed even if you're not building the Xorg DDX
-XORG_CORE_LIBS="$DIX_LIB"
-AC_SUBST([XORG_CORE_LIBS])
-
-xorg_bus_linuxpci=no
-xorg_bus_freebsdpci=no
-xorg_bus_netbsdpci=no
-xorg_bus_ix86pci=no
-xorg_bus_ppcpci=no
-xorg_bus_sparcpci=no
-xorg_bus_sparc=no
-
-AM_CONDITIONAL([XORG], [test "x$XORG" = xyes])
-AM_CONDITIONAL([XORG_BUS_LINUXPCI], [test "x$xorg_bus_linuxpci" = xyes])
-AM_CONDITIONAL([XORG_BUS_FREEBSDPCI], [test "x$xorg_bus_freebsdpci" = xyes])
-AM_CONDITIONAL([XORG_BUS_NETBSDPCI], [test "x$xorg_bus_netbsdpci" = xyes])
-AM_CONDITIONAL([XORG_BUS_IX86PCI], [test "x$xorg_bus_ix86pci" = xyes])
-AM_CONDITIONAL([XORG_BUS_PPCPCI], [test "x$xorg_bus_ppcpci" = xyes])
-AM_CONDITIONAL([XORG_BUS_SPARCPCI], [test "x$xorg_bus_sparcpci" = xyes])
-AM_CONDITIONAL([XORG_BUS_SPARC], [test "x$xorg_bus_sparc" = xyes])
-AM_CONDITIONAL([XORG_LOADER_SPARC], [test "x$xorg_loader_sparcmuldiv" = xyes])
-AM_CONDITIONAL([LINUX_IA64], [test "x$linux_ia64" = xyes])
-AM_CONDITIONAL([LINUX_ALPHA], [test "x$linux_alpha" = xyes])
-AM_CONDITIONAL([LNXACPI], [test "x$linux_acpi" = xyes])
-
 dnl kdrive DDX
 
 AM_CONDITIONAL(KDRIVE, [test x$KDRIVE = xyes])
@@ -553,13 +289,6 @@ if test "$KDRIVE" = yes; then
         AC_DEFINE(KDRIVEOPENSILLICON, 1, [Build OpenSillicon KDrive server])
     fi
 
-    AC_CHECK_HEADERS([linux/fb.h])
-    if test "$ac_cv_header_linux_fb_h" = yes; then
-        if test "x$XFBDEV" != "xno"; then
-            AC_DEFINE(KDRIVEFBDEV, 1, [Build fbdev-based kdrive server])
-        fi
-    fi
-    
     # damage shadow extension fb mi
     KDRIVE_INC='-I$(top_srcdir)/kdrive/src'
     KDRIVE_PURE_INCS="$KDRIVE_INC $MIEXT_DAMAGE_INC $MIEXT_SHADOW_INC $XEXT_INC $FB_INC $MI_INC"
@@ -570,17 +299,8 @@ if test "$KDRIVE" = yes; then
     # dix os fb mi extension glx (NOTYET) damage shadow
     #KDRIVE_PURE_LIBS="$DIX_LIB $OS_LIB $FB_LIB $XEXT_LIB $MIEXT_DAMAGE_LIB \
     #    $MIEXT_SHADOW_LIB"
-    KDRIVE_PURE_LIBS="$FB_LIB $MI_LIB $FIXES_LIB $XEXT_LIB $DBE_LIB $RENDER_LIB $RANDR_LIB $DAMAGE_LIB $MIEXT_DAMAGE_LIB $MIEXT_SHADOW_LIB $OS_LIB"
+    KDRIVE_PURE_LIBS="$FB_LIB $MI_LIB $FIXES_LIB $XEXT_LIB $RENDER_LIB $RANDR_LIB $DAMAGE_LIB $MIEXT_DAMAGE_LIB $MIEXT_SHADOW_LIB $OS_LIB"
     KDRIVE_LIB='$(top_builddir)/kdrive/src/libkdrive.a'
-    case $host_os in
-	*linux*)
-	    if test "x$XOPENSILLICON" != "xyes"; then
-	        KDRIVE_OS_INC='-I$(top_srcdir)/kdrive/linux'
-	        KDRIVE_OS_LIB='$(top_builddir)/kdrive/linux/liblinux.a'
-	        KDRIVELINUX=yes
-	    fi
-	    ;;
-    esac
     KDRIVE_INCS="$KDRIVE_PURE_INCS $KDRIVE_OS_INC"
     KDRIVE_STUB_LIB='$(top_builddir)/kdrive/src/libkdrivestubs.a'
     KDRIVE_LIBS="$DIX_LIB $KDRIVE_LIB $KDRIVE_OS_LIB $KDRIVE_PURE_LIBS $KDRIVE_STUB_LIB"
@@ -590,12 +310,9 @@ AC_SUBST(KDRIVE_PURE_INCS)
 AC_SUBST(KDRIVE_CFLAGS)
 AC_SUBST(KDRIVE_PURE_LIBS)
 AC_SUBST(KDRIVE_LIBS)
-AM_CONDITIONAL(KDRIVELINUX, [test "x$KDRIVELINUX" = xyes])
-AM_CONDITIONAL(KDRIVEFBDEV, [test x"$ac_cv_header_linux_fb_h" = xyes -a "x$XFBDEV" != "xno"])
 AM_CONDITIONAL(KDRIVEOPENSILLICON, [test "x$XOPENSILLICON" = xyes -a "x$KDRIVE" = xyes])
 
 dnl and the rest of these are generic, so they're in config.h
-AC_DEFINE(XResExtension, 1, [Build XRes extension])
 
 dnl ---------- Compiler arguments
 
@@ -656,11 +373,10 @@ AC_SUBST([prefix])
 # XORG in this case refers to the roll-up releases, not the Xorg DDX.
 XORG_RELEASE_VERSION
 
-AC_OUTPUT([
+AC_CONFIG_FILES([
 Makefile
 include/Makefile
 damageext/Makefile
-dbe/Makefile
 dix/Makefile
 fb/Makefile
 mi/Makefile
@@ -673,8 +389,7 @@ render/Makefile
 Xext/Makefile
 xfixes/Makefile
 kdrive/Makefile
-kdrive/fbdev/Makefile
 kdrive/opensillicon/Makefile
-kdrive/linux/Makefile
 kdrive/src/Makefile
 ])
+AC_OUTPUT

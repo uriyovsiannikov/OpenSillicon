@@ -41,19 +41,6 @@ int MaybeDeliverEventsToClient(
 
 int ProcWarpPointer(ClientPtr /* client */);
 
-#if 0
-extern void
-ProcessKeyboardEvent (
-	xEvent *               /* xE */,
-	DeviceIntPtr           /* keybd */,
-	int                    /* count */);
-
-extern void
-ProcessPointerEvent (
-	xEvent *               /* xE */,
-	DeviceIntPtr           /* mouse */,
-	int                    /* count */);
-#endif
 
 int EventSelectForWindow(
 	WindowPtr              /* pWin */,

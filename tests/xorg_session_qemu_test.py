@@ -134,7 +134,12 @@ def main():
                 raise RuntimeError("TinyX did not render a visible desktop")
             print(f"PASS: startx opened TinyX at {width}x{height}")
 
-            monitor.command("mouse_move -540 -300")
+            # The backend starts its pointer at the top-left corner. Move
+            # inside xterm explicitly before clicking to give it focus.
+            monitor.command("mouse_move -4096 -4096")
+            time.sleep(0.1)
+            monitor.command("mouse_move 150 150")
+            time.sleep(0.1)
             monitor.command("mouse_button 1")
             monitor.command("mouse_button 0")
             monitor.type("echo xterm_input_ok")

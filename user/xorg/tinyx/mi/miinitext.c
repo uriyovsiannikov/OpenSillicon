@@ -59,71 +59,23 @@ SOFTWARE.
 #include "globals.h"
 
 
-extern Bool noTestExtensions;
-
 extern Bool noBigReqExtension;
-#ifdef DBE
-extern Bool noDbeExtension;
-#endif
-#ifdef DPMSExtension
-extern Bool noDPMSExtension;
-#endif
-#ifdef SCREENSAVER
-extern Bool noScreenSaverExtension;
-#endif
-extern Bool noMITShmExtension;
 extern Bool noRRExtension;
 extern Bool noRenderExtension;
 extern Bool noShapeExtension;
 extern Bool noSyncExtension;
-#ifdef RES
-extern Bool noResExtension;
-#endif
 extern Bool noXCMiscExtension;
-#ifdef XF86BIGFONT
-extern Bool noXFree86BigfontExtension;
-#endif
 extern Bool noXFixesExtension;
 
 #define INITARGS void
 typedef void (*InitExtension)(INITARGS);
 
-#define _XSHM_SERVER_
-#include <X11/extensions/shmstr.h>
-#define _XTEST_SERVER_
-#include <X11/extensions/XTest.h>
-#ifdef XF86BIGFONT
-#include <X11/extensions/xf86bigfproto.h>
-#endif
-#ifdef RES
-#include <X11/extensions/XResproto.h>
-#endif
-
 /* FIXME: this whole block of externs should be from the appropriate headers */
-#ifndef OPEN_SILLICON
-extern void ShmExtensionInit(INITARGS);
-#endif
-extern void XTestExtensionInit(INITARGS);
 extern void BigReqExtensionInit(INITARGS);
-#ifdef SCREENSAVER
-extern void ScreenSaverExtensionInit (INITARGS);
-#endif
 extern void SyncExtensionInit(INITARGS);
 extern void XCMiscExtensionInit(INITARGS);
-#ifdef DBE
-extern void DbeExtensionInit(INITARGS);
-#endif
-#ifdef XF86BIGFONT
-extern void XFree86BigfontExtensionInit(INITARGS);
-#endif
-#ifdef DPMSExtension
-extern void DPMSExtensionInit(INITARGS);
-#endif
 extern void RenderExtensionInit(INITARGS);
 extern void RRExtensionInit(INITARGS);
-#ifdef RES
-extern void ResExtensionInit(INITARGS);
-#endif
 extern void XFixesExtensionInit(INITARGS);
 extern void DamageExtensionInit(INITARGS);
 
@@ -140,31 +92,12 @@ static const ExtensionToggle ExtensionToggleList[] =
     /* sort order is extension name string as shown in xdpyinfo */
     { "BIG-REQUESTS", &noBigReqExtension },
     { "DAMAGE", &noDamageExtension },
-#ifdef DBE
-    { "DOUBLE-BUFFER", &noDbeExtension },
-#endif
-#ifdef DPMSExtension
-    { "DPMS", &noDPMSExtension },
-#endif
-#ifdef SCREENSAVER
-    { "MIT-SCREEN-SAVER", &noScreenSaverExtension },
-#endif
-#ifndef OPEN_SILLICON
-    { SHMNAME, &noMITShmExtension },
-#endif
     { "RANDR", &noRRExtension },
     { "RENDER", &noRenderExtension },
     { "SHAPE", &noShapeExtension },
     { "SYNC", &noSyncExtension },
-#ifdef RES
-    { "X-Resource", &noResExtension },
-#endif
     { "XC-MISC", &noXCMiscExtension },
-#ifdef XF86BIGFONT
-    { "XFree86-Bigfont", &noXFree86BigfontExtension },
-#endif
     { "XFIXES", &noXFixesExtension },
-    { "XTEST", &noTestExtensions },
     { NULL, NULL }
 };
 
@@ -201,34 +134,15 @@ InitExtensions(argc, argv)
     char	*argv[];
 {
     if (!noShapeExtension) ShapeExtensionInit();
-#ifndef OPEN_SILLICON
-    if (!noMITShmExtension) ShmExtensionInit();
-#endif
-    if (!noTestExtensions) XTestExtensionInit();
     if (!noBigReqExtension) BigReqExtensionInit();
-#if defined(SCREENSAVER) && !defined(PRINT_ONLY_SERVER)
-    if (!noScreenSaverExtension) ScreenSaverExtensionInit ();
-#endif
     if (!noSyncExtension) SyncExtensionInit();
     if (!noXCMiscExtension) XCMiscExtensionInit();
-#ifdef DBE
-    if (!noDbeExtension) DbeExtensionInit();
-#endif
-#if defined(DPMSExtension) && !defined(NO_HW_ONLY_EXTS)
-    if (!noDPMSExtension) DPMSExtensionInit();
-#endif
-#ifdef XF86BIGFONT
-    if (!noXFree86BigfontExtension) XFree86BigfontExtensionInit();
-#endif
 #if !defined(PRINT_ONLY_SERVER) && !defined(NO_HW_ONLY_EXTS)
 #endif
     /* must be before Render to layer DisplayCursor correctly */
     if (!noXFixesExtension) XFixesExtensionInit();
     if (!noRenderExtension) RenderExtensionInit();
     if (!noRRExtension) RRExtensionInit();
-#ifdef RES
-    if (!noResExtension) ResExtensionInit();
-#endif
     if (!noDamageExtension) DamageExtensionInit();
 }
 

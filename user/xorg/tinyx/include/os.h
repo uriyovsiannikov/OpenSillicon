@@ -229,8 +229,6 @@ void OsInit(void);
 
 void OsCleanup(Bool);
 
-void OsVendorFatalError(void);
-
 void OsVendorInit(void) XFONT_LTO;
 
 void OsBlockSignals (void);
@@ -244,7 +242,6 @@ pointer Fopen(char *, char *);
 int Fclose(pointer);
 
 void CheckUserParameters(int argc, char **argv, char **envp);
-void CheckUserAuthorization(void);
 
 int AddHost(
     ClientPtr	/*client*/,
@@ -282,15 +279,10 @@ void EnableLocalHost(void);
 
 void DisableLocalHost(void);
 
-void AccessUsingXdmcp(void);
 
 void DefineSelf(int /*fd*/);
 
-void AugmentSelf(pointer /*from*/, int /*len*/);
-
 void InitAuthorization(char * /*filename*/);
-
-/* int LoadAuthorization(void); */
 
 void RegisterAuthorizations(void);
 

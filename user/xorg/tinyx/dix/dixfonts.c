@@ -68,11 +68,6 @@ Equipment Corporation.
 extern void BuiltinRegisterFpeFunctions(void);
 #endif
 
-#ifdef XF86BIGFONT
-#define _XF86BIGFONT_SERVER_
-#include <X11/extensions/xf86bigfont.h>
-#include "xf86bigfontsrv.h"
-#endif
 
 #define QUERYCHARINFO(pci, pr)  *(pr) = (pci)->metrics
 
@@ -486,9 +481,6 @@ CloseFont(pointer value, XID fid)
         }
         if (pfont == defaultFont)
             defaultFont = NULL;
-#ifdef XF86BIGFONT
-        XF86BigfontFreeFontShm(pfont);
-#endif
         fpe = pfont->fpe;
         (*fpe_functions[fpe->type].close_font) (fpe, pfont);
         FreeFPE(fpe);

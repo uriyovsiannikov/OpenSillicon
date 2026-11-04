@@ -40,9 +40,6 @@ from The Open Group.
 #include <X11/extensions/xcmiscproto.h>
 #include "extinit.h"
 
-#if 0
-static unsigned char XCMiscCode;
-#endif
 
 static void XCMiscResetProc(ExtensionEntry *    /* extEntry */
     );
@@ -66,18 +63,6 @@ static DISPATCH_PROC(SProcXCMiscGetXIDRange);
 void
 XCMiscExtensionInit(void)
 {
-#if 0
-    ExtensionEntry *extEntry;
-
-    if ((extEntry = AddExtension(XCMiscExtensionName, 0, 0,
-                                 ProcXCMiscDispatch, SProcXCMiscDispatch,
-                                 XCMiscResetProc, StandardMinorOpcode)) != 0)
-        XCMiscCode = (unsigned char) extEntry->base;
-#else
-    (void) AddExtension(XCMiscExtensionName, 0, 0,
-                        ProcXCMiscDispatch, SProcXCMiscDispatch,
-                        XCMiscResetProc, StandardMinorOpcode);
-#endif
 
     DeclareExtensionSecurity(XCMiscExtensionName, TRUE);
 }

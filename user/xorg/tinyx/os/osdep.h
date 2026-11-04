@@ -59,8 +59,6 @@ SOFTWARE.
 #define MAXBUFSIZE (1 << 22)
 #endif
 
-#include <X11/Xdmcp.h>
-
 #ifdef _POSIX_SOURCE
 #include <limits.h>
 #else
@@ -96,16 +94,7 @@ SOFTWARE.
 /* MAXSELECT is the number of fds that select() can handle */
 #define MAXSELECT (sizeof(fd_set) * NBBY)
 
-#ifndef HAS_GETDTABLESIZE
-#define HAS_GETDTABLESIZE
-#endif
-
 #include <stddef.h>
-
-typedef Bool (*ValidatorFunc)(ARRAY8Ptr Auth, ARRAY8Ptr Data, int packet_type);
-typedef Bool (*GeneratorFunc)(ARRAY8Ptr Auth, ARRAY8Ptr Data, int packet_type);
-typedef Bool (*AddAuthorFunc)(unsigned name_length, const char *name,
-				unsigned data_length, char *data);
 
 typedef struct _connectionInput {
     struct _connectionInput *next;
@@ -214,61 +203,10 @@ extern int  MitFromID         (AuthFromIDArgs);
 extern int  MitRemoveCookie   (AuthRemCArgs);
 extern int  MitResetCookie    (AuthRstCArgs);
 
-/* in xdmauth.c */
-#ifdef HASXDMAUTH
-extern XID  XdmCheckCookie    (AuthCheckArgs);
-extern XID  XdmToID           (AuthToIDArgs);
-extern int  XdmAddCookie      (AuthAddCArgs);
-extern int  XdmFromID         (AuthFromIDArgs);
-extern int  XdmRemoveCookie   (AuthRemCArgs);
-extern int  XdmResetCookie    (AuthRstCArgs);
-#endif
-
 /* in rpcauth.c */
-#ifdef SECURE_RPC
-extern void SecureRPCInit     (AuthInitArgs);
-extern XID  SecureRPCCheck    (AuthCheckArgs);
-extern XID  SecureRPCToID     (AuthToIDArgs);
-extern int  SecureRPCAdd      (AuthAddCArgs);
-extern int  SecureRPCFromID   (AuthFromIDArgs);
-extern int  SecureRPCRemove   (AuthRemCArgs);
-extern int  SecureRPCReset    (AuthRstCArgs);
-#endif
 
 /* in secauth.c */
 extern XID AuthSecurityCheck (AuthCheckArgs);
 
-/* in xdmcp.c */
-extern void XdmcpUseMsg (void);
-extern int XdmcpOptions(int argc, char **argv, int i);
-extern void XdmcpSetAuthentication (ARRAY8Ptr name);
-extern void XdmcpRegisterConnection (
-    int	    type,
-    const char *address,
-    int	    addrlen);
-extern void XdmcpRegisterAuthorizations (void);
-extern void XdmcpRegisterAuthorization (const char *name, int namelen);
-extern void XdmcpRegisterDisplayClass (const char *name, int length);
-extern void XdmcpInit (void);
-extern void XdmcpReset (void);
-extern void XdmcpOpenDisplay(int sock);
-extern void XdmcpCloseDisplay(int sock);
-extern void XdmcpRegisterAuthentication (
-    const char    *name,
-    int	    namelen,
-    const char    *data,
-    int	    datalen,
-    ValidatorFunc Validator,
-    GeneratorFunc Generator,
-    AddAuthorFunc AddAuth);
-extern int XdmcpCheckAuthentication (ARRAY8Ptr Name, ARRAY8Ptr Data, int packet_type);
-extern int XdmcpAddAuthorization (ARRAY8Ptr name, ARRAY8Ptr data);
-
-struct sockaddr_in;
-extern void XdmcpRegisterBroadcastAddress (const struct sockaddr_in *addr);
-
-#ifdef HASXDMAUTH
-extern void XdmAuthenticationInit (const char *cookie, int cookie_length);
-#endif
 
 #endif /* _OSDEP_H_ */

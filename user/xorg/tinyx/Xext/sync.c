@@ -1910,18 +1910,9 @@ ClientPtr client;
     pTrigger = &pAlarm->trigger;
     rep.counter = (pTrigger->pCounter) ? pTrigger->pCounter->id : None;
 
-#if 0                           /* XXX unclear what to do, depends on whether relative value-types
-                                 * are "consumed" immediately and are considered absolute from then
-                                 * on.
-                                 */
-    rep.value_type = pTrigger->value_type;
-    rep.wait_value_hi = XSyncValueHigh32(pTrigger->wait_value);
-    rep.wait_value_lo = XSyncValueLow32(pTrigger->wait_value);
-#else
     rep.value_type = XSyncAbsolute;
     rep.wait_value_hi = XSyncValueHigh32(pTrigger->test_value);
     rep.wait_value_lo = XSyncValueLow32(pTrigger->test_value);
-#endif
 
     rep.test_type = pTrigger->test_type;
     rep.delta_hi = XSyncValueHigh32(pAlarm->delta);

@@ -2,10 +2,6 @@ AUTOMAKE_OPTIONS = subdir-objects
 
 ACLOCAL_AMFLAGS=-I m4
 
-if DBE
-DBE_DIR=dbe
-endif
-
 SUBDIRS = \
 	include \
 	dix  \
@@ -16,7 +12,6 @@ SUBDIRS = \
 	os \
 	randr \
 	render  \
-	$(DBE_DIR) \
 	xfixes \
 	damageext \
 	kdrive
@@ -31,7 +26,6 @@ DIST_SUBDIRS = \
 	os \
 	randr \
 	render  \
-	dbe \
 	xfixes \
 	damageext \
 	kdrive

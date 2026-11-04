@@ -40,9 +40,6 @@ from The Open Group.
 #include "opaque.h"
 #include "extinit.h"
 
-#if 0
-static unsigned char XBigReqCode;
-#endif
 
 static void BigReqResetProc(ExtensionEntry *    /* extEntry */
     );
@@ -52,18 +49,6 @@ static DISPATCH_PROC(ProcBigReqDispatch);
 void
 BigReqExtensionInit(void)
 {
-#if 0
-    ExtensionEntry *extEntry;
-
-    if ((extEntry = AddExtension(XBigReqExtensionName, 0, 0,
-                                 ProcBigReqDispatch, ProcBigReqDispatch,
-                                 BigReqResetProc, StandardMinorOpcode)) != 0)
-        XBigReqCode = (unsigned char) extEntry->base;
-#else
-    (void) AddExtension(XBigReqExtensionName, 0, 0,
-                        ProcBigReqDispatch, ProcBigReqDispatch,
-                        BigReqResetProc, StandardMinorOpcode);
-#endif
 
     DeclareExtensionSecurity(XBigReqExtensionName, TRUE);
 }

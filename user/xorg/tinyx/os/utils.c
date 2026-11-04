@@ -61,7 +61,6 @@ OR PERFORMANCE OF THIS SOFTWARE.
 #include <X11/X.h>
 #define XSERV_t
 #define TRANS_SERVER
-#define TRANS_REOPEN
 #include <X11/Xtrans/Xtrans.h>
 #include "input.h"
 #include "dixfont.h"
@@ -88,9 +87,6 @@ OR PERFORMANCE OF THIS SOFTWARE.
 
 #include <stdlib.h>	/* for malloc() */
 
-#if defined(TCPCONN)
-#  include <netdb.h>
-#endif
 
 #include "opaque.h"
 
@@ -106,39 +102,15 @@ OR PERFORMANCE OF THIS SOFTWARE.
 #include "picture.h"
 
 
-_X_EXPORT Bool noTestExtensions;
 _X_EXPORT Bool noBigReqExtension = FALSE;
 _X_EXPORT Bool noDamageExtension = FALSE;
-#ifdef DBE
-_X_EXPORT Bool noDbeExtension = FALSE;
-#endif
-#ifdef DPMSExtension
-_X_EXPORT Bool noDPMSExtension = FALSE;
-#endif
-#ifdef SCREENSAVER
-_X_EXPORT Bool noScreenSaverExtension = FALSE;
-#endif
-#ifdef OPEN_SILLICON
-_X_EXPORT Bool noMITShmExtension = TRUE;
-#else
-_X_EXPORT Bool noMITShmExtension = FALSE;
-#endif
 _X_EXPORT Bool noRRExtension = FALSE;
 _X_EXPORT Bool noRenderExtension = FALSE;
 _X_EXPORT Bool noShapeExtension = FALSE;
 _X_EXPORT Bool noSyncExtension = FALSE;
-#ifdef RES
-_X_EXPORT Bool noResExtension = FALSE;
-#endif
 _X_EXPORT Bool noXCMiscExtension = FALSE;
-#ifdef XF86BIGFONT
-_X_EXPORT Bool noXFree86BigfontExtension = FALSE;
-#endif
 _X_EXPORT Bool noXFixesExtension = FALSE;
 
-#if defined(TCPCONN)
-#define X_INCLUDE_NETDB_H
-#endif
 #include <X11/Xos_r.h>
 
 #include <errno.h>
@@ -203,14 +175,8 @@ OsSignal(sig, handler)
 #endif
 #endif
 
-#ifdef OPEN_SILLICON
 /* An exclusive AF_UNIX bind is the display lock on this target. */
 static Bool nolock = TRUE;
-#else
-static Bool StillLocking = FALSE;
-static char LockFile[PATH_MAX];
-static Bool nolock = FALSE;
-#endif
 
 /*
  * LockServer --
@@ -221,132 +187,8 @@ static Bool nolock = FALSE;
 void
 LockServer(void)
 {
-#ifdef OPEN_SILLICON
   /* The backend's exclusive AF_UNIX socket bind is its display lock. */
   return;
-#else
-  char tmp[PATH_MAX], pid_str[12];
-  int lfd, i, haslock, l_pid, t;
-  char *tmppath = NULL;
-  int len;
-  char port[20];
-
-  if (nolock) return;
-  /*
-   * Path names
-   */
-  tmppath = LOCK_DIR;
-
-  sprintf(port, "%d", atoi(display));
-  len = strlen(LOCK_PREFIX) > strlen(LOCK_TMP_PREFIX) ? strlen(LOCK_PREFIX) :
-						strlen(LOCK_TMP_PREFIX);
-  len += strlen(tmppath) + strlen(port) + strlen(LOCK_SUFFIX) + 1;
-  if (len > sizeof(LockFile))
-    FatalError("Display name `%s' is too long\n", port);
-  (void)sprintf(tmp, "%s" LOCK_TMP_PREFIX "%s" LOCK_SUFFIX, tmppath, port);
-  (void)sprintf(LockFile, "%s" LOCK_PREFIX "%s" LOCK_SUFFIX, tmppath, port);
-
-  /*
-   * Create a temporary file containing our PID.  Attempt three times
-   * to create the file.
-   */
-  StillLocking = TRUE;
-  i = 0;
-  do {
-    i++;
-    lfd = open(tmp, O_CREAT | O_EXCL | O_WRONLY, 0644);
-    if (lfd < 0)
-       sleep(2);
-    else
-       break;
-  } while (i < 3);
-  if (lfd < 0) {
-    unlink(tmp);
-    i = 0;
-    do {
-      i++;
-      lfd = open(tmp, O_CREAT | O_EXCL | O_WRONLY, 0644);
-      if (lfd < 0)
-         sleep(2);
-      else
-         break;
-    } while (i < 3);
-  }
-  if (lfd < 0)
-    FatalError("Could not create lock file in %s\n", tmp);
-  (void) sprintf(pid_str, "%10ld\n", (long)getpid());
-  (void) write(lfd, pid_str, 11);
-#ifndef USE_CHMOD
-  (void) fchmod(lfd, 0444);
-#else
-  (void) chmod(tmp, 0444);
-#endif
-  (void) close(lfd);
-
-  /*
-   * OK.  Now the tmp file exists.  Try three times to move it in place
-   * for the lock.
-   */
-  i = 0;
-  haslock = 0;
-  while ((!haslock) && (i++ < 3)) {
-    haslock = (link(tmp,LockFile) == 0);
-    if (haslock) {
-      /*
-       * We're done.
-       */
-      break;
-    }
-    else {
-      /*
-       * Read the pid from the existing file
-       */
-      lfd = open(LockFile, O_RDONLY);
-      if (lfd < 0) {
-        unlink(tmp);
-        FatalError("Can't read lock file %s\n", LockFile);
-      }
-      pid_str[0] = '\0';
-      if (read(lfd, pid_str, 11) != 11) {
-        /*
-         * Bogus lock file.
-         */
-        unlink(LockFile);
-        close(lfd);
-        continue;
-      }
-      pid_str[11] = '\0';
-      l_pid = (pid_t)strtol(pid_str, NULL, 10);
-      close(lfd);
-
-      /*
-       * Now try to kill the PID to see if it exists.
-       */
-      errno = 0;
-      t = kill(l_pid, 0);
-      if ((t< 0) && (errno == ESRCH)) {
-        /*
-         * Stale lock file.
-         */
-        unlink(LockFile);
-        continue;
-      }
-      else if (((t < 0) && (errno == EPERM)) || (t == 0)) {
-        /*
-         * Process is still active.
-         */
-        unlink(tmp);
-	FatalError("Server is already active for display %s\n%s %s\n%s\n",
-		   port, "\tIf this server is no longer running, remove",
-		   LockFile, "\tand start again.");
-      }
-    }
-  }
-  unlink(tmp);
-  if (!haslock)
-    FatalError("Could not create server lock file: %s\n", LockFile);
-  StillLocking = FALSE;
-#endif /* OPEN_SILLICON */
 }
 
 /*
@@ -356,16 +198,7 @@ LockServer(void)
 void
 UnlockServer(void)
 {
-#ifdef OPEN_SILLICON
   return;
-#else
-  if (nolock) return;
-
-  if (!StillLocking){
-
-  (void) unlink(LockFile);
-  }
-#endif /* OPEN_SILLICON */
 }
 
 /* Force connections to close on SIGHUP from init */
@@ -401,26 +234,16 @@ GiveUp(int sig)
 _X_EXPORT CARD32
 GetTimeInMillis(void)
 {
-#ifndef OPEN_SILLICON
-    struct timeval tv;
-#endif
 
 #ifdef MONOTONIC_CLOCK
     struct timespec tp;
     if (clock_gettime(CLOCK_MONOTONIC, &tp) == 0)
         return (tp.tv_sec * 1000) + (tp.tv_nsec / 1000000L);
-#ifdef OPEN_SILLICON
     ErrorF("OpenSillicon: CLOCK_MONOTONIC failed\n");
     exit(1);
 #endif
-#endif
 
-#ifndef OPEN_SILLICON
-    X_GETTIMEOFDAY(&tv);
-    return(tv.tv_sec * 1000) + (tv.tv_usec / 1000);
-#else
     return 0;
-#endif
 }
 
 _X_EXPORT void
@@ -465,10 +288,6 @@ void UseMsg(void)
     ErrorF("-cc int                default color visual class\n");
     ErrorF("-core                  generate core dump on fatal error\n");
     ErrorF("-dpi int               screen resolution in dots per inch\n");
-#ifdef DPMSExtension
-    ErrorF("dpms                   enables VESA DPMS monitor control\n");
-    ErrorF("-dpms                  disables VESA DPMS monitor control\n");
-#endif
     ErrorF("-deferglyphs [none|all|16] defer loading of [no|all|16-bit] glyphs\n");
     ErrorF("-f #                   bell base (0-100)\n");
     ErrorF("-fc string             cursor font\n");
@@ -502,7 +321,6 @@ void UseMsg(void)
     ErrorF("-s #                   screen-saver timeout (minutes)\n");
     ErrorF("-startbench            shut down immediately\n");
     ErrorF("-t #                   mouse threshold (pixels)\n");
-    ErrorF("-tcp                   listen for TCP (default is nolisten tcp)\n");
     ErrorF("-terminate             terminate at server reset\n");
     ErrorF("-to #                  connection time out\n");
     ErrorF("-tst                   disable testing extensions\n");
@@ -519,9 +337,6 @@ void UseMsg(void)
 #endif
     ErrorF("+extension name        Enable extension\n");
     ErrorF("-extension name        Disable extension\n");
-#ifdef XDMCP
-    XdmcpUseMsg();
-#endif
     ddxUseMsg();
 }
 
@@ -552,7 +367,6 @@ void
 ProcessCommandLine(int argc, char *argv[])
 {
     int i, skip;
-    int tcp = 0;
 
     defaultKeyboardControl.autoRepeat = TRUE;
 
@@ -643,12 +457,6 @@ ProcessCommandLine(int argc, char *argv[])
 	    else
 		UseMsg();
 	}
-#ifdef DPMSExtension
-	else if ( strcmp( argv[i], "dpms") == 0)
-	    DPMSEnabledSwitch = TRUE;
-	else if ( strcmp( argv[i], "-dpms") == 0)
-	    DPMSDisabledSwitch = TRUE;
-#endif
 	else if ( strcmp( argv[i], "-deferglyphs") == 0)
 	{
 	    if(++i >= argc || !ParseGlyphCachingMode(argv[i]))
@@ -689,41 +497,6 @@ ProcessCommandLine(int argc, char *argv[])
 	    UseMsg();
 	    exit(0);
 	}
-#if defined(RLIMIT_DATA) && !defined(OPEN_SILLICON)
-	else if ( strcmp( argv[i], "-ld") == 0)
-	{
-	    if(++i < argc)
-	    {
-	        limitDataSpace = atoi(argv[i]);
-		if (limitDataSpace > 0)
-		    limitDataSpace *= 1024;
-	    }
-	    else
-		UseMsg();
-	}
-#endif
-#if defined(RLIMIT_NOFILE) && !defined(OPEN_SILLICON)
-	else if ( strcmp( argv[i], "-lf") == 0)
-	{
-	    if(++i < argc)
-	        limitNoFile = atoi(argv[i]);
-	    else
-		UseMsg();
-	}
-#endif
-#if defined(RLIMIT_STACK) && !defined(OPEN_SILLICON)
-	else if ( strcmp( argv[i], "-ls") == 0)
-	{
-	    if(++i < argc)
-	    {
-	        limitStackSpace = atoi(argv[i]);
-		if (limitStackSpace > 0)
-		    limitStackSpace *= 1024;
-	    }
-	    else
-		UseMsg();
-	}
-#endif
 	else if ( strcmp ( argv[i], "-nolock") == 0)
 	{
 	  if (getuid() != 0)
@@ -793,10 +566,6 @@ ProcessCommandLine(int argc, char *argv[])
 	    else
 		UseMsg();
 	}
-	else if ( strcmp( argv[i], "-tcp") == 0)
-	{
-	    tcp = 1;
-	}
 	else if ( strcmp( argv[i], "-terminate") == 0)
 	{
 	    dispatchExceptionAtReset = DE_TERMINATE;
@@ -807,10 +576,6 @@ ProcessCommandLine(int argc, char *argv[])
 		TimeOutValue = ((CARD32)atoi(argv[i])) * MILLI_PER_SECOND;
 	    else
 		UseMsg();
-	}
-	else if ( strcmp( argv[i], "-tst") == 0)
-	{
-	    noTestExtensions = TRUE;
 	}
 	else if ( strcmp( argv[i], "v") == 0)
 	    defaultScreenSaverBlanking = PreferBlanking;
@@ -854,12 +619,6 @@ ProcessCommandLine(int argc, char *argv[])
 	    /* just in case any body is interested */
 	    dev_tty_from_init = argv[i];
 	}
-#ifdef XDMCP
-	else if ((skip = XdmcpOptions(argc, argv, i)) != i)
-	{
-	    i = skip - 1;
-	}
-#endif
 #ifdef SMART_SCHEDULE
 	else if ( strcmp( argv[i], "-dumbSched") == 0)
 	{
@@ -926,13 +685,6 @@ ProcessCommandLine(int argc, char *argv[])
 	    FatalError("Unrecognized option: %s\n", argv[i]);
         }
     }
-
-#ifdef TCPCONN
-    if (!tcp)
-	_XSERVTransNoListen("tcp");
-#else
-    (void)tcp;
-#endif
 }
 
 
@@ -942,65 +694,7 @@ int
 set_font_authorizations(char **authorizations, int *authlen, pointer client)
 {
 #define AUTHORIZATION_NAME "hp-hostname-1"
-#if defined(TCPCONN)
-    static char *result = NULL;
-    static char *p = NULL;
-
-    if (p == NULL)
-    {
-	char hname[1024], *hnameptr;
-	unsigned int len;
-#if defined(IPv6) && defined(AF_INET6)
-	struct addrinfo hints, *ai = NULL;
-#else
-	struct hostent *host;
-#ifdef XTHREADS_NEEDS_BYNAMEPARAMS
-	_Xgethostbynameparams hparams;
-#endif
-#endif
-
-	gethostname(hname, 1024);
-#if defined(IPv6) && defined(AF_INET6)
-	bzero(&hints, sizeof(hints));
-	hints.ai_flags = AI_CANONNAME;
-	if (getaddrinfo(hname, NULL, &hints, &ai) == 0) {
-	    hnameptr = ai->ai_canonname;
-	} else {
-	    hnameptr = hname;
-	}
-#else
-	host = _XGethostbyname(hname, hparams);
-	if (host == NULL)
-	    hnameptr = hname;
-	else
-	    hnameptr = host->h_name;
-#endif
-
-	len = strlen(hnameptr) + 1;
-	result = malloc(len + sizeof(AUTHORIZATION_NAME) + 4);
-
-	p = result;
-        *p++ = sizeof(AUTHORIZATION_NAME) >> 8;
-        *p++ = sizeof(AUTHORIZATION_NAME) & 0xff;
-        *p++ = (len) >> 8;
-        *p++ = (len & 0xff);
-
-	memmove(p, AUTHORIZATION_NAME, sizeof(AUTHORIZATION_NAME));
-	p += sizeof(AUTHORIZATION_NAME);
-	memmove(p, hnameptr, len);
-	p += len;
-#if defined(IPv6) && defined(AF_INET6)
-	if (ai) {
-	    freeaddrinfo(ai);
-	}
-#endif
-    }
-    *authlen = p - result;
-    *authorizations = result;
-    return 1;
-#else /* TCPCONN */
     return 0;
-#endif /* TCPCONN */
 }
 
 void
@@ -1663,16 +1357,3 @@ CheckUserParameters(int argc, char **argv, char **envp)
     }
     FatalError("X server aborted because of unsafe environment\n");
 }
-
-/*
- * CheckUserAuthorization: check if the user is allowed to start the
- * X server.  This usually means some sort of PAM checking, and it is
- * usually only done for setuid servers (uid != euid).
- */
-
-
-void
-CheckUserAuthorization(void)
-{
-}
-

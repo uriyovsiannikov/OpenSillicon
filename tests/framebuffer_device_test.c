@@ -5,7 +5,7 @@
 #include "kernel/vmm.h"
 
 static struct address_space space;
-static unsigned char source[128];
+static unsigned char source[32768];
 
 struct address_space *vmm_active_address_space(void) { return &space; }
 bool
@@ -65,6 +65,27 @@ main(void)
 	assert(framebuffer_device_present_rect(&rect) == 0);
 	assert(memcmp(pixels + 35, source + 35, 12) == 0);
 	assert(pixels[34] == 0xa5 && pixels[47] == 0xa5);
+	/* Exercise multiple staging chunks, 64-bit stores and an odd pixel tail. */
+	_Alignas(8) unsigned char large[32768];
+	fb.address = large;
+	fb.width = 2051;
+	fb.height = 3;
+	fb.pitch = 8216;
+	assert(framebuffer_device_init(&fb));
+	for (unsigned int x = 0; x < 2; x++) {
+		rect = (struct os_framebuffer_rect){
+			.source = (uintptr_t)source, .x = x, .y = 1,
+			.width = 2049, .height = 2
+		};
+		memset(large, 0xa5, sizeof(large));
+		assert(framebuffer_device_present_rect(&rect) == 0);
+		for (size_t i = 0; i < sizeof(large); i++) {
+			size_t row = i / fb.pitch, col = i % fb.pitch;
+			bool changed = row >= 1 && row < 3 && col >= x * 4 &&
+			    col < (x + rect.width) * 4;
+			assert(large[i] == (changed ? source[i] : 0xa5));
+		}
+	}
 	puts("Framebuffer damage rectangle, pitch, bounds and user-copy tests passed");
 	return 0;
 }

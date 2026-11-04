@@ -10,6 +10,8 @@ cppflags="-DOPEN_SILLICON -nostdinc -isystem $gcc_include -I$root/user/libos/inc
 export PKG_CONFIG_LIBDIR="$prefix/lib/pkgconfig:$prefix/share/pkgconfig"
 export PKG_CONFIG_PATH="$PKG_CONFIG_LIBDIR"
 
+if [ "${1:-full}" != relink ]; then
+feh_force=-B
 mkdir -p "$root/build/x11/libpng"
 cd "$root/build/x11/libpng"
 CPPFLAGS="$cppflags" CFLAGS="$cflags" LDFLAGS="-L$root/build/libz" \
@@ -79,7 +81,9 @@ cat > opensillicon_config.h <<'EOF'
 #define PACKAGE "feh"
 #define VERSION "3.13.1"
 EOF
-make -B -C src -j2 curl=0 xinerama=0 exif=0 magic=0 mkstemps=0 verscmp=0 \
+fi
+cd "$root/build/x11/feh"
+make ${feh_force:-} -C src -j2 curl=0 xinerama=0 exif=0 magic=0 mkstemps=0 verscmp=0 \
     PREFIX=/usr CC="$cc" \
     CFLAGS="$cflags $cppflags -I$prefix/include/freetype2 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -include $root/build/x11/feh/opensillicon_config.h" \
     LDFLAGS="-nostdlib -static -no-pie -Wl,--build-id=none -Wl,-z,noexecstack -Wl,-T,$root/user/c_linker.ld $root/build/libos/crt0.o -L$prefix/lib -L$root/build/libz" \

@@ -67,27 +67,12 @@
 #define PL_UNIT	    (1 << PL_SHIFT)
 #define PL_MASK	    (PL_UNIT - 1)
 
-#if 0
-#define GetBits(p,o,d) { \
-    CARD32	m1,m2,m3,m4,m5,m6,m7,m8; \
-    m1 = sha[o] << (7 - (p)); \
-    m2 = sha[(o)+1] << (3 - (p)); \
-    m3 = m1 & 0x80808080; \
-    m4 = m2 & 0x08080808; \
-    m5 = m3 | m4; \
-    m6 = m5 >> 9; \
-    m7 = m5 | m6; \
-    m8 = m7 >> 18; \
-    d = m7 | m8; \
-}
-#else
 #define GetBits(p,o,d) { \
     CARD32	m5,m7; \
     m5 = ((sha[o] << (7 - (p))) & 0x80808080) | ((sha[(o)+1] << (3 - (p))) & 0x08080808); \
     m7 = m5 | (m5 >> 9); \
     d = m7 | (m7 >> 18); \
 }
-#endif
 
 void
 shadowUpdatePlanar4x8(ScreenPtr pScreen, shadowBufPtr pBuf)

@@ -99,11 +99,6 @@ Equipment Corporation.
 #include "extnsionst.h"
 #include "dixevents.h"          /* InitEvents() */
 
-#ifdef DPMSExtension
-#define DPMS_SERVER
-#include <X11/extensions/dpms.h>
-#include "dpmsproc.h"
-#endif
 
 extern int InitClientPrivates(ClientPtr client);
 
@@ -240,8 +235,6 @@ main(int argc, char *argv[], char *envp[])
 
     CheckUserParameters(argc, argv, envp);
 
-    CheckUserAuthorization();
-
 
     InitConnectionLimits();
 
@@ -260,13 +253,6 @@ main(int argc, char *argv[], char *envp[])
         ScreenSaverInterval = defaultScreenSaverInterval;
         ScreenSaverBlanking = defaultScreenSaverBlanking;
         ScreenSaverAllowExposures = defaultScreenSaverAllowExposures;
-#ifdef DPMSExtension
-        DPMSStandbyTime = DEFAULT_SCREEN_SAVER_TIME;
-        DPMSSuspendTime = DEFAULT_SCREEN_SAVER_TIME;
-        DPMSOffTime = DEFAULT_SCREEN_SAVER_TIME;
-        DPMSEnabled = TRUE;
-        DPMSPowerLevel = 0;
-#endif
         InitBlockAndWakeupHandlers();
         /* Perform any operating system dependent initializations you'd like */
         OsInit();
@@ -338,12 +324,6 @@ main(int argc, char *argv[], char *envp[])
         if (!(rootCursor = CreateRootCursor(defaultCursorFont, 0)))
             FatalError("could not open default cursor font '%s'",
                        defaultCursorFont);
-#ifdef DPMSExtension
-        /* check all screens, looking for DPMS Capabilities */
-        DPMSCapableFlag = DPMSSupported();
-        if (!DPMSCapableFlag)
-            DPMSEnabled = FALSE;
-#endif
 
 
         for (i = 0; i < screenInfo.numScreens; i++)

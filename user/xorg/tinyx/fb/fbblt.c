@@ -153,28 +153,6 @@ fbBlt(FbBits * srcLine,
                 }
                 n = nmiddle;
                 if (destInvarient) {
-#if 0
-                    /*
-                     * This provides some speedup on screen->screen blts
-                     * over the PCI bus, usually about 10%.  But fb
-                     * isn't usually used for this operation...
-                     */
-                    if (_ca2 + 1 == 0 && _cx2 == 0) {
-                        FbBits t1, t2, t3, t4;
-
-                        while (n >= 4) {
-                            t1 = *src++;
-                            t2 = *src++;
-                            t3 = *src++;
-                            t4 = *src++;
-                            *dst++ = t1;
-                            *dst++ = t2;
-                            *dst++ = t3;
-                            *dst++ = t4;
-                            n -= 4;
-                        }
-                    }
-#endif
                     while (n--)
                         *dst++ = FbDoDestInvarientMergeRop(*src++);
                 }
@@ -715,9 +693,6 @@ fbBltOdd24(FbBits * srcLine,
             even = TRUE;
         }
     }
-#if 0
-    fprintf(stderr, "\n");
-#endif
 }
 
 #endif

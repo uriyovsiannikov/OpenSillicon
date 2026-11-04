@@ -240,10 +240,6 @@ SetWindowToDefaults(register WindowPtr pWin)
     pWin->deliverableEvents = 0;
     pWin->dontPropagate = 0;
     pWin->forcedBS = FALSE;
-#ifdef NEED_DBE_BUF_BITS
-    pWin->srcBuffer = DBE_FRONT_BUFFER;
-    pWin->dstBuffer = DBE_FRONT_BUFFER;
-#endif
 }
 
 static void

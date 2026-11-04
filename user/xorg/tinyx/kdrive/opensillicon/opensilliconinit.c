@@ -15,7 +15,7 @@ static const KdCardFuncs opensilliconFuncs = {
 	opensilliconCardInit,
 	opensilliconScreenInit,
 	0, opensilliconFinishInitScreen, opensilliconCreateResources,
-	0, 0, 0, 0, 0,
+	0, 0, 0, 0,
 	opensilliconScreenFini, opensilliconCardFini,
 	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 };

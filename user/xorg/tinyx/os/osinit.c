@@ -67,123 +67,21 @@ SOFTWARE.
 #endif
 #endif
 
-#ifndef OPEN_SILLICON
-#include <sys/resource.h>
-#endif
 
 #ifndef ADMPATH
 #define ADMPATH "/usr/adm/X%smsgs"
 #endif
 
 extern char *display;
-#if defined(RLIMIT_DATA) && !defined(OPEN_SILLICON)
-int limitDataSpace = -1;
-#endif
-#if defined(RLIMIT_STACK) && !defined(OPEN_SILLICON)
-int limitStackSpace = -1;
-#endif
-#if defined(RLIMIT_NOFILE) && !defined(OPEN_SILLICON)
-int limitNoFile = -1;
-#endif
 
 void
 OsInit(void)
 {
     static Bool been_here = FALSE;
-#ifndef OPEN_SILLICON
-    static char* admpath = ADMPATH;
-    static char* devnull = "/dev/null";
-    char fname[PATH_MAX];
-#endif
 
 
     if (!been_here) {
-#ifndef OPEN_SILLICON
-	fclose(stdin);
-	fclose(stdout);
-	/*
-	 * If a write of zero bytes to stderr returns non-zero, i.e. -1,
-	 * then writing to stderr failed, and we'll write somewhere else
-	 * instead. (Apparently this never happens in the Real World.)
-	 */
-	if (write (2, fname, 0) == -1)
-	{
-	    FILE *err;
-
-	    if (strlen (display) + strlen (admpath) + 1 < sizeof fname)
-		sprintf (fname, admpath, display);
-	    else
-		strcpy (fname, devnull);
-	    /*
-	     * uses stdio to avoid os dependencies here,
-	     * a real os would use
- 	     *  open (fname, O_WRONLY|O_APPEND|O_CREAT, 0666)
-	     */
-	    if (!(err = fopen (fname, "a+")))
-		err = fopen (devnull, "w");
-	    if (err && (fileno(err) != 2)) {
-		dup2 (fileno (err), 2);
-		fclose (err);
-	    }
-	    setlinebuf(stderr);
-	}
-
-	if (getpgrp () == 0)
-	    setpgid (0, 0);
-
-#ifdef RLIMIT_DATA
-	if (limitDataSpace >= 0)
-	{
-	    struct rlimit	rlim;
-
-	    if (!getrlimit(RLIMIT_DATA, &rlim))
-	    {
-		if ((limitDataSpace > 0) && (limitDataSpace < rlim.rlim_max))
-		    rlim.rlim_cur = limitDataSpace;
-		else
-		    rlim.rlim_cur = rlim.rlim_max;
-		(void)setrlimit(RLIMIT_DATA, &rlim);
-	    }
-	}
-#endif
-#ifdef RLIMIT_STACK
-	if (limitStackSpace >= 0)
-	{
-	    struct rlimit	rlim;
-
-	    if (!getrlimit(RLIMIT_STACK, &rlim))
-	    {
-		if ((limitStackSpace > 0) && (limitStackSpace < rlim.rlim_max))
-		    rlim.rlim_cur = limitStackSpace;
-		else
-		    rlim.rlim_cur = rlim.rlim_max;
-		(void)setrlimit(RLIMIT_STACK, &rlim);
-	    }
-	}
-#endif
-#ifdef RLIMIT_NOFILE
-	if (limitNoFile >= 0)
-	{
-	    struct rlimit	rlim;
-
-	    if (!getrlimit(RLIMIT_NOFILE, &rlim))
-	    {
-		if ((limitNoFile > 0) && (limitNoFile < rlim.rlim_max))
-		    rlim.rlim_cur = limitNoFile;
-		else
-		    rlim.rlim_cur = rlim.rlim_max;
-#if 0
-		if (rlim.rlim_cur > MAXSOCKS)
-		    rlim.rlim_cur = MAXSOCKS;
-#endif
-		(void)setrlimit(RLIMIT_NOFILE, &rlim);
-	    }
-	}
-#endif
-
-#else
 	/* The kernel owns process setup, limits, and console stdio. */
-#endif
 	LockServer();
 	been_here = TRUE;
     }

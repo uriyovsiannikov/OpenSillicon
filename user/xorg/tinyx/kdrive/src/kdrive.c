@@ -30,9 +30,6 @@
 #include <randrstr.h>
 #include "micmap.h"
 
-#ifdef DPMSExtension
-#include "dpmsproc.h"
-#endif
 
 typedef struct _kdDepths {
 	CARD8 depth;
@@ -60,9 +57,7 @@ Bool kdDisableZaphod;
 Bool kdDontZap;
 static Bool kdEnabled;
 static int kdSubpixelOrder;
-int kdVirtualTerminal = -1;
 Bool kdSwitchPending;
-static const char *kdSwitchCmd;
 static DDXPointRec kdOrigin;
 
 /*
@@ -177,28 +172,9 @@ void KdDisableScreen(ScreenPtr pScreen)
 	if (!pScreenPriv->screen->softCursor &&
 	    pScreenPriv->card->cfuncs->disableCursor)
 		(*pScreenPriv->card->cfuncs->disableCursor) (pScreen);
-	if (pScreenPriv->card->cfuncs->dpms)
-		(*pScreenPriv->card->cfuncs->dpms) (pScreen, KD_DPMS_NORMAL);
 	pScreenPriv->enabled = FALSE;
 	if (pScreenPriv->card->cfuncs->disable)
 		(*pScreenPriv->card->cfuncs->disable) (pScreen);
-}
-
-static void KdDoSwitchCmd(const char *const reason)
-{
-#ifdef OPEN_SILLICON
-	/* There is no external VT switch command on this backend. */
-	(void)reason;
-#else
-	if (kdSwitchCmd) {
-		char *command;
-
-		if (asprintf(&command, "%s %s", kdSwitchCmd, reason) == -1)
-			return;
-		system(command);
-		free(command);
-	}
-#endif
 }
 
 void KdSuspend(void)
@@ -217,7 +193,6 @@ void KdSuspend(void)
 				(*card->cfuncs->restore) (card);
 		}
 		KdDisableInput();
-		KdDoSwitchCmd("suspend");
 	}
 }
 
@@ -241,7 +216,6 @@ Bool KdEnableScreen(ScreenPtr pScreen)
 		if (!(*pScreenPriv->card->cfuncs->enable) (pScreen))
 			return FALSE;
 	pScreenPriv->enabled = TRUE;
-	pScreenPriv->dpmsState = KD_DPMS_NORMAL;
 	pScreenPriv->card->selected = pScreenPriv->screen->mynum;
 	if (!pScreenPriv->screen->softCursor &&
 	    pScreenPriv->card->cfuncs->enableCursor)
@@ -251,9 +225,6 @@ Bool KdEnableScreen(ScreenPtr pScreen)
 		(*pScreenPriv->card->cfuncs->enableAccel) (pScreen);
 	KdEnableColormap(pScreen);
 	KdSetRootClip(pScreen, TRUE);
-	if (pScreenPriv->card->cfuncs->dpms)
-		(*pScreenPriv->card->cfuncs->dpms) (pScreen,
-						    pScreenPriv->dpmsState);
 	return TRUE;
 }
 
@@ -263,7 +234,6 @@ void KdResume(void)
 	KdScreenInfo *screen;
 
 	if (kdEnabled) {
-		KdDoSwitchCmd("resume");
 		for (card = kdCardInfo; card; card = card->next) {
 			if (card->cfuncs->preserve)
 				(*card->cfuncs->preserve) (card);
@@ -304,7 +274,6 @@ void AbortDDX(void)
 			(*kdOsFuncs->Disable) ();
 		if (kdOsFuncs->Fini)
 			(*kdOsFuncs->Fini) ();
-		KdDoSwitchCmd("stop");
 	}
 }
 
@@ -584,12 +553,9 @@ void KdUseMsg(void)
 	    ("-origin X,Y      Locates the next screen in the the virtual screen (Xinerama)\n");
 	ErrorF
 	    ("-mouse path[,n]  Filename of mouse device, n is number of buttons\n");
-	ErrorF("-switchCmd       Command to execute on vt switch\n");
-	ErrorF
+		ErrorF
 	    ("-nozap           Don't terminate server on Ctrl+Alt+Backspace\n");
-	ErrorF
-	    ("vtxx             Use virtual terminal xx instead of the next available\n");
-}
+	}
 
 int KdProcessArgument(int argc, char **argv, int i)
 {
@@ -672,19 +638,7 @@ int KdProcessArgument(int argc, char **argv, int i)
 			UseMsg();
 		return 2;
 	}
-	if (!strcmp(argv[i], "-switchCmd")) {
-		if ((i + 1) < argc)
-			kdSwitchCmd = argv[i + 1];
-		else
-			UseMsg();
-		return 2;
-	}
-#ifndef OPEN_SILLICON
-	if (!strncmp(argv[i], "vt", 2) &&
-	    sscanf(argv[i], "vt%2d", &kdVirtualTerminal) == 1) {
-		return 1;
-	}
-#endif
+
 	return 0;
 }
 
@@ -698,7 +652,6 @@ void KdOsInit(const KdOsFuncs * const pOsFuncs)
 	kdOsFuncs = pOsFuncs;
 	if (pOsFuncs) {
 		if (serverGeneration == 1) {
-			KdDoSwitchCmd("start");
 			if (pOsFuncs->Init)
 				(*pOsFuncs->Init) ();
 		}
@@ -756,9 +709,6 @@ static Bool KdCloseScreen(int index, ScreenPtr pScreen)
 	else
 		ret = TRUE;
 
-	if (pScreenPriv->dpmsState != KD_DPMS_NORMAL)
-		(*card->cfuncs->dpms) (pScreen, KD_DPMS_NORMAL);
-
 	if (screen->mynum == card->selected)
 		KdDisableScreen(pScreen);
 
@@ -806,34 +756,9 @@ static Bool KdCloseScreen(int index, ScreenPtr pScreen)
 
 static Bool KdSaveScreen(ScreenPtr pScreen, int on)
 {
-	KdScreenPriv(pScreen);
-	int dpmsState;
-
-	if (!pScreenPriv->card->cfuncs->dpms)
-		return FALSE;
-
-	dpmsState = pScreenPriv->dpmsState;
-	switch (on) {
-	case SCREEN_SAVER_OFF:
-		dpmsState = KD_DPMS_NORMAL;
-		break;
-	case SCREEN_SAVER_ON:
-		if (dpmsState == KD_DPMS_NORMAL)
-			dpmsState = KD_DPMS_NORMAL + 1;
-		break;
-	case SCREEN_SAVER_CYCLE:
-		if (dpmsState < KD_DPMS_MAX)
-			dpmsState++;
-		break;
-	case SCREEN_SAVER_FORCER:
-		break;
-	}
-	if (dpmsState != pScreenPriv->dpmsState) {
-		if (pScreenPriv->enabled)
-			(*pScreenPriv->card->cfuncs->dpms) (pScreen, dpmsState);
-		pScreenPriv->dpmsState = dpmsState;
-	}
-	return TRUE;
+	(void)pScreen;
+	(void)on;
+	return FALSE;
 }
 
 static Bool KdCreateWindow(WindowPtr pWin)
@@ -943,7 +868,6 @@ static Bool KdScreenInit(int index, ScreenPtr pScreen, int argc, char **argv)
 	pScreenPriv->screen = screen;
 	pScreenPriv->card = card;
 	pScreenPriv->bytesPerPixel = screen->fb.bitsPerPixel >> 3;
-	pScreenPriv->dpmsState = KD_DPMS_NORMAL;
 	/*pScreen->x = screen->origin.x;
 	   pScreen->y = screen->origin.y; */
 
@@ -1017,9 +941,6 @@ static Bool KdScreenInit(int index, ScreenPtr pScreen, int argc, char **argv)
 		if (!(*card->cfuncs->finishInitScreen) (pScreen))
 			return FALSE;
 
-#if 0
-	fbInitValidateTree(pScreen);
-#endif
 
 	/*
 	 * Wrap CloseScreen, the order now is:
@@ -1223,16 +1144,6 @@ void KdInitOutput(ScreenInfo * pScreenInfo, int argc, char **argv)
 			KdAddScreen(pScreenInfo, screen, argc, argv);
 }
 
-#ifdef DPMSExtension
-void DPMSSet(int level)
-{
-}
-
-Bool DPMSSupported(void)
-{
-	return FALSE;
-}
-#endif
 
 void kdVersion(const char name[]) {
 	ErrorF("%s from %s\n"

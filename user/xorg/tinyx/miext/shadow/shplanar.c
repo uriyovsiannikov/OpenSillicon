@@ -66,25 +66,12 @@
  * m7   G H             E F             C D     G H     A B C D E F G H     m6 | (m6 >> 10)
  */
 
-#if 0
-#define GetBits(p,o,d) {\
-    m = sha[o]; \
-    m1 = m << (7 - (p)); \
-    m2 = (m >> (p)) << 2; \
-    m3 = m1 & 0x80808080; \
-    m4 = m2 & 0x40404040; \
-    m5 = m3 | m4; \
-    m6 = m5 | (m5 >> 20); \
-    d = m6 | (m6 >> 10); \
-}
-#else
 #define GetBits(p,o,d) {\
     m = sha[o]; \
     m5 = ((m << (7 - (p))) & 0x80808080) | (((m >> (p)) << 2) & 0x40404040); \
     m6 = m5 | (m5 >> 20); \
     d = m6 | (m6 >> 10); \
 }
-#endif
 
 void
 shadowUpdatePlanar4(ScreenPtr pScreen, shadowBufPtr pBuf)

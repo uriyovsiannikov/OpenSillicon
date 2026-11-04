@@ -122,9 +122,6 @@ static DISPATCH_PROC(SProcShapeRectangles);
 static DISPATCH_PROC(SProcShapeSelectInput);
 
 
-#if 0
-static unsigned char ShapeReqCode = 0;
-#endif
 static int ShapeEventBase = 0;
 
 static RESTYPE ClientType, EventType;   /* resource types for event masks */
@@ -165,9 +162,6 @@ ShapeExtensionInit(void)
         (extEntry = AddExtension(SHAPENAME, ShapeNumberEvents, 0,
                                  ProcShapeDispatch, SProcShapeDispatch,
                                  ShapeResetProc, StandardMinorOpcode))) {
-#if 0
-        ShapeReqCode = (unsigned char) extEntry->base;
-#endif
         ShapeEventBase = extEntry->eventBase;
         EventSwapVector[ShapeEventBase] = (EventSwapPtr) SShapeNotifyEvent;
     }
