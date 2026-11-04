@@ -66,6 +66,8 @@ long u_waitpid(uint64_t pid, uint8_t *status)
 long u_sleep_ticks(uint64_t ticks) { return syscall3(SYSCALL_SLEEP_TICKS, ticks, 0, 0); }
 long u_power_control(uint64_t command)
 { return syscall3(SYSCALL_POWER_CONTROL, command, 0, 0); }
+{ return syscall3(SYSCALL_KLDLOAD, (uintptr_t)path, 0, 0); }
+{ return syscall3(SYSCALL_KLDUNLOAD, (uintptr_t)name, 0, 0); }
 long u_chdir(const char *path)
 { return syscall3(SYSCALL_CHDIR, (uintptr_t)path, 0, 0); }
 long u_getcwd(char *buffer, size_t capacity)
@@ -73,6 +75,10 @@ long u_getcwd(char *buffer, size_t capacity)
 long u_pipe(uint32_t descriptors[2])
 { return syscall3(SYSCALL_PIPE, (uintptr_t)descriptors, 0, 0); }
 long u_getpid(void) { return syscall3(SYSCALL_GETPID, 0, 0, 0); }
+long u_getcredentials(struct os_credentials *credentials)
+{ return syscall3(SYSCALL_GETCREDENTIALS, (uintptr_t)credentials, 0, 0); }
+long u_setuid(uint32_t id) { return syscall3(SYSCALL_SETUID, id, 0, 0); }
+long u_setgid(uint32_t id) { return syscall3(SYSCALL_SETGID, id, 0, 0); }
 long u_process_snapshot(struct u_process_info *entries, size_t capacity)
 { return syscall3(SYSCALL_PROCESS_SNAPSHOT, (uintptr_t)entries, capacity, 0); }
 long u_framebuffer_info(struct os_framebuffer_info *info)

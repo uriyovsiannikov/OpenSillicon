@@ -531,6 +531,26 @@ fd_object_stat(struct fd_object *object, struct fd_metadata *metadata)
 }
 
 int
+fd_object_chmod(struct fd_object *object, uint32_t mode)
+{
+	if (object == NULL)
+		return -FD_ERROR_EBADF;
+	if (object->operations->chmod == NULL)
+		return -FD_ERROR_EOPNOTSUPP;
+	return object->operations->chmod(object->context, mode);
+}
+
+int
+fd_object_chown(struct fd_object *object, uint32_t uid, uint32_t gid)
+{
+	if (object == NULL)
+		return -FD_ERROR_EBADF;
+	if (object->operations->chown == NULL)
+		return -FD_ERROR_EOPNOTSUPP;
+	return object->operations->chown(object->context, uid, gid);
+}
+
+int
 fd_object_get_path(struct fd_object *object, char *path, size_t capacity)
 {
 	if (object == NULL)

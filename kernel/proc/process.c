@@ -40,6 +40,7 @@
 #define PROCESS_ERROR_ESRCH 3U
 #define PROCESS_ERROR_EINTR 4U
 #define PROCESS_ERROR_EACCES 13U
+#define PROCESS_ERROR_EPERM 1U
 #define PROCESS_ERROR_ENOEXEC 8U
 #define PROCESS_ERROR_EIO 5U
 #define PROCESS_ERROR_ENOENT 2U
@@ -67,6 +68,8 @@ struct process_tls_metadata {
 
 struct process {
 	uint64_t id;
+	struct os_credentials credentials;
+	uint32_t file_creation_mask;
 	enum process_state state;
 	uint8_t exit_status;
 	uint64_t waiting_for;
@@ -679,10 +682,168 @@ process_current_ppid(void)
 	return parent_pid;
 }
 
+bool
+process_current_credentials(struct os_credentials *credentials)
+{
+	uint64_t flags;
+	if (credentials == NULL || current_process == NULL)
+		return false;
+	__asm__ volatile ("pushfq; popq %0; cli" : "=r" (flags) : : "memory");
+	*credentials = current_process->credentials;
+	if ((flags & (1ULL << 9)) != 0)
+		__asm__ volatile ("sti" : : : "memory");
+	return true;
+}
+
+int
+process_set_uid(uint32_t id, bool effective_only)
+{
+	struct os_credentials *credentials;
+	uint64_t flags;
+	if (current_process == NULL)
+		return -PROCESS_ERROR_ESRCH;
+	__asm__ volatile ("pushfq; popq %0; cli" : "=r" (flags) : : "memory");
+	credentials = &current_process->credentials;
+	if (credentials->effective_uid == 0) {
+		credentials->effective_uid = id;
+		if (!effective_only) {
+			credentials->real_uid = id;
+			credentials->saved_uid = id;
+		}
+	} else if (id == credentials->real_uid || id == credentials->saved_uid) {
+		credentials->effective_uid = id;
+		if (!effective_only)
+			credentials->real_uid = id;
+	} else {
+		if ((flags & (1ULL << 9)) != 0)
+			__asm__ volatile ("sti" : : : "memory");
+		return -(int)PROCESS_ERROR_EPERM;
+	}
+	if ((flags & (1ULL << 9)) != 0)
+		__asm__ volatile ("sti" : : : "memory");
+	return 0;
+}
+
+int
+process_set_gid(uint32_t id, bool effective_only)
+{
+	struct os_credentials *credentials;
+	uint64_t flags;
+	if (current_process == NULL)
+		return -PROCESS_ERROR_ESRCH;
+	__asm__ volatile ("pushfq; popq %0; cli" : "=r" (flags) : : "memory");
+	credentials = &current_process->credentials;
+	if (credentials->effective_uid == 0) {
+		credentials->effective_gid = id;
+		if (!effective_only) {
+			credentials->real_gid = id;
+			credentials->saved_gid = id;
+		}
+	} else if (id == credentials->real_gid || id == credentials->saved_gid) {
+		credentials->effective_gid = id;
+		if (!effective_only)
+			credentials->real_gid = id;
+	} else {
+		if ((flags & (1ULL << 9)) != 0)
+			__asm__ volatile ("sti" : : : "memory");
+		return -(int)PROCESS_ERROR_EPERM;
+	}
+	if ((flags & (1ULL << 9)) != 0)
+		__asm__ volatile ("sti" : : : "memory");
+	return 0;
+}
+
+static int
+process_set_res_ids(uint32_t *current, uint32_t real, uint32_t effective,
+	uint32_t saved)
+{
+	const uint32_t unchanged = UINT32_MAX;
+	uint32_t old_real, old_effective, old_saved;
+	bool privileged;
+	uint32_t requested[3] = { real, effective, saved };
+	uint32_t available[3];
+	uint64_t flags;
+
+	__asm__ volatile ("pushfq; popq %0; cli" : "=r" (flags) : : "memory");
+	old_real = current[0];
+	old_effective = current[1];
+	old_saved = current[2];
+	privileged = current_process->credentials.effective_uid == 0;
+	available[0] = old_real;
+	available[1] = old_effective;
+	available[2] = old_saved;
+	if (!privileged) {
+		for (size_t i = 0; i < 3; i++) {
+			bool allowed = requested[i] == unchanged;
+			for (size_t j = 0; j < 3; j++)
+				allowed |= requested[i] == available[j];
+			if (!allowed) {
+				if ((flags & (1ULL << 9)) != 0)
+					__asm__ volatile ("sti" : : : "memory");
+				return -(int)PROCESS_ERROR_EPERM;
+			}
+		}
+	}
+	if (real != unchanged) current[0] = real;
+	if (effective != unchanged) current[1] = effective;
+	if (saved != unchanged) current[2] = saved;
+	if ((flags & (1ULL << 9)) != 0)
+		__asm__ volatile ("sti" : : : "memory");
+	return 0;
+}
+
+int
+process_set_res_uid(uint32_t real, uint32_t effective, uint32_t saved)
+{
+	if (current_process == NULL)
+		return -(int)PROCESS_ERROR_ESRCH;
+	return process_set_res_ids(&current_process->credentials.real_uid,
+	    real, effective, saved);
+}
+
+int
+process_set_res_gid(uint32_t real, uint32_t effective, uint32_t saved)
+{
+	if (current_process == NULL)
+		return -(int)PROCESS_ERROR_ESRCH;
+	return process_set_res_ids(&current_process->credentials.real_gid,
+	    real, effective, saved);
+}
+
+uint32_t
+process_umask(uint32_t replacement)
+{
+	uint64_t flags;
+	uint32_t previous;
+	if (current_process == NULL)
+		return 0;
+	__asm__ volatile ("pushfq; popq %0; cli" : "=r" (flags) : : "memory");
+	previous = current_process->file_creation_mask;
+	current_process->file_creation_mask = replacement & 0777U;
+	if ((flags & (1ULL << 9)) != 0)
+		__asm__ volatile ("sti" : : : "memory");
+	return previous;
+}
+
+uint32_t
+process_get_umask(void)
+{
+	uint64_t flags;
+	uint32_t mask;
+	if (current_process == NULL)
+		return 0;
+	__asm__ volatile ("pushfq; popq %0; cli" : "=r" (flags) : : "memory");
+	mask = current_process->file_creation_mask;
+	if ((flags & (1ULL << 9)) != 0)
+		__asm__ volatile ("sti" : : : "memory");
+	return mask;
+}
+
 int
 process_chdir(const char *path)
 {
 	struct vnode *directory = NULL;
+	struct os_credentials credentials;
 	char canonical[VFS_PATH_MAX];
 	int error;
 
@@ -694,12 +855,19 @@ process_chdir(const char *path)
 	    canonical, sizeof(canonical));
 	if (error != 0)
 		return error;
-	error = vfs_lookup(canonical, &directory);
+	credentials = current_process->credentials;
+	error = vfs_lookup_as(canonical, credentials.effective_uid,
+	    credentials.effective_gid, &directory);
 	if (error != 0)
 		return error;
 	if (directory->type != VNODE_DIRECTORY) {
 		vnode_put(directory);
 		return -PROCESS_ERROR_ENOTDIR;
+	}
+	if (!vfs_access(directory, credentials.effective_uid,
+	    credentials.effective_gid, VFS_ACCESS_EXEC)) {
+		vnode_put(directory);
+		return -PROCESS_ERROR_EACCES;
 	}
 	vnode_put(directory);
 	for (size_t i = 0; i < sizeof(current_process->current_directory); i++) {
@@ -802,6 +970,30 @@ process_kill(uint64_t pid, unsigned int signo)
 		return PROCESS_ERROR_EINVAL;
 	if (signo != 0 && !os_signal_valid(signo))
 		return PROCESS_ERROR_EINVAL;
+	{
+		struct os_credentials sender;
+		if (!process_current_credentials(&sender))
+			return PROCESS_ERROR_ESRCH;
+		process = process_head;
+		if (process != NULL) {
+			do {
+				if (process->id == pid &&
+				    process->state != PROCESS_ZOMBIE) {
+					const struct os_credentials *target =
+					    &process->credentials;
+					bool permitted = sender.effective_uid == 0 ||
+					    sender.real_uid == target->real_uid ||
+					    sender.real_uid == target->saved_uid ||
+					    sender.effective_uid == target->real_uid ||
+					    sender.effective_uid == target->saved_uid;
+					if (!permitted)
+						return PROCESS_ERROR_EPERM;
+					break;
+				}
+				process = process->next;
+			} while (process != process_head);
+		}
+	}
 	if (process_head == NULL)
 		return PROCESS_ERROR_ESRCH;
 	process = process_head;
@@ -1079,6 +1271,8 @@ process_run_elf_internal(const void *image, size_t image_size,
 		return UINT64_MAX;
 	}
 	root->id = next_process_id++;
+	root->credentials = (struct os_credentials){0};
+	root->file_creation_mask = 0022U;
 	root->state = PROCESS_RUNNING;
 	root->exit_status = 0;
 	root->waiting_for = 0;
@@ -1292,6 +1486,8 @@ process_fork(struct interrupt_frame *frame, uint64_t *error)
 		return frame;
 	}
 	child->id = next_process_id++;
+	child->credentials = current_process->credentials;
+	child->file_creation_mask = current_process->file_creation_mask;
 	child->state = PROCESS_READY;
 	child->exit_status = 0;
 	child->waiting_for = 0;
@@ -1505,6 +1701,8 @@ process_exec_path_argv(struct interrupt_frame *frame, const char *path,
 	size_t argc, const char *const argv[], uint64_t *error)
 {
 	struct vfs_stat status;
+	struct vnode *executable = NULL;
+	struct os_credentials credentials;
 	struct fd_object *file = NULL;
 	char canonical[VFS_PATH_MAX];
 	void *image;
@@ -1521,20 +1719,34 @@ process_exec_path_argv(struct interrupt_frame *frame, const char *path,
 		*error = (uint64_t)-rc;
 		return frame;
 	}
-	rc = vfs_stat_path(canonical, &status);
+	credentials = current_process->credentials;
+	rc = vfs_lookup_as(canonical, credentials.effective_uid,
+	    credentials.effective_gid, &executable);
 	if (rc != 0) {
 		*error = (uint64_t)-rc;
 		return frame;
 	}
-	if (status.type != VNODE_REGULAR || (status.mode & 0111U) == 0) {
+	status = (struct vfs_stat){
+		.size = executable->size,
+		.mode = executable->mode,
+		.type = (uint32_t)executable->type,
+		.uid = executable->uid,
+		.gid = executable->gid
+	};
+	if (status.type != VNODE_REGULAR || !vfs_access(executable,
+	    credentials.effective_uid, credentials.effective_gid,
+	    VFS_ACCESS_EXEC)) {
+		vnode_put(executable);
 		*error = PROCESS_ERROR_EACCES;
 		return frame;
 	}
+	vnode_put(executable);
 	if (status.size == 0 || status.size > SIZE_MAX) {
 		*error = PROCESS_ERROR_ENOEXEC;
 		return frame;
 	}
-	rc = vfs_open(canonical, VFS_O_RDONLY, 0, &file);
+	rc = vfs_open_as(canonical, VFS_O_RDONLY, 0,
+	    credentials.effective_uid, credentials.effective_gid, &file);
 	if (rc != 0) {
 		*error = (uint64_t)-rc;
 		return frame;

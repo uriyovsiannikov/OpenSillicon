@@ -22,6 +22,10 @@ struct unix_socket_state {
 	struct unix_socket_state *peer;
 	uint64_t owner_pid;
 	uint64_t peer_pid;
+	uint32_t owner_uid;
+	uint32_t owner_gid;
+	uint32_t peer_uid;
+	uint32_t peer_gid;
 	size_t send_capacity;
 	size_t receive_capacity;
 	uint8_t path[UNIX_SOCKET_PATH_MAX];
@@ -265,16 +269,21 @@ static const struct fd_operations socket_operations = {
 int
 unix_socket_create(struct fd_table *table, int domain, int type, int protocol)
 {
+	struct os_credentials credentials = {0};
 	if (table == NULL)
 		return -EINVAL;
 	if (domain != (int)UNIX_SOCKET_AF_UNIX)
 		return -EAFNOSUPPORT;
 	if (type != (int)UNIX_SOCKET_STREAM || protocol != 0)
 		return -EPROTONOSUPPORT;
+	(void)process_current_credentials(&credentials);
 	uint64_t flags = state_guard_enter();
 	struct unix_socket_state *state = socket_allocate();
-	if (state != NULL)
+	if (state != NULL) {
 		state->owner_pid = process_current_pid();
+		state->owner_uid = credentials.effective_uid;
+		state->owner_gid = credentials.effective_gid;
+	}
 	state_guard_leave(flags);
 	if (state == NULL)
 		return -ENOBUFS;
@@ -350,6 +359,7 @@ unix_socket_connect(struct fd_object *object,
 {
 	struct unix_socket_state *client = socket_state(object);
 	struct unix_socket_state *listener = NULL;
+	struct os_credentials credentials = {0};
 	if (client == NULL)
 		return -ENOTSOCK;
 	if (address == NULL || address->family != UNIX_SOCKET_AF_UNIX ||
@@ -358,6 +368,7 @@ unix_socket_connect(struct fd_object *object,
 	size_t path_length = length - sizeof(address->family);
 	if (path_length == 1 && address->path[0] == 0)
 		return -EINVAL;
+	(void)process_current_credentials(&credentials);
 	uint64_t flags = state_guard_enter();
 	for (size_t i = 0; i < UNIX_SOCKET_LIMIT; i++) {
 		struct unix_socket_state *candidate = &sockets[i];
@@ -390,13 +401,19 @@ unix_socket_connect(struct fd_object *object,
 		state_guard_leave(flags);
 		return -ENOBUFS;
 	}
+	client->owner_uid = credentials.effective_uid;
+	client->owner_gid = credentials.effective_gid;
 	server->peer = client;
 	client->peer = server;
 	server->connected = true;
 	client->connected = true;
 	server->owner_pid = listener->owner_pid;
 	server->peer_pid = client->owner_pid;
+	server->peer_uid = client->owner_uid;
+	server->peer_gid = client->owner_gid;
 	client->peer_pid = listener->owner_pid;
+	client->peer_uid = listener->owner_uid;
+	client->peer_gid = listener->owner_gid;
 	size_t tail = (listener->pending_head + listener->pending_count) %
 	    UNIX_SOCKET_BACKLOG;
 	listener->pending[tail] = server;
@@ -494,8 +511,8 @@ unix_socket_get_option(struct fd_object *object, int option, void *value,
 		}
 		credential = (struct os_unix_ucred){
 			.pid = (int32_t)state->peer_pid,
-			.uid = 0,
-			.gid = 0
+			.uid = state->peer_uid,
+			.gid = state->peer_gid
 		};
 		*(struct os_unix_ucred *)value = credential;
 		*length = sizeof(credential);

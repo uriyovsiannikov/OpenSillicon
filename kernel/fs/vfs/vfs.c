@@ -11,6 +11,8 @@
 #define VFS_EIO 5
 #define VFS_EOVERFLOW 75
 #define VFS_EINVAL 22
+#define VFS_EACCES 13
+#define VFS_EPERM 1
 #define VFS_EISDIR 21
 #define VFS_ENAMETOOLONG 36
 #define VFS_ENOENT 2
@@ -259,7 +261,8 @@ vfs_replace_root(struct vnode *root)
 }
 
 int
-vfs_lookup(const char *path, struct vnode **result)
+vfs_lookup_as(const char *path, uint32_t uid, uint32_t gid,
+	struct vnode **result)
 {
 	char canonical[VFS_PATH_MAX];
 	struct vfs_mount *mount;
@@ -299,6 +302,10 @@ vfs_lookup(const char *path, struct vnode **result)
 			vnode_put(current);
 			return -VFS_ENOTDIR;
 		}
+		if (!vfs_access(current, uid, gid, VFS_ACCESS_EXEC)) {
+			vnode_put(current);
+			return -VFS_EACCES;
+		}
 		error = current->operations->lookup(current, relative + begin,
 		    length, &next);
 		vnode_put(current);
@@ -313,7 +320,14 @@ vfs_lookup(const char *path, struct vnode **result)
 }
 
 int
-vfs_lookup_at(const char *base_path, const char *path, struct vnode **result)
+vfs_lookup(const char *path, struct vnode **result)
+{
+	return vfs_lookup_as(path, 0, 0, result);
+}
+
+int
+vfs_lookup_at_as(const char *base_path, const char *path,
+	uint32_t uid, uint32_t gid, struct vnode **result)
 {
 	char base[VFS_PATH_MAX];
 	char combined[VFS_PATH_MAX];
@@ -325,7 +339,7 @@ vfs_lookup_at(const char *base_path, const char *path, struct vnode **result)
 	if (path == NULL || result == NULL)
 		return -VFS_EINVAL;
 	if (path[0] == '/')
-		return vfs_lookup(path, result);
+		return vfs_lookup_as(path, uid, gid, result);
 	if (path[0] == '\0')
 		return -VFS_ENOENT;
 	if (base_path == NULL)
@@ -345,12 +359,18 @@ vfs_lookup_at(const char *base_path, const char *path, struct vnode **result)
 	error = canonicalize_path(combined, canonical);
 	if (error != 0)
 		return error;
-	return vfs_lookup(canonical, result);
+	return vfs_lookup_as(canonical, uid, gid, result);
 }
 
 int
-vfs_create_path(const char *path, enum vnode_type type, uint32_t mode,
-	struct vnode **result)
+vfs_lookup_at(const char *base_path, const char *path, struct vnode **result)
+{
+	return vfs_lookup_at_as(base_path, path, 0, 0, result);
+}
+
+int
+vfs_create_path_as(const char *path, enum vnode_type type, uint32_t mode,
+	uint32_t uid, uint32_t gid, struct vnode **result)
 {
 	char canonical[VFS_PATH_MAX];
 	char parent_path[VFS_PATH_MAX];
@@ -379,7 +399,7 @@ vfs_create_path(const char *path, enum vnode_type type, uint32_t mode,
 		memcpy(parent_path, canonical, parent_length);
 		parent_path[parent_length] = '\0';
 	}
-	error = vfs_lookup(parent_path, &parent);
+	error = vfs_lookup_as(parent_path, uid, gid, &parent);
 	if (error != 0)
 		return error;
 	if (parent->type != VNODE_DIRECTORY || parent->operations->create == NULL) {
@@ -387,30 +407,133 @@ vfs_create_path(const char *path, enum vnode_type type, uint32_t mode,
 		vnode_put(parent);
 		return parent_is_directory ? -VFS_EROFS : -VFS_ENOTDIR;
 	}
+	if (!vfs_access(parent, uid, gid,
+	    VFS_ACCESS_WRITE | VFS_ACCESS_EXEC)) {
+		vnode_put(parent);
+		return -VFS_EACCES;
+	}
+	if ((parent->mode & 02000U) != 0) {
+		gid = parent->gid;
+		if (type == VNODE_DIRECTORY)
+			mode |= 02000U;
+	}
 	error = parent->operations->create(parent, name, strlen(name), type, mode,
-	    result);
+	    uid, gid, result);
 	vnode_put(parent);
 	return error;
 }
 
 int
-vfs_stat_path(const char *path, struct vfs_stat *status)
+vfs_create_path(const char *path, enum vnode_type type, uint32_t mode,
+	struct vnode **result)
+{
+	return vfs_create_path_as(path, type, mode, 0, 0, result);
+}
+
+int
+vfs_stat_path_as(const char *path, uint32_t uid, uint32_t gid,
+	struct vfs_stat *status)
 {
 	struct vnode *node;
 	int error;
 
 	if (status == NULL)
 		return -VFS_EINVAL;
-	error = vfs_lookup(path, &node);
+	error = vfs_lookup_as(path, uid, gid, &node);
 	if (error != 0)
 		return error;
 	*status = (struct vfs_stat){
 		.size = node->size,
 		.mode = node->mode,
-		.type = (uint32_t)node->type
+		.type = (uint32_t)node->type,
+		.uid = node->uid,
+		.gid = node->gid
 	};
 	vnode_put(node);
 	return 0;
+}
+
+int
+vfs_stat_path(const char *path, struct vfs_stat *status)
+{
+	return vfs_stat_path_as(path, 0, 0, status);
+}
+
+bool
+vfs_access(const struct vnode *node, uint32_t uid, uint32_t gid,
+	unsigned int requested)
+{
+	unsigned int bits;
+	if (node == NULL || (requested & ~(VFS_ACCESS_EXEC | VFS_ACCESS_WRITE |
+	    VFS_ACCESS_READ)) != 0)
+		return false;
+	if (uid == 0) {
+		if ((requested & VFS_ACCESS_EXEC) != 0 &&
+		    node->type == VNODE_REGULAR && (node->mode & 0111U) == 0)
+			return false;
+		return true;
+	}
+	if (uid == node->uid)
+		bits = (node->mode >> 6) & 7U;
+	else if (gid == node->gid)
+		bits = (node->mode >> 3) & 7U;
+	else
+		bits = node->mode & 7U;
+	return ((requested & VFS_ACCESS_READ) == 0 || (bits & 4U) != 0) &&
+	    ((requested & VFS_ACCESS_WRITE) == 0 || (bits & 2U) != 0) &&
+	    ((requested & VFS_ACCESS_EXEC) == 0 || (bits & 1U) != 0);
+}
+
+int
+vfs_chmod_node_as(struct vnode *node, uint32_t mode, uint32_t uid,
+	uint32_t gid)
+{
+	int error;
+	if (node == NULL)
+		return -VFS_EINVAL;
+	if (uid != 0 && uid != node->uid) {
+		return -VFS_EACCES;
+	}
+	if (uid != 0 && (mode & 02000U) != 0 && gid != node->gid)
+		return -VFS_EACCES;
+	if (node->operations->chmod == NULL)
+		return -VFS_EROFS;
+	error = node->operations->chmod(node, mode & 07777U);
+	return error;
+}
+
+int
+vfs_chmod_as(const char *path, uint32_t mode, uint32_t uid, uint32_t gid)
+{
+	struct vnode *node;
+	int error = vfs_lookup_as(path, uid, gid, &node);
+	if (error != 0)
+		return error;
+	error = vfs_chmod_node_as(node, mode, uid, gid);
+	vnode_put(node);
+	return error;
+}
+
+int
+vfs_chown_as(const char *path, uint32_t owner, uint32_t group,
+	uint32_t euid, uint32_t egid)
+{
+	struct vnode *node;
+	int error;
+	(void)egid;
+	if (euid != 0)
+		return -VFS_EPERM;
+	error = vfs_lookup_as(path, euid, 0, &node);
+	if (error != 0)
+		return error;
+	if (node->operations->chown == NULL)
+		error = -VFS_EROFS;
+	else
+		error = node->operations->chown(node,
+		    owner == UINT32_MAX ? node->uid : owner,
+		    group == UINT32_MAX ? node->gid : group);
+	vnode_put(node);
+	return error;
 }
 
 static int
@@ -516,9 +639,29 @@ file_stat(void *context, struct fd_metadata *metadata)
 		.size = node->size,
 		.inode = node->inode,
 		.mode = node->mode,
-		.type = (uint32_t)node->type
+		.type = (uint32_t)node->type,
+		.uid = node->uid,
+		.gid = node->gid
 	};
 	return 0;
+}
+
+static int
+file_chmod(void *context, uint32_t mode)
+{
+	struct vfs_file_context *file = context;
+	return file->node->operations->chmod == NULL ? -VFS_EROFS :
+	    file->node->operations->chmod(file->node, mode & 07777U);
+}
+
+static int
+file_chown(void *context, uint32_t uid, uint32_t gid)
+{
+	struct vfs_file_context *file = context;
+	struct vnode *node = file->node;
+	return node->operations->chown == NULL ? -VFS_EROFS :
+	    node->operations->chown(node, uid == UINT32_MAX ? node->uid : uid,
+	    gid == UINT32_MAX ? node->gid : gid);
 }
 
 static int
@@ -551,13 +694,15 @@ static const struct fd_operations vfs_file_operations = {
 	.readdir = file_readdir,
 	.seek = file_seek,
 	.stat = file_stat,
+	.chmod = file_chmod,
+	.chown = file_chown,
 	.get_path = file_get_path,
 	.close = file_close
 };
 
 int
-vfs_open(const char *path, uint32_t flags, uint32_t mode,
-	struct fd_object **result)
+vfs_open_as(const char *path, uint32_t flags, uint32_t mode,
+	uint32_t uid, uint32_t gid, struct fd_object **result)
 {
 	const uint32_t allowed = VFS_O_ACCMODE | VFS_O_CREAT | VFS_O_TRUNC |
 	    VFS_O_DIRECTORY | VFS_O_NONBLOCK;
@@ -578,9 +723,10 @@ vfs_open(const char *path, uint32_t flags, uint32_t mode,
 	error = canonicalize_path(path, canonical);
 	if (error != 0)
 		return error;
-	error = vfs_lookup(canonical, &node);
+	error = vfs_lookup_as(canonical, uid, gid, &node);
 	if (error == -VFS_ENOENT && (flags & VFS_O_CREAT) != 0)
-		error = vfs_create_path(path, VNODE_REGULAR, mode, &node);
+		error = vfs_create_path_as(path, VNODE_REGULAR, mode, uid, gid,
+		    &node);
 	if (error != 0)
 		return error;
 	if (node->type == VNODE_DIRECTORY &&
@@ -592,6 +738,19 @@ vfs_open(const char *path, uint32_t flags, uint32_t mode,
 	if ((flags & VFS_O_DIRECTORY) != 0 && node->type != VNODE_DIRECTORY) {
 		vnode_put(node);
 		return -VFS_ENOTDIR;
+	}
+	{
+		unsigned int requested = 0;
+		if ((flags & VFS_O_ACCMODE) == VFS_O_RDONLY ||
+		    (flags & VFS_O_ACCMODE) == VFS_O_RDWR)
+			requested |= VFS_ACCESS_READ;
+		if ((flags & VFS_O_ACCMODE) == VFS_O_WRONLY ||
+		    (flags & VFS_O_ACCMODE) == VFS_O_RDWR)
+			requested |= VFS_ACCESS_WRITE;
+		if (!vfs_access(node, uid, gid, requested)) {
+			vnode_put(node);
+			return -VFS_EACCES;
+		}
 	}
 	if ((flags & VFS_O_ACCMODE) != VFS_O_RDONLY &&
 	    node->operations->write == NULL) {
@@ -628,4 +787,11 @@ vfs_open(const char *path, uint32_t flags, uint32_t mode,
 	file->status_flags = flags & (VFS_O_ACCMODE | VFS_O_NONBLOCK);
 	*result = file;
 	return 0;
+}
+
+int
+vfs_open(const char *path, uint32_t flags, uint32_t mode,
+	struct fd_object **result)
+{
+	return vfs_open_as(path, flags, mode, 0, 0, result);
 }

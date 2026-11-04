@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 #include <limits.h>
 #include "abi/syscall.h"
+#include "abi/credentials.h"
 #include "internal.h"
 
 char *
@@ -42,8 +43,9 @@ pid_t wait(int *status){return waitpid(-1,status,0);}
 int setpgrp(void){errno=ENOSYS;return -1;}
 char *ttyname(int fd){(void)fd;errno=ENOTTY;return NULL;}
 unsigned int alarm(unsigned int seconds){(void)seconds;errno=ENOSYS;return 0;}
-int chown(const char *path,uid_t owner,gid_t group){(void)path;(void)owner;(void)group;errno=EOPNOTSUPP;return -1;}
-int chmod(const char *path,unsigned int mode){(void)path;(void)mode;errno=EOPNOTSUPP;return -1;}
+int chown(const char *path,uid_t owner,gid_t group){return (int)__libos_call(SYSCALL_CHOWN,(long)path,owner,group,0,0,0);}
+int fchown(int fd,uid_t owner,gid_t group){return (int)__libos_call(SYSCALL_FCHOWN,fd,owner,group,0,0,0);}
+int chmod(const char *path,unsigned int mode){return (int)__libos_call(SYSCALL_CHMOD,(long)path,mode,0,0,0,0);}
 void endgrent(void){}
 
 int
@@ -55,10 +57,7 @@ getpagesize(void)
 int
 fchmod(int descriptor, unsigned int mode)
 {
-	(void)descriptor;
-	(void)mode;
-	errno = EOPNOTSUPP;
-	return -1;
+	return (int)__libos_call(SYSCALL_FCHMOD, descriptor, mode, 0, 0, 0, 0);
 }
 
 int
@@ -173,8 +172,7 @@ usleep(unsigned int microseconds)
 	return nanosleep(&request, NULL);
 }
 long __libos_open(const char *, int, unsigned);
-static mode_t process_umask = 0022;
-mode_t umask(mode_t mask){mode_t previous=process_umask;process_umask=mask&0777;return previous;}
+mode_t umask(mode_t mask){return (mode_t)__libos_call(SYSCALL_UMASK,mask,0,0,0,0,0);}
 long __libos_close(int);
 long __libos_read(int, void *, size_t);
 long __libos_write(int, const void *, size_t);
@@ -186,7 +184,7 @@ int open(const char *p,int f,...) {
  if(p==NULL){errno=EFAULT;return -1;}
  if(*p=='\0'){errno=ENOENT;return -1;}
  if(f&O_APPEND){errno=EOPNOTSUPP;return -1;}
- if(f&O_CREAT){va_list a;va_start(a,f);m=(unsigned)va_arg(a,int);va_end(a);m&=~process_umask;}
+ if(f&O_CREAT){va_list a;va_start(a,f);m=(unsigned)va_arg(a,int);va_end(a);}
  /* The native open syscall requires an absolute path. */
  if(p[0]!='/') {
   if(getcwd(absolute,sizeof(absolute))==NULL)return -1;
@@ -208,16 +206,26 @@ pid_t getpid(void){return (pid_t)__libos_getpid();}
 int unlink(const char *path){(void)path;errno=EOPNOTSUPP;return -1;}
 pid_t getppid(void){return (pid_t)__libos_call(SYSCALL_GETPPID,0,0,0,0,0,0);}
 long sysconf(int name){switch(name){case _SC_OPEN_MAX:return 32;case _SC_PAGESIZE:return 4096;case _SC_IOV_MAX:return 16;default:errno=EINVAL;return -1;}}
-uid_t getuid(void){return 0;}
-uid_t geteuid(void){return 0;}
-gid_t getgid(void){return 0;}
-gid_t getegid(void){return 0;}
-int getresuid(uid_t *real,uid_t *effective,uid_t *saved){if(!real||!effective||!saved){errno=EFAULT;return -1;}*real=getuid();*effective=geteuid();*saved=*effective;return 0;}
-int getresgid(gid_t *real,gid_t *effective,gid_t *saved){if(!real||!effective||!saved){errno=EFAULT;return -1;}*real=getgid();*effective=getegid();*saved=*effective;return 0;}
-int setuid(uid_t id){if(id==0)return 0;errno=EPERM;return -1;}
-int seteuid(uid_t id){return setuid(id);}
-int setgid(gid_t id){if(id==0)return 0;errno=EPERM;return -1;}
-int setegid(gid_t id){return setgid(id);}
+static int
+get_credentials(struct os_credentials *credentials)
+{
+	long result = __libos_call(SYSCALL_GETCREDENTIALS,
+	    (long)credentials, 0, 0, 0, 0, 0);
+	return result < 0 ? -1 : 0;
+}
+
+uid_t getuid(void){struct os_credentials c;return get_credentials(&c)==0?c.real_uid:0;}
+uid_t geteuid(void){struct os_credentials c;return get_credentials(&c)==0?c.effective_uid:0;}
+gid_t getgid(void){struct os_credentials c;return get_credentials(&c)==0?c.real_gid:0;}
+gid_t getegid(void){struct os_credentials c;return get_credentials(&c)==0?c.effective_gid:0;}
+int getresuid(uid_t *real,uid_t *effective,uid_t *saved){struct os_credentials c;if(!real||!effective||!saved){errno=EFAULT;return -1;}if(get_credentials(&c)<0)return -1;*real=c.real_uid;*effective=c.effective_uid;*saved=c.saved_uid;return 0;}
+int getresgid(gid_t *real,gid_t *effective,gid_t *saved){struct os_credentials c;if(!real||!effective||!saved){errno=EFAULT;return -1;}if(get_credentials(&c)<0)return -1;*real=c.real_gid;*effective=c.effective_gid;*saved=c.saved_gid;return 0;}
+int setuid(uid_t id){return (int)__libos_call(SYSCALL_SETUID,id,0,0,0,0,0);}
+int seteuid(uid_t id){return (int)__libos_call(SYSCALL_SETEUID,id,0,0,0,0,0);}
+int setgid(gid_t id){return (int)__libos_call(SYSCALL_SETGID,id,0,0,0,0,0);}
+int setegid(gid_t id){return (int)__libos_call(SYSCALL_SETEGID,id,0,0,0,0,0);}
+int setresuid(uid_t real,uid_t effective,uid_t saved){return (int)__libos_call(SYSCALL_SETRESUID,real,effective,saved,0,0,0);}
+int setresgid(gid_t real,gid_t effective,gid_t saved){return (int)__libos_call(SYSCALL_SETRESGID,real,effective,saved,0,0,0);}
 pid_t fork(void){return (pid_t)__libos_call(SYSCALL_FORK,0,0,0,0,0,0);}
 pid_t waitpid(pid_t pid,int *status,int options){
 	unsigned char child_status=0;

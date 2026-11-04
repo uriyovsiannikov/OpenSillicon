@@ -1,6 +1,7 @@
 #include "kernel/pty.h"
 #include <stdint.h>
 #include <stddef.h>
+#include <string.h>
 
 #include "arch/x86_64/interrupts.h"
 #include "arch/x86_64/user.h"
@@ -38,6 +39,7 @@
 #define TIOCCANON_REQUEST 0x4f530002U
 #define TIOCSFB_REQUEST 0x4f530003U
 #define ERRNO_EFAULT 14U
+#define ERRNO_ESRCH 3U
 #define ERRNO_EINVAL 22U
 #define ERRNO_E2BIG 7U
 #define ERRNO_ENOSYS 78U
@@ -112,6 +114,8 @@ native_kstat_from_metadata(struct native_kstat *value,
 	value->st_ino = metadata->inode;
 	value->st_size = (int64_t)metadata->size;
 	value->st_mode = metadata->mode & 07777U;
+	value->st_uid = metadata->uid;
+	value->st_gid = metadata->gid;
 	if (metadata->type == VNODE_REGULAR)
 		value->st_mode |= NATIVE_S_IFREG;
 	else if (metadata->type == VNODE_DIRECTORY)
@@ -716,6 +720,14 @@ syscall_interrupt(struct interrupt_frame *frame)
 		frame->rax = SYSCALL_ABI_VERSION;
 		break;
 	case SYSCALL_POWER_CONTROL:
+		{
+			struct os_credentials credentials;
+			if (!process_current_credentials(&credentials) ||
+			    credentials.effective_uid != 0) {
+				syscall_error(frame, 1U);
+				break;
+			}
+		}
 		if (frame->rdi == POWER_CONTROL_POWEROFF) {
 			/* QEMU/Bochs power-management ports. */
 			__asm__ volatile ("outw %0, %1" : : "a" ((uint16_t)0x2000),
@@ -996,6 +1008,199 @@ syscall_interrupt(struct interrupt_frame *frame)
 		break;
 	case SYSCALL_GETPPID:
 		frame->rax = process_current_ppid();
+		break;
+	case SYSCALL_GETCREDENTIALS:
+		{
+			struct os_credentials credentials;
+			struct address_space *space = vmm_active_address_space();
+			if (!vmm_validate_user_write(space, frame->rdi,
+			    sizeof(credentials)) ||
+			    !process_current_credentials(&credentials) ||
+			    !vmm_copy_to_user(space, frame->rdi, &credentials,
+			    sizeof(credentials)))
+				syscall_error(frame, ERRNO_EFAULT);
+			else
+				frame->rax = 0;
+		}
+		break;
+	case SYSCALL_SETUID:
+	case SYSCALL_SETEUID:
+	case SYSCALL_SETGID:
+	case SYSCALL_SETEGID:
+		if (frame->rdi > UINT32_MAX) {
+			syscall_error(frame, ERRNO_EINVAL);
+		} else {
+			int result = number == SYSCALL_SETUID ?
+			    process_set_uid((uint32_t)frame->rdi, false) :
+			    number == SYSCALL_SETEUID ?
+			    process_set_uid((uint32_t)frame->rdi, true) :
+			    number == SYSCALL_SETGID ?
+			    process_set_gid((uint32_t)frame->rdi, false) :
+			    process_set_gid((uint32_t)frame->rdi, true);
+			if (result != 0)
+				syscall_error(frame, errno_from_kernel(result));
+			else
+				frame->rax = 0;
+		}
+		break;
+	case SYSCALL_SETRESUID:
+	case SYSCALL_SETRESGID:
+		{
+			int result;
+			if (frame->rdi > UINT32_MAX || frame->rsi > UINT32_MAX ||
+			    frame->rdx > UINT32_MAX) {
+				syscall_error(frame, ERRNO_EINVAL);
+				break;
+			}
+			result = number == SYSCALL_SETRESUID ?
+			    process_set_res_uid((uint32_t)frame->rdi,
+			    (uint32_t)frame->rsi, (uint32_t)frame->rdx) :
+			    process_set_res_gid((uint32_t)frame->rdi,
+			    (uint32_t)frame->rsi, (uint32_t)frame->rdx);
+			if (result != 0)
+				syscall_error(frame, errno_from_kernel(result));
+			else
+				frame->rax = 0;
+		}
+		break;
+	case SYSCALL_UMASK:
+		if (frame->rdi > UINT32_MAX)
+			syscall_error(frame, ERRNO_EINVAL);
+		else
+			frame->rax = process_umask((uint32_t)frame->rdi);
+		break;
+	case SYSCALL_CHMOD:
+		{
+			char path[VFS_PATH_MAX], canonical[VFS_PATH_MAX];
+			struct os_credentials credentials;
+			int result;
+			if (frame->rsi > UINT32_MAX) {
+				syscall_error(frame, ERRNO_EINVAL);
+				break;
+			}
+			result = copy_user_string(frame->rdi, path, sizeof(path));
+			if (result == 0)
+				result = process_resolve_path(path, canonical,
+				    sizeof(canonical));
+			if (result == 0 && !process_current_credentials(&credentials))
+				result = -ERRNO_ESRCH;
+			if (result == 0)
+				result = vfs_chmod_as(canonical, (uint32_t)frame->rsi,
+				    credentials.effective_uid, credentials.effective_gid);
+			if (result != 0)
+				syscall_error(frame, errno_from_kernel(result));
+			else
+				frame->rax = 0;
+		}
+		break;
+	case SYSCALL_ACCESS:
+		{
+			char path[VFS_PATH_MAX], canonical[VFS_PATH_MAX];
+			struct os_credentials credentials;
+			struct vnode *node = NULL;
+			unsigned int requested;
+			int result;
+			if (frame->rsi > 7U) {
+				syscall_error(frame, ERRNO_EINVAL);
+				break;
+			}
+			result = copy_user_string(frame->rdi, path, sizeof(path));
+			if (result == 0)
+				result = process_resolve_path(path, canonical,
+				    sizeof(canonical));
+			if (result == 0 && !process_current_credentials(&credentials))
+				result = -ERRNO_ESRCH;
+			if (result == 0)
+				result = vfs_lookup_as(canonical, credentials.real_uid,
+				    credentials.real_gid, &node);
+			requested = ((frame->rsi & 4U) ? VFS_ACCESS_READ : 0U) |
+			    ((frame->rsi & 2U) ? VFS_ACCESS_WRITE : 0U) |
+			    ((frame->rsi & 1U) ? VFS_ACCESS_EXEC : 0U);
+			if (result == 0 && !vfs_access(node, credentials.real_uid,
+			    credentials.real_gid, requested))
+				result = -13;
+			if (node != NULL)
+				vnode_put(node);
+			if (result != 0)
+				syscall_error(frame, errno_from_kernel(result));
+			else
+				frame->rax = 0;
+		}
+		break;
+	case SYSCALL_FCHMOD:
+		{
+			struct os_credentials credentials;
+			struct fd_metadata metadata;
+			struct fd_object *object;
+			int result;
+			if (frame->rsi > UINT32_MAX) {
+				syscall_error(frame, ERRNO_EINVAL);
+				break;
+			}
+			object = fd_object_for_descriptor(current_fd_table(),
+			    frame->rdi);
+			result = object == NULL ? -EBADF :
+			    fd_object_stat(object, &metadata);
+			if (result == 0 && !process_current_credentials(&credentials))
+				result = -ERRNO_ESRCH;
+			if (result == 0) {
+				if (credentials.effective_uid != 0 &&
+				    credentials.effective_uid != metadata.uid)
+					result = -13;
+				else if ((uint32_t)frame->rsi & 02000U &&
+				    credentials.effective_uid != 0 &&
+				    credentials.effective_gid != metadata.gid)
+					result = -13;
+				else
+					result = fd_object_chmod(object,
+					    (uint32_t)frame->rsi);
+			}
+			if (result != 0)
+				syscall_error(frame, errno_from_kernel(result));
+			else
+				frame->rax = 0;
+		}
+		break;
+	case SYSCALL_CHOWN:
+	case SYSCALL_FCHOWN:
+		{
+			struct os_credentials credentials;
+			int result;
+			if (frame->rsi > UINT32_MAX || frame->rdx > UINT32_MAX) {
+				syscall_error(frame, ERRNO_EINVAL);
+				break;
+			}
+			if (!process_current_credentials(&credentials)) {
+				syscall_error(frame, ERRNO_ESRCH);
+				break;
+			}
+			if (credentials.effective_uid != 0) {
+				syscall_error(frame, 1U);
+				break;
+			}
+			if (number == SYSCALL_FCHOWN) {
+				struct fd_object *object = fd_object_for_descriptor(
+				    current_fd_table(), frame->rdi);
+				result = fd_object_chown(object, (uint32_t)frame->rsi,
+				    (uint32_t)frame->rdx);
+			} else {
+				char path[VFS_PATH_MAX], canonical[VFS_PATH_MAX];
+				result = copy_user_string(frame->rdi, path,
+				    sizeof(path));
+				if (result == 0)
+					result = process_resolve_path(path, canonical,
+					    sizeof(canonical));
+				if (result == 0)
+					result = vfs_chown_as(canonical,
+					    (uint32_t)frame->rsi, (uint32_t)frame->rdx,
+					    credentials.effective_uid,
+					    credentials.effective_gid);
+			}
+			if (result != 0)
+				syscall_error(frame, errno_from_kernel(result));
+			else
+				frame->rax = 0;
+		}
 		break;
 	case SYSCALL_CHDIR:
 		{
@@ -1801,6 +2006,7 @@ syscall_interrupt(struct interrupt_frame *frame)
 			char path[VFS_PATH_MAX];
 			char canonical[VFS_PATH_MAX];
 			struct fd_object *file;
+			struct os_credentials credentials;
 			int result = copy_user_string(frame->rdi, path, sizeof(path));
 
 			if (result != 0) {
@@ -1817,8 +2023,14 @@ syscall_interrupt(struct interrupt_frame *frame)
 				syscall_error(frame, ERRNO_EINVAL);
 				break;
 			}
-			result = vfs_open(canonical, (uint32_t)frame->rsi,
-			    (uint32_t)frame->rdx, &file);
+			if (!process_current_credentials(&credentials)) {
+				syscall_error(frame, ERRNO_ESRCH);
+				break;
+			}
+			result = vfs_open_as(canonical, (uint32_t)frame->rsi,
+			    (uint32_t)frame->rdx & ~process_get_umask(),
+			    credentials.effective_uid,
+			    credentials.effective_gid, &file);
 			if (result != 0) {
 				syscall_error(frame, errno_from_kernel(result));
 				break;
@@ -1972,6 +2184,7 @@ syscall_interrupt(struct interrupt_frame *frame)
 			struct vnode *node = NULL;
 			struct fd_metadata metadata;
 			struct native_kstat value;
+			struct os_credentials credentials;
 			int64_t directory_fd = (int64_t)frame->rdi;
 			uint32_t flags;
 			int result;
@@ -2014,7 +2227,12 @@ syscall_interrupt(struct interrupt_frame *frame)
 					break;
 				}
 			}
-			result = vfs_lookup_at(base_path, path, &node);
+			if (!process_current_credentials(&credentials)) {
+				syscall_error(frame, ERRNO_ESRCH);
+				break;
+			}
+			result = vfs_lookup_at_as(base_path, path,
+			    credentials.effective_uid, credentials.effective_gid, &node);
 			if (result != 0) {
 				syscall_error(frame, errno_from_kernel(result));
 				break;
@@ -2023,7 +2241,9 @@ syscall_interrupt(struct interrupt_frame *frame)
 				.size = node->size,
 				.inode = node->inode,
 				.mode = node->mode,
-				.type = (uint32_t)node->type
+				.type = (uint32_t)node->type,
+				.uid = node->uid,
+				.gid = node->gid
 			};
 			result = native_kstat_from_metadata(&value, &metadata);
 			vnode_put(node);
@@ -2115,6 +2335,7 @@ syscall_interrupt(struct interrupt_frame *frame)
 			char path[VFS_PATH_MAX];
 			char canonical[VFS_PATH_MAX];
 			struct vfs_stat status;
+			struct os_credentials credentials;
 			int result = copy_user_string(frame->rdi, path, sizeof(path));
 
 			if (result != 0) {
@@ -2127,7 +2348,13 @@ syscall_interrupt(struct interrupt_frame *frame)
 				syscall_error(frame, errno_from_kernel(result));
 				break;
 			}
-			result = vfs_stat_path(canonical, &status);
+			if (!process_current_credentials(&credentials)) {
+				syscall_error(frame, ERRNO_ESRCH);
+				break;
+			}
+			result = vfs_stat_path_as(canonical,
+			    credentials.effective_uid, credentials.effective_gid,
+			    &status);
 			if (result != 0) {
 				syscall_error(frame, errno_from_kernel(result));
 				break;

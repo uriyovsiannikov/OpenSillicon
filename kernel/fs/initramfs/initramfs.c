@@ -97,7 +97,7 @@ find_child(struct initramfs_node *directory, const char *name, size_t length)
 
 static struct initramfs_node *
 allocate_node(const char *name, size_t name_length, enum vnode_type type,
-	uint32_t mode, bool explicit_entry)
+	uint32_t mode, uint32_t uid, uint32_t gid, bool explicit_entry)
 {
 	struct initramfs_node *node;
 	uint64_t inode;
@@ -119,6 +119,8 @@ allocate_node(const char *name, size_t name_length, enum vnode_type type,
 		.operations = &initramfs_operations,
 		.type = type,
 		.mode = mode & 07777U,
+		.uid = uid,
+		.gid = gid,
 		.inode = inode,
 		.references = 1,
 		.private_data = node
@@ -129,7 +131,7 @@ allocate_node(const char *name, size_t name_length, enum vnode_type type,
 static int
 insert_entry(struct initramfs_node *root, const char *path, size_t path_length,
 	enum vnode_type type, uint32_t mode, const uint8_t *data, uint64_t size,
-	uint64_t *node_count)
+	uint32_t uid, uint32_t gid, uint64_t *node_count)
 {
 	struct initramfs_node *directory = root;
 	size_t position = 0;
@@ -140,6 +142,8 @@ insert_entry(struct initramfs_node *root, const char *path, size_t path_length,
 	}
 	if (path_length == 1 && path[0] == '.' && type == VNODE_DIRECTORY) {
 		root->vnode.mode = mode & 07777U;
+		root->vnode.uid = uid;
+		root->vnode.gid = gid;
 		return 0;
 	}
 	if (path_length != 0 && path[path_length - 1] == '/') {
@@ -172,7 +176,7 @@ insert_entry(struct initramfs_node *root, const char *path, size_t path_length,
 				if (*node_count == INITRD_MAX_NODES)
 					return -INITRD_EINVAL;
 				child = allocate_node(path + begin, length,
-				    VNODE_DIRECTORY, 0755, false);
+				    VNODE_DIRECTORY, 0755, uid, gid, false);
 				if (child == NULL)
 					return -INITRD_ENOMEM;
 				(*node_count)++;
@@ -191,11 +195,13 @@ insert_entry(struct initramfs_node *root, const char *path, size_t path_length,
 				return -INITRD_EINVAL;
 			child->explicit_entry = true;
 			child->vnode.mode = mode & 07777U;
+			child->vnode.uid = uid;
+			child->vnode.gid = gid;
 			return 0;
 		}
 		if (*node_count == INITRD_MAX_NODES)
 			return -INITRD_EINVAL;
-		child = allocate_node(path + begin, length, type, mode, true);
+		child = allocate_node(path + begin, length, type, mode, uid, gid, true);
 		if (child == NULL)
 			return -INITRD_ENOMEM;
 		(*node_count)++;
@@ -221,7 +227,7 @@ initramfs_mount(const void *archive, size_t archive_size, struct vnode **root_ou
 	if (bytes == NULL || archive_size < INITRD_HEADER_SIZE || root_out == NULL)
 		return -INITRD_EINVAL;
 	*root_out = NULL;
-	root = allocate_node("", 0, VNODE_DIRECTORY, 0755, true);
+	root = allocate_node("", 0, VNODE_DIRECTORY, 0755, 0, 0, true);
 	if (root == NULL)
 		return -INITRD_ENOMEM;
 	while (offset <= archive_size &&
@@ -250,6 +256,8 @@ initramfs_mount(const void *archive, size_t archive_size, struct vnode **root_ou
 				goto invalid;
 		}
 		mode = fields[1];
+		uint32_t uid = fields[2];
+		uint32_t gid = fields[3];
 		file_size = fields[6];
 		if (fields[4] == 0)
 			goto invalid;
@@ -297,7 +305,7 @@ initramfs_mount(const void *archive, size_t archive_size, struct vnode **root_ou
 			goto invalid;
 		}
 		error = insert_entry(root, (const char *)name, name_size - 1, type,
-		    mode, bytes + data_offset, file_size, &node_count);
+		    mode, bytes + data_offset, file_size, uid, gid, &node_count);
 		if (error != 0)
 			goto invalid;
 		offset = next_offset;

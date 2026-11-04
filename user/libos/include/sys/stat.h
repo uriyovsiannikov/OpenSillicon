@@ -36,6 +36,10 @@ _Static_assert(offsetof(struct stat, st_size) == 48, "libos stat size offset mis
 #define S_IROTH 0004
 #define S_IWOTH 0002
 #define S_IXGRP 0010
+#define S_IXOTH 0001
+#define S_ISUID 04000
+#define S_ISGID 02000
+#define S_ISVTX 01000
 #define S_ISREG(m) (((m) & S_IFMT) == S_IFREG)
 #define S_ISDIR(m) (((m) & S_IFMT) == S_IFDIR)
 #define S_ISCHR(m) (((m) & S_IFMT) == S_IFCHR)

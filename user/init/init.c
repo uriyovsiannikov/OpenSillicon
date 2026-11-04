@@ -294,6 +294,10 @@ user_main(uint64_t argc, char **argv, const uint64_t *startup_stack)
 		uint8_t status = 0xff;
 
 		if (child == 0) {
+			if (u_setgid(1000) != 0 || u_setuid(1000) != 0) {
+				u_puts("OpenSillicon init: could not drop shell credentials\n");
+				u_exit(126);
+			}
 			(void)u_exec_path("/bin/sh");
 			init_status("/bin/sh", 0, "exec failed");
 			u_exit(127);

@@ -8,6 +8,7 @@
 #include "arch/x86_64/interrupts.h"
 #include "kernel/fd.h"
 #include "kernel/signal_state.h"
+#include "abi/credentials.h"
 
 #define PROCESS_EXEC_ARG_MAX 16U
 #define PROCESS_EXEC_ARG_BYTES_MAX 2048U
@@ -42,6 +43,13 @@ uint64_t process_run_path(const char *path, bool startup_stack);
 struct fd_table *process_current_fd_table(void);
 uint64_t process_current_pid(void);
 uint64_t process_current_ppid(void);
+bool process_current_credentials(struct os_credentials *credentials);
+int process_set_uid(uint32_t id, bool effective_only);
+int process_set_gid(uint32_t id, bool effective_only);
+int process_set_res_uid(uint32_t real, uint32_t effective, uint32_t saved);
+int process_set_res_gid(uint32_t real, uint32_t effective, uint32_t saved);
+uint32_t process_umask(uint32_t replacement);
+uint32_t process_get_umask(void);
 int process_chdir(const char *path);
 int process_getcwd(char *buffer, size_t capacity);
 int process_resolve_path(const char *path, char *output, size_t capacity);

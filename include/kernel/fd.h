@@ -19,6 +19,8 @@ struct fd_metadata {
 	uint64_t inode;
 	uint32_t mode;
 	uint32_t type;
+	uint32_t uid;
+	uint32_t gid;
 };
 
 struct fd_operations {
@@ -30,6 +32,8 @@ struct fd_operations {
 	int (*seek)(void *context, uint64_t current, int64_t offset,
 	    int whence, uint64_t *result);
 	int (*stat)(void *context, struct fd_metadata *metadata);
+	int (*chmod)(void *context, uint32_t mode);
+	int (*chown)(void *context, uint32_t uid, uint32_t gid);
 	int (*get_path)(void *context, char *path, size_t capacity);
 	bool (*is_terminal)(void *context);
 	uint32_t (*poll)(void *context, uint32_t events);
@@ -94,6 +98,8 @@ int fd_object_seek(struct fd_object *object, int64_t offset, int whence,
 int fd_seek(struct fd_table *table, uint64_t descriptor, int64_t offset,
 	int whence, uint64_t *result);
 int fd_object_stat(struct fd_object *object, struct fd_metadata *metadata);
+int fd_object_chmod(struct fd_object *object, uint32_t mode);
+int fd_object_chown(struct fd_object *object, uint32_t uid, uint32_t gid);
 int fd_object_get_path(struct fd_object *object, char *path, size_t capacity);
 uint64_t fd_get_offset(const struct fd_table *table, uint64_t descriptor);
 bool fd_set_offset(struct fd_table *table, uint64_t descriptor,

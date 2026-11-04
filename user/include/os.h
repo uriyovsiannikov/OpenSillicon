@@ -6,6 +6,7 @@
 
 #include "abi/framebuffer.h"
 #include "abi/input.h"
+#include "abi/credentials.h"
 
 #define U_O_RDONLY 0U
 #define U_O_WRONLY 1U
@@ -35,6 +36,8 @@ struct u_stat {
 	uint64_t size;
 	uint32_t mode;
 	uint32_t type;
+	uint32_t uid;
+	uint32_t gid;
 };
 
 struct u_dirent {
@@ -106,6 +109,9 @@ long u_chdir(const char *path);
 long u_getcwd(char *buffer, size_t capacity);
 long u_pipe(uint32_t descriptors[2]);
 long u_getpid(void);
+long u_getcredentials(struct os_credentials *credentials);
+long u_setuid(uint32_t id);
+long u_setgid(uint32_t id);
 long u_process_snapshot(struct u_process_info *entries, size_t capacity);
 long u_framebuffer_info(struct os_framebuffer_info *info);
 long u_framebuffer_present(const void *pixels, size_t length);

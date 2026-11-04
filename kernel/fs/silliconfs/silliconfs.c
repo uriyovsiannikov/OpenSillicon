@@ -63,12 +63,15 @@ struct sfs_name_slot {
 
 static int sfs_lookup(struct vnode *, const char *, size_t, struct vnode **);
 static int sfs_create(struct vnode *, const char *, size_t, enum vnode_type,
-	uint32_t, struct vnode **);
+	uint32_t, uint32_t, uint32_t, struct vnode **);
 static int sfs_read(struct vnode *, uint64_t, void *, size_t, size_t *);
 static int sfs_write(struct vnode *, uint64_t, const void *, size_t, size_t *);
 static int sfs_truncate(struct vnode *, uint64_t);
 static int sfs_readdir(struct vnode *, uint64_t, struct vfs_dirent *);
 static void sfs_destroy(struct vnode *);
+static int sfs_chmod(struct vnode *, uint32_t);
+static int sfs_chown(struct vnode *, uint32_t, uint32_t);
+static void sync_vnode(struct sfs_node *, const struct sfs_inode *);
 
 static const struct vnode_operations sfs_operations = {
 	.lookup = sfs_lookup,
@@ -77,7 +80,9 @@ static const struct vnode_operations sfs_operations = {
 	.write = sfs_write,
 	.truncate = sfs_truncate,
 	.readdir = sfs_readdir,
-	.destroy = sfs_destroy
+	.destroy = sfs_destroy,
+	.chmod = sfs_chmod,
+	.chown = sfs_chown
 };
 
 static uint16_t
@@ -85,6 +90,7 @@ get_le16(const uint8_t *bytes)
 {
 	return (uint16_t)bytes[0] | ((uint16_t)bytes[1] << 8);
 }
+
 
 static uint32_t
 get_le32(const uint8_t *bytes)
@@ -1029,12 +1035,47 @@ node_from_vnode(struct vnode *node)
 	return (struct sfs_node *)node->private_data;
 }
 
+static int
+sfs_chmod(struct vnode *vnode, uint32_t mode)
+{
+	struct sfs_node *node = node_from_vnode(vnode);
+	struct sfs_inode inode;
+	int error = read_inode(node->filesystem, node->inode_number, &inode);
+	if (error != 0)
+		return error;
+	inode.mode = (uint16_t)((inode.mode & SFS_MODE_TYPE) | (mode & 07777U));
+	error = write_inode(node->filesystem, node->inode_number, &inode);
+	if (error == 0)
+		sync_vnode(node, &inode);
+	return error;
+}
+
+static int
+sfs_chown(struct vnode *vnode, uint32_t uid, uint32_t gid)
+{
+	struct sfs_node *node = node_from_vnode(vnode);
+	struct sfs_inode inode;
+	int error = read_inode(node->filesystem, node->inode_number, &inode);
+	if (error != 0)
+		return error;
+	inode.uid = uid;
+	inode.gid = gid;
+	inode.mode &= (uint16_t)~06000U;
+	error = write_inode(node->filesystem, node->inode_number, &inode);
+	if (error == 0)
+		sync_vnode(node, &inode);
+	return error;
+}
+
+
 static void
 sync_vnode(struct sfs_node *node, const struct sfs_inode *inode)
 {
 	node->vnode.type = (inode->mode & SFS_MODE_TYPE) == SFS_MODE_DIRECTORY ?
 	    VNODE_DIRECTORY : VNODE_REGULAR;
 	node->vnode.mode = inode->mode & 07777U;
+	node->vnode.uid = inode->uid;
+	node->vnode.gid = inode->gid;
 	node->vnode.size = inode->size;
 }
 
@@ -1216,7 +1257,8 @@ append_directory_entry(struct silliconfs *filesystem, uint32_t parent_number,
 
 static int
 initialize_directory(struct silliconfs *filesystem, uint32_t number,
-	uint32_t parent_number, uint32_t mode, struct sfs_inode *inode)
+	uint32_t parent_number, uint32_t mode, uint32_t uid, uint32_t gid,
+	struct sfs_inode *inode)
 {
 	uint8_t block[SILLICONFS_BLOCK_SIZE];
 	uint32_t physical;
@@ -1227,6 +1269,8 @@ initialize_directory(struct silliconfs *filesystem, uint32_t number,
 	if (error != 0)
 		return error;
 	inode->mode = SFS_MODE_DIRECTORY | (mode & 07777U);
+	inode->uid = uid;
+	inode->gid = gid;
 	inode->size = SILLICONFS_BLOCK_SIZE;
 	inode->direct[0] = physical;
 	error = write_inode(filesystem, number, inode);
@@ -1241,7 +1285,8 @@ initialize_directory(struct silliconfs *filesystem, uint32_t number,
 
 static int
 sfs_create(struct vnode *directory_node, const char *name, size_t name_length,
-	enum vnode_type type, uint32_t mode, struct vnode **result)
+	enum vnode_type type, uint32_t mode, uint32_t uid, uint32_t gid,
+	struct vnode **result)
 {
 	struct sfs_node *parent_node = node_from_vnode(directory_node);
 	struct silliconfs *filesystem = parent_node->filesystem;
@@ -1279,10 +1324,12 @@ sfs_create(struct vnode *directory_node, const char *name, size_t name_length,
 		return error;
 	if (type == VNODE_DIRECTORY) {
 		error = initialize_directory(filesystem, child_number,
-		    parent_node->inode_number, mode, &child);
+		    parent_node->inode_number, mode, uid, gid, &child);
 	} else {
 		child = (struct sfs_inode){
-			.mode = SFS_MODE_REGULAR | (mode & 07777U)
+			.mode = SFS_MODE_REGULAR | (mode & 07777U),
+			.uid = uid,
+			.gid = gid
 		};
 		error = write_inode(filesystem, child_number, &child);
 	}

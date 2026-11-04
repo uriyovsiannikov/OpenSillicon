@@ -25,12 +25,14 @@ struct ramfs_node {
 
 static int ramfs_lookup(struct vnode *, const char *, size_t, struct vnode **);
 static int ramfs_create(struct vnode *, const char *, size_t, enum vnode_type,
-	uint32_t, struct vnode **);
+	uint32_t, uint32_t, uint32_t, struct vnode **);
 static int ramfs_read(struct vnode *, uint64_t, void *, size_t, size_t *);
 static int ramfs_write(struct vnode *, uint64_t, const void *, size_t, size_t *);
 static int ramfs_truncate(struct vnode *, uint64_t);
 static int ramfs_readdir(struct vnode *, uint64_t, struct vfs_dirent *);
 static void ramfs_destroy(struct vnode *);
+static int ramfs_chmod(struct vnode *, uint32_t);
+static int ramfs_chown(struct vnode *, uint32_t, uint32_t);
 
 static const struct vnode_operations ramfs_operations = {
 	.lookup = ramfs_lookup,
@@ -39,7 +41,9 @@ static const struct vnode_operations ramfs_operations = {
 	.write = ramfs_write,
 	.truncate = ramfs_truncate,
 	.readdir = ramfs_readdir,
-	.destroy = ramfs_destroy
+	.destroy = ramfs_destroy,
+	.chmod = ramfs_chmod,
+	.chown = ramfs_chown
 };
 
 static struct ramfs_node *
@@ -47,6 +51,22 @@ ramfs_from_vnode(struct vnode *node)
 {
 	return (struct ramfs_node *)((uintptr_t)node -
 	    offsetof(struct ramfs_node, vnode));
+}
+
+static int
+ramfs_chown(struct vnode *vnode, uint32_t uid, uint32_t gid)
+{
+	vnode->uid = uid;
+	vnode->gid = gid;
+	vnode->mode &= ~06000U;
+	return 0;
+}
+
+static int
+ramfs_chmod(struct vnode *vnode, uint32_t mode)
+{
+	vnode->mode = mode & 07777U;
+	return 0;
 }
 
 static struct ramfs_node *
@@ -114,7 +134,8 @@ ramfs_lookup(struct vnode *directory, const char *name, size_t name_length,
 
 static int
 ramfs_create(struct vnode *directory, const char *name, size_t name_length,
-	enum vnode_type type, uint32_t mode, struct vnode **result)
+	enum vnode_type type, uint32_t mode, uint32_t uid, uint32_t gid,
+	struct vnode **result)
 {
 	struct ramfs_node *parent;
 	struct ramfs_node *child;
@@ -138,6 +159,8 @@ ramfs_create(struct vnode *directory, const char *name, size_t name_length,
 	child = ramfs_allocate(name, name_length, type, mode);
 	if (child == NULL)
 		return -RAMFS_ENOMEM;
+	child->vnode.uid = uid;
+	child->vnode.gid = gid;
 	child->next = NULL;
 	if (parent->last_child == NULL)
 		parent->children = child;

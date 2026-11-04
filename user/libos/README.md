@@ -4,10 +4,14 @@
 loaded by OpenSillicon. It uses the kernel's `int 0x80` ABI directly and is not
 binary- or source-compatible with musl or Linux. Dynamic linking, shared
 objects, TLS, threads, and general POSIX behavior are out of scope.
-Process support is limited to fork, path-based exec, blocking waitpid, and
-descriptor duplication. UID/GID getters report zero; setters accept only zero
-because the kernel has no credential model. `errno` is a single process-global
-integer (the current single-threaded profile does not require TLS).
+Process support includes fork, path-based exec, blocking waitpid, descriptor
+duplication, and per-process real/effective/saved UID/GID credentials.
+`setuid/seteuid/setgid/setegid`, `setresuid/setresgid`, `umask`, `chmod`,
+`fchmod`, `chown/fchown`, and `access` are checked by the kernel. File access
+uses owner, primary-group, and other mode bits. Supplementary groups, ACLs,
+and set-ID execution are not implemented. `errno` is a single
+process-global integer (the current single-threaded profile does not require
+TLS).
 
 The CRT consumes the initial `argc`, `argv`, and `envp` words, calls `main`, and
 exits through syscall 1 in ABI version 2. The kernel currently supplies argc 0
@@ -68,10 +72,9 @@ write 13, stat 14, fstat 15, fstatat 16, readdir 17, getdents64 18, lseek 19,
 mmap/munmap/mprotect 30–32, local sockets 43–47, and signal masks 54.
 Memory mapping supports only private anonymous, non-executable mappings;
 `PROT_EXEC` is rejected by the kernel. `struct stat` is the kernel's existing
-144-byte x86_64 record (`st_mode` offset 24, `st_size` offset 48). The VFS
-currently supplies inode, type/mode, and size; device IDs, link count,
-ownership, block counts, and timestamps are zero because the kernel does not
-track them. Path queries use the kernel resolver: absolute paths work, and
+144-byte x86_64 record (`st_mode` offset 24, `st_size` offset 48). The VFS currently supplies inode, type/mode, owner UID/GID, and size; device
+IDs, link count, block counts, and timestamps are zero because the kernel does
+not track them. Path queries use the kernel resolver: absolute paths work, and
 relative `AT_FDCWD` paths are rooted at `/` because there is no process cwd
 interface in this profile. Relative paths from directory descriptors use the
 kernel's existing descriptor path context. Only VFS regular files and
@@ -88,8 +91,7 @@ is the VFS order and is not promised stable. There is no `rewinddir`,
 
 The socket implementation is a bounded, in-kernel local stream transport. It
 does not provide datagrams, ancillary data beyond `SO_PEERCRED`, filesystem
-socket nodes, or nonblocking flags. `SO_PEERCRED` reports the peer PID and
-zero UID/GID because the kernel has no user/group credential model. `select`
+socket nodes, or nonblocking flags. `SO_PEERCRED` reports the peer PID and the peer effective UID/GID. `select`
 and `poll` support only descriptors below 32 and report read/write/error
 readiness for VFS files, pipes, local sockets, and terminal input, using the
 kernel's 100 Hz timer. The select timeout argument is not updated. `poll` maps
