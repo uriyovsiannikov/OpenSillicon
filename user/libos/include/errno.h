@@ -42,6 +42,7 @@ extern int errno;
 #define EAFNOSUPPORT 97
 #define EADDRINUSE 98
 #define ENOTCONN 107
+#define EDESTADDRREQ 89
 #define ECONNREFUSED 111
 #define ENOBUFS 105
 #define EOVERFLOW 75

@@ -1603,6 +1603,63 @@ syscall_interrupt(struct interrupt_frame *frame)
 				frame->rax = 0;
 		}
 		break;
+	case SYSCALL_UDP_CONNECT:
+		{
+			struct udp_socket_endpoint endpoint;
+			struct fd_object *object = fd_object_for_descriptor(
+			    current_fd_table(), frame->rdi);
+			int result;
+			if (object == NULL) {
+				syscall_error(frame, EBADF);
+				break;
+			}
+			if (!udp_socket_is_object(object)) {
+				syscall_error(frame, ENOTSOCK);
+				break;
+			}
+			if (frame->rdx != sizeof(endpoint) ||
+			    !vmm_copy_from_user(vmm_active_address_space(), &endpoint,
+			    frame->rsi, sizeof(endpoint))) {
+				syscall_error(frame, frame->rdx != sizeof(endpoint) ?
+				    EINVAL : EFAULT);
+				break;
+			}
+			result = udp_socket_connect(object, &endpoint);
+			if (result != 0)
+				syscall_error(frame, errno_from_kernel(result));
+			else
+				frame->rax = 0;
+		}
+		break;
+	case SYSCALL_UDP_SEND:
+		{
+			uint8_t payload[UDP_SOCKET_PAYLOAD_LIMIT];
+			struct fd_object *object = fd_object_for_descriptor(
+			    current_fd_table(), frame->rdi);
+			int result;
+			if (object == NULL) {
+				syscall_error(frame, EBADF);
+				break;
+			}
+			if (!udp_socket_is_object(object)) {
+				syscall_error(frame, ENOTSOCK);
+				break;
+			}
+			if (frame->rdx > sizeof(payload) ||
+			    (frame->rdx != 0 && !vmm_copy_from_user(
+			    vmm_active_address_space(), payload, frame->rsi,
+			    (size_t)frame->rdx))) {
+				syscall_error(frame, frame->rdx > sizeof(payload) ?
+				    EMSGSIZE : EFAULT);
+				break;
+			}
+			result = udp_socket_send(object, payload, (size_t)frame->rdx);
+			if (result < 0)
+				syscall_error(frame, errno_from_kernel(result));
+			else
+				frame->rax = (uint64_t)result;
+		}
+		break;
 	case SYSCALL_UDP_SENDTO:
 		{
 			struct udp_socket_endpoint endpoint;

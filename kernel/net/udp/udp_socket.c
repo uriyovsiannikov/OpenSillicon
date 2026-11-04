@@ -24,8 +24,10 @@ struct udp_queue_entry {
 struct udp_socket_state {
 	bool allocated;
 	bool bound;
+	bool connected;
 	bool send_busy;
 	struct udp_socket_endpoint local;
+	struct udp_socket_endpoint remote;
 	struct udp_queue_entry queue[UDP_SOCKET_QUEUE_LIMIT];
 	size_t queue_head;
 	size_t queue_count;
@@ -287,6 +289,61 @@ udp_socket_bind(struct fd_object *object,
 	return result;
 }
 
+int
+udp_socket_connect(struct fd_object *object,
+	const struct udp_socket_endpoint *endpoint)
+{
+	uint64_t flags = state_guard_enter();
+	struct udp_socket_state *state = socket_state(object);
+	uint8_t next_hop[4];
+	int result = 0;
+	if (state == NULL) {
+		state_guard_leave(flags);
+		return -ENOTSOCK;
+	}
+	if (endpoint == NULL || endpoint->port == 0 ||
+	    !netstack_route_ipv4(&protocol_stack, endpoint->address, next_hop)) {
+		state_guard_leave(flags);
+		return -EHOSTUNREACH;
+	}
+	if (state->send_busy) {
+		state_guard_leave(flags);
+		return -EAGAIN;
+	}
+	if (!state->bound) {
+		struct udp_socket_endpoint local = {0};
+		result = bind_socket(state, &local);
+		if (result != 0) {
+			state_guard_leave(flags);
+			return result;
+		}
+	}
+	state->remote = *endpoint;
+	state->connected = true;
+	state_guard_leave(flags);
+	return 0;
+}
+
+int
+udp_socket_send(struct fd_object *object, const uint8_t *payload,
+	size_t length)
+{
+	struct udp_socket_endpoint destination;
+	uint64_t flags = state_guard_enter();
+	struct udp_socket_state *state = socket_state(object);
+	if (state == NULL) {
+		state_guard_leave(flags);
+		return -ENOTSOCK;
+	}
+	if (!state->connected) {
+		state_guard_leave(flags);
+		return -EDESTADDRREQ;
+	}
+	destination = state->remote;
+	state_guard_leave(flags);
+	return udp_socket_sendto(object, &destination, payload, length);
+}
+
 static int
 socket_transmit(const uint8_t *frame, size_t length)
 {
@@ -374,6 +431,15 @@ udp_socket_poll(void)
 				    (!address_is_zero(state->local.address) &&
 				    !address_is_local(state->local.address)))
 					continue;
+				if (state->connected) {
+					bool same_remote = state->remote.port == view.source_port;
+					for (size_t j = 0; same_remote && j < 4; j++)
+						if (state->remote.address[j] !=
+						    view.source_address[j])
+							same_remote = false;
+					if (!same_remote)
+						continue;
+				}
 				if (state->queue_count == UDP_SOCKET_QUEUE_LIMIT) {
 					state->dropped_datagrams++;
 					break;

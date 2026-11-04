@@ -414,20 +414,35 @@ gai_strerror(int error)
 ssize_t
 send(int fd, const void *buffer, size_t length, int flags)
 {
+	int saved_errno;
+	long result;
 	if (flags != 0) {
 		errno = EOPNOTSUPP;
 		return -1;
 	}
+	saved_errno = errno;
+	result = __libos_call(SYSCALL_UDP_SEND, fd, (long)buffer,
+	    (long)length, 0, 0, 0);
+	if (result >= 0 || errno != ENOTSOCK)
+		return (ssize_t)result;
+	errno = saved_errno;
 	return write(fd, buffer, length);
 }
 
 ssize_t
 recv(int fd, void *buffer, size_t length, int flags)
 {
+	int saved_errno;
+	ssize_t result;
 	if (flags != 0) {
 		errno = EOPNOTSUPP;
 		return -1;
 	}
+	saved_errno = errno;
+	result = recvfrom(fd, buffer, length, 0, NULL, NULL);
+	if (result >= 0 || errno != ENOTSOCK)
+		return result;
+	errno = saved_errno;
 	return read(fd, buffer, length);
 }
 
@@ -547,6 +562,24 @@ listen(int fd, int backlog)
 int
 connect(int fd, const struct sockaddr *address, socklen_t length)
 {
+	if (address != NULL && address->sa_family == AF_INET) {
+		const struct sockaddr_in *internet_address =
+		    (const struct sockaddr_in *)address;
+		struct resolver_endpoint endpoint;
+		uint32_t host_address;
+		if (length < sizeof(*internet_address)) {
+			errno = EINVAL;
+			return -1;
+		}
+		host_address = ntohl(internet_address->sin_addr.s_addr);
+		endpoint.address[0] = (uint8_t)(host_address >> 24);
+		endpoint.address[1] = (uint8_t)(host_address >> 16);
+		endpoint.address[2] = (uint8_t)(host_address >> 8);
+		endpoint.address[3] = (uint8_t)host_address;
+		endpoint.port = ntohs(internet_address->sin_port);
+		return (int)__libos_call(SYSCALL_UDP_CONNECT, fd,
+		    (long)&endpoint, sizeof(endpoint), 0, 0, 0);
+	}
 	return (int)__libos_call(SYSCALL_UNIX_CONNECT, fd, (long)address, length,
 	    0, 0, 0);
 }

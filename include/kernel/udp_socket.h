@@ -36,6 +36,10 @@ int udp_socket_create_fd(struct fd_table *table, uint64_t family,
 	uint64_t type, uint64_t protocol);
 int udp_socket_bind(struct fd_object *object,
 	const struct udp_socket_endpoint *endpoint);
+int udp_socket_connect(struct fd_object *object,
+	const struct udp_socket_endpoint *endpoint);
+int udp_socket_send(struct fd_object *object, const uint8_t *payload,
+	size_t length);
 int udp_socket_sendto(struct fd_object *object,
 	const struct udp_socket_endpoint *destination, const uint8_t *payload,
 	size_t length);

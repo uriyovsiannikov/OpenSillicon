@@ -40,8 +40,9 @@ buffer options are also available. `fcntl(F_GETFL/F_SETFL)` reports and changes
 `O_NONBLOCK`; other `fcntl` commands are unsupported. `ioctl(FIONREAD)` reports
 queued bytes on an `AF_UNIX` stream socket.
 IPv4 datagram sockets are available through `socket(AF_INET, SOCK_DGRAM)`,
-`bind`, `sendto`, and `recvfrom`; `connect` and stream sockets over IPv4 are
-not implemented.
+`bind`, `connect`, `sendto`, `recvfrom`, `send`, and `recv`. Connected UDP
+sockets filter incoming datagrams to the selected peer. Stream sockets over
+IPv4 are not implemented.
 `getaddrinfo` resolves IPv4 A records through UDP sockets
 using the first `nameserver` entry in `/etc/resolv.conf`; numeric IPv4 nodes
 work without DNS. IPv6, TCP sockets, search domains, and DNS-over-TCP fallback
