@@ -42,6 +42,9 @@
 #define PROCESS_ERROR_EACCES 13U
 #define PROCESS_ERROR_ENOEXEC 8U
 #define PROCESS_ERROR_EIO 5U
+#define PROCESS_ERROR_ENOENT 2U
+#define PROCESS_ERROR_ENOTDIR 20U
+#define PROCESS_ERROR_ERANGE 34U
 #define PROCESS_ERROR_EINVAL 22U
 #define PROCESS_USER_BASE 0x10000ULL
 #define PROCESS_USER_END 0x00007ffffffff000ULL
@@ -92,6 +95,7 @@ struct process {
 	_Alignas(16) uint8_t fpu_state[ARCH_FPU_STATE_SIZE];
 	struct fd_table descriptors;
 	struct os_signal_state signals;
+	char current_directory[VFS_PATH_MAX];
 	bool signal_active;
 	uint64_t signal_restorer;
 	uint64_t signal_handler_stack;
@@ -676,6 +680,62 @@ process_current_ppid(void)
 }
 
 int
+process_chdir(const char *path)
+{
+	struct vnode *directory = NULL;
+	char canonical[VFS_PATH_MAX];
+	int error;
+
+	if (current_process == NULL || path == NULL)
+		return -PROCESS_ERROR_EINVAL;
+	if (path[0] == '\0')
+		return -PROCESS_ERROR_ENOENT;
+	error = vfs_resolve_path(current_process->current_directory, path,
+	    canonical, sizeof(canonical));
+	if (error != 0)
+		return error;
+	error = vfs_lookup(canonical, &directory);
+	if (error != 0)
+		return error;
+	if (directory->type != VNODE_DIRECTORY) {
+		vnode_put(directory);
+		return -PROCESS_ERROR_ENOTDIR;
+	}
+	vnode_put(directory);
+	for (size_t i = 0; i < sizeof(current_process->current_directory); i++) {
+		current_process->current_directory[i] = canonical[i];
+		if (canonical[i] == '\0')
+			break;
+	}
+	return 0;
+}
+
+int
+process_getcwd(char *buffer, size_t capacity)
+{
+	size_t length;
+	if (current_process == NULL || buffer == NULL)
+		return -PROCESS_ERROR_EINVAL;
+	length = 0;
+	while (current_process->current_directory[length] != '\0')
+		length++;
+	if (length + 1U > capacity)
+		return -PROCESS_ERROR_ERANGE;
+	for (size_t i = 0; i <= length; i++)
+		buffer[i] = current_process->current_directory[i];
+	return (int)(length + 1U);
+}
+
+int
+process_resolve_path(const char *path, char *output, size_t capacity)
+{
+	if (current_process == NULL)
+		return -PROCESS_ERROR_EINVAL;
+	return vfs_resolve_path(current_process->current_directory, path,
+	    output, capacity);
+}
+
+int
 process_current_snapshot(struct process_snapshot_entry *entry)
 {
 	struct process *process;
@@ -1035,6 +1095,8 @@ process_run_elf_internal(const void *image, size_t image_size,
 	root->retry_pending = false;
 	root->retry_in_progress = false;
 	root->parent = NULL;
+	root->current_directory[0] = '/';
+	root->current_directory[1] = '\0';
 	root->address_space = &root->loaded_image->address_space;
 	root->tls = process_tls_from_plan(&root->loaded_image->plan);
 	root->saved_frame = NULL;
@@ -1246,6 +1308,8 @@ process_fork(struct interrupt_frame *frame, uint64_t *error)
 	child->retry_pending = false;
 	child->retry_in_progress = false;
 	child->parent = current_process;
+	for (i = 0; i < sizeof(child->current_directory); i++)
+		child->current_directory[i] = current_process->current_directory[i];
 	child->loaded_image = NULL;
 	child->tls = current_process->tls;
 	child->initial_user_stack = current_process->initial_user_stack;
@@ -1442,6 +1506,7 @@ process_exec_path_argv(struct interrupt_frame *frame, const char *path,
 {
 	struct vfs_stat status;
 	struct fd_object *file = NULL;
+	char canonical[VFS_PATH_MAX];
 	void *image;
 	struct interrupt_frame *result;
 	size_t offset = 0;
@@ -1451,7 +1516,12 @@ process_exec_path_argv(struct interrupt_frame *frame, const char *path,
 		*error = PROCESS_ERROR_EFAULT;
 		return frame;
 	}
-	rc = vfs_stat_path(path, &status);
+	rc = process_resolve_path(path, canonical, sizeof(canonical));
+	if (rc != 0) {
+		*error = (uint64_t)-rc;
+		return frame;
+	}
+	rc = vfs_stat_path(canonical, &status);
 	if (rc != 0) {
 		*error = (uint64_t)-rc;
 		return frame;
@@ -1464,7 +1534,7 @@ process_exec_path_argv(struct interrupt_frame *frame, const char *path,
 		*error = PROCESS_ERROR_ENOEXEC;
 		return frame;
 	}
-	rc = vfs_open(path, VFS_O_RDONLY, 0, &file);
+	rc = vfs_open(canonical, VFS_O_RDONLY, 0, &file);
 	if (rc != 0) {
 		*error = (uint64_t)-rc;
 		return frame;

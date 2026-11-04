@@ -997,6 +997,40 @@ syscall_interrupt(struct interrupt_frame *frame)
 	case SYSCALL_GETPPID:
 		frame->rax = process_current_ppid();
 		break;
+	case SYSCALL_CHDIR:
+		{
+			char path[VFS_PATH_MAX];
+			int result = copy_user_string(frame->rdi, path, sizeof(path));
+			if (result == 0)
+				result = process_chdir(path);
+			if (result != 0)
+				syscall_error(frame, errno_from_kernel(result));
+			else
+				frame->rax = 0;
+		}
+		break;
+	case SYSCALL_GETCWD:
+		{
+			char path[VFS_PATH_MAX];
+			int length;
+			if (frame->rsi == 0) {
+				syscall_error(frame, ERRNO_EINVAL);
+				break;
+			}
+			length = process_getcwd(path, frame->rsi > sizeof(path) ?
+			    sizeof(path) : (size_t)frame->rsi);
+			if (length < 0) {
+				syscall_error(frame, (uint64_t)-length);
+				break;
+			}
+			if (!vmm_copy_to_user(vmm_active_address_space(), frame->rdi,
+			    path, (size_t)length)) {
+				syscall_error(frame, EFAULT);
+				break;
+			}
+			frame->rax = 0;
+		}
+		break;
 	case SYSCALL_PROCESS_SNAPSHOT:
 		{
 			struct process_snapshot_entry entries[PROCESS_SNAPSHOT_MAX];
@@ -1708,6 +1742,7 @@ syscall_interrupt(struct interrupt_frame *frame)
 	case SYSCALL_OPEN:
 		{
 			char path[VFS_PATH_MAX];
+			char canonical[VFS_PATH_MAX];
 			struct fd_object *file;
 			int result = copy_user_string(frame->rdi, path, sizeof(path));
 
@@ -1715,11 +1750,17 @@ syscall_interrupt(struct interrupt_frame *frame)
 				syscall_error(frame, (uint64_t)(-result));
 				break;
 			}
+			result = process_resolve_path(path, canonical,
+			    sizeof(canonical));
+			if (result != 0) {
+				syscall_error(frame, errno_from_kernel(result));
+				break;
+			}
 			if (frame->rsi > UINT32_MAX || frame->rdx > UINT32_MAX) {
 				syscall_error(frame, ERRNO_EINVAL);
 				break;
 			}
-			result = vfs_open(path, (uint32_t)frame->rsi,
+			result = vfs_open(canonical, (uint32_t)frame->rsi,
 			    (uint32_t)frame->rdx, &file);
 			if (result != 0) {
 				syscall_error(frame, errno_from_kernel(result));
@@ -1869,7 +1910,7 @@ syscall_interrupt(struct interrupt_frame *frame)
 	case SYSCALL_FSTATAT:
 		{
 			char path[VFS_PATH_MAX];
-			char base_path[VFS_PATH_MAX] = "/";
+			char base_path[VFS_PATH_MAX];
 			struct fd_object *directory;
 			struct vnode *node = NULL;
 			struct fd_metadata metadata;
@@ -1907,6 +1948,12 @@ syscall_interrupt(struct interrupt_frame *frame)
 				    sizeof(base_path));
 				if (result != 0) {
 					syscall_error(frame, errno_from_kernel(result));
+					break;
+				}
+			} else if (path[0] != '/') {
+				result = process_getcwd(base_path, sizeof(base_path));
+				if (result < 0) {
+					syscall_error(frame, (uint64_t)-result);
 					break;
 				}
 			}
@@ -2009,6 +2056,7 @@ syscall_interrupt(struct interrupt_frame *frame)
 	case SYSCALL_STAT:
 		{
 			char path[VFS_PATH_MAX];
+			char canonical[VFS_PATH_MAX];
 			struct vfs_stat status;
 			int result = copy_user_string(frame->rdi, path, sizeof(path));
 
@@ -2016,7 +2064,13 @@ syscall_interrupt(struct interrupt_frame *frame)
 				syscall_error(frame, (uint64_t)(-result));
 				break;
 			}
-			result = vfs_stat_path(path, &status);
+			result = process_resolve_path(path, canonical,
+			    sizeof(canonical));
+			if (result != 0) {
+				syscall_error(frame, errno_from_kernel(result));
+				break;
+			}
+			result = vfs_stat_path(canonical, &status);
 			if (result != 0) {
 				syscall_error(frame, errno_from_kernel(result));
 				break;

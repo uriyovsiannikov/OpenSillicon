@@ -13,21 +13,26 @@
 char *
 getcwd(char *buffer, size_t size)
 {
+	long result;
 	if (buffer == NULL || size < 2) {
 		errno = buffer == NULL ? EINVAL : ERANGE;
 		return NULL;
 	}
-	buffer[0] = '/';
-	buffer[1] = '\0';
+	result = __libos_call(SYSCALL_GETCWD, (long)buffer, (long)size,
+	    0, 0, 0, 0);
+	if (result < 0)
+		return NULL;
 	return buffer;
 }
 
 int
 chdir(const char *path)
 {
-	(void)path;
-	errno = ENOSYS;
-	return -1;
+	if (path == NULL) {
+		errno = EFAULT;
+		return -1;
+	}
+	return (int)__libos_call(SYSCALL_CHDIR, (long)path, 0, 0, 0, 0, 0);
 }
 int mkdir(const char *path,unsigned int mode){(void)path;(void)mode;errno=ENOSYS;return -1;}
 int rmdir(const char *path){(void)path;errno=ENOSYS;return -1;}

@@ -295,15 +295,26 @@ command_external(size_t argc, const char *const argv[], int background)
 			path[i] = command[i];
 		path[u_strlen(command)] = '\0';
 	} else {
-		if (u_strlen(command) + 6 >= sizeof(path)) {
-			print_error("exec", command);
-			return;
-		}
-		path[0] = '/'; path[1] = 'b'; path[2] = 'i'; path[3] = 'n';
-		path[4] = '/';
+		int has_slash = 0;
 		for (size_t i = 0; command[i] != '\0'; i++)
-			path[5 + i] = command[i];
-		path[5 + u_strlen(command)] = '\0';
+			if (command[i] == '/')
+				has_slash = 1;
+		if (has_slash) {
+			if (!resolve(command, path)) {
+				print_error("exec", command);
+				return;
+			}
+		} else {
+			if (u_strlen(command) + 6 >= sizeof(path)) {
+				print_error("exec", command);
+				return;
+			}
+			path[0] = '/'; path[1] = 'b'; path[2] = 'i'; path[3] = 'n';
+			path[4] = '/';
+			for (size_t i = 0; command[i] != '\0'; i++)
+				path[5 + i] = command[i];
+			path[5 + u_strlen(command)] = '\0';
+		}
 	}
 	if (u_ioctl(0, U_TIOCCANON, 0) < 0) {
 		print_error("tty mode", "canonical");
@@ -745,11 +756,10 @@ run_command(char *line)
 			print_history();
 	} else if (u_streq(arguments[0], "cd")) {
 		char path[PATH_CAPACITY];
-		struct u_stat status;
 		const char *destination = count > 1 ? arguments[1] : "/";
 
-		if (!resolve(destination, path) || u_stat_path(path, &status) < 0 ||
-		    status.type != 2) {
+		if (!resolve(destination, path) || u_chdir(path) < 0 ||
+		    u_getcwd(path, sizeof(path)) < 0) {
 			print_error("cd", destination);
 		} else {
 			for (size_t i = 0; path[i] != '\0'; i++)
@@ -803,6 +813,10 @@ user_main(uint64_t argc, char **argv, const uint64_t *startup_stack)
 	}
 	if (!initialize_shell_tls(startup_stack)) {
 		u_puts("OpenSillicon shell: exec PT_TLS setup failed\n");
+		u_exit(1);
+	}
+	if (u_getcwd(current_directory, sizeof(current_directory)) < 0) {
+		u_puts("OpenSillicon shell: getcwd failed\n");
 		u_exit(1);
 	}
 	phdr = (const struct shell_startup_phdr *)(uintptr_t)startup_stack[auxv + 1];

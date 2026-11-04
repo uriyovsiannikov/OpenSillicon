@@ -750,6 +750,7 @@ virtio_rng_probe_done:
 	klog("\nOpenSillicon: kernel heap ready\n");
 	klog("OpenSillicon terminal ready\n");
 	klog("OpenSillicon: launching /sbin/init from SilliconFS\n");
+	klog_flush_boot_log();
 	fd_console_framebuffer_enable(true);
 	{
 		uint64_t status = process_run_path("/sbin/init", true);

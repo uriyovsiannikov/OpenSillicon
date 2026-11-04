@@ -66,6 +66,10 @@ long u_waitpid(uint64_t pid, uint8_t *status)
 long u_sleep_ticks(uint64_t ticks) { return syscall3(SYSCALL_SLEEP_TICKS, ticks, 0, 0); }
 long u_power_control(uint64_t command)
 { return syscall3(SYSCALL_POWER_CONTROL, command, 0, 0); }
+long u_chdir(const char *path)
+{ return syscall3(SYSCALL_CHDIR, (uintptr_t)path, 0, 0); }
+long u_getcwd(char *buffer, size_t capacity)
+{ return syscall3(SYSCALL_GETCWD, (uintptr_t)buffer, capacity, 0); }
 long u_pipe(uint32_t descriptors[2])
 { return syscall3(SYSCALL_PIPE, (uintptr_t)descriptors, 0, 0); }
 long u_getpid(void) { return syscall3(SYSCALL_GETPID, 0, 0, 0); }

@@ -16,7 +16,7 @@ run: iso $(BUILD_DIR)/root.img
 		-drive file=$(BUILD_DIR)/root.img,if=none,id=rootdisk,format=raw \
 		-device ide-hd,drive=rootdisk,bus=ide.0 -serial stdio -display none
 
-run-gui: iso $(BUILD_DIR)/root.img
+run-gui:
 	$(QEMU) -machine q35 -m 256M -bios $(OVMF_CODE) -cdrom $(BUILD_DIR)/opensillicon.iso \
 		-drive file=$(BUILD_DIR)/root.img,if=none,id=rootdisk,format=raw \
 		-device ide-hd,drive=rootdisk,bus=ide.0 -nic none \

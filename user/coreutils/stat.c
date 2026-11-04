@@ -35,10 +35,8 @@ user_main(uint64_t argc, char **argv)
 		return 1;
 	}
 	for (i = 1; i < argc; i++) {
-		char path[PATH_SIZE];
 		struct u_stat status;
-		if (!u_normalize_path("/", argv[i], path, sizeof(path)) ||
-		    u_stat_path(path, &status) < 0) {
+		if (u_stat_path(argv[i], &status) < 0) {
 			u_puts("stat: cannot stat: ");
 			u_puts(argv[i]);
 			u_puts("\n");

@@ -12,12 +12,15 @@ list_path(const char *argument)
 	long result;
 	long close_result;
 
-	if (!u_normalize_path("/", argument, path, sizeof(path))) {
+	if (u_strlen(argument) >= sizeof(path)) {
 		u_puts("ls: path too long: ");
 		u_puts(argument);
 		u_puts("\n");
 		return 1;
 	}
+	for (size_t i = 0; argument[i] != '\0'; i++)
+		path[i] = argument[i];
+	path[u_strlen(argument)] = '\0';
 	if (u_stat_path(path, &status) < 0) {
 		u_puts("ls: cannot access: ");
 		u_puts(argument);
@@ -65,7 +68,7 @@ user_main(uint64_t argc, char **argv)
 	int failed = 0;
 
 	if (argc == 1)
-		return list_path("/");
+		return list_path(".");
 	for (index = 1; index < argc; index++)
 		if (list_path(argv[index]))
 			failed = 1;

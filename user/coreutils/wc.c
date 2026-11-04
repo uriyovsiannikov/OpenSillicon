@@ -82,14 +82,11 @@ print_counts(const struct counts *counts, int lines, int words, int bytes,
 static int
 count_file(const char *name, struct counts *counts)
 {
-	char path[PATH_SIZE];
 	long descriptor;
 	int result;
 	if (u_streq(name, "-"))
 		return count_descriptor(0, counts);
-	if (!u_normalize_path("/", name, path, sizeof(path)))
-		return 0;
-	descriptor = u_open(path, U_O_RDONLY);
+	descriptor = u_open(name, U_O_RDONLY);
 	if (descriptor < 0)
 		return 0;
 	result = count_descriptor((uint64_t)descriptor, counts);

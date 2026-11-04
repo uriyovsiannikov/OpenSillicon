@@ -94,6 +94,45 @@ canonicalize_path(const char *path, char output[VFS_PATH_MAX])
 	return 0;
 }
 
+int
+vfs_resolve_path(const char *base_path, const char *path, char *output,
+	size_t capacity)
+{
+	char combined[VFS_PATH_MAX];
+	char canonical[VFS_PATH_MAX];
+	size_t base_length;
+	size_t path_length;
+	int error;
+
+	if (path == NULL || output == NULL || capacity == 0)
+		return -VFS_EINVAL;
+	if (path[0] == '\0')
+		return -VFS_ENOENT;
+	if (path[0] == '/')
+		error = canonicalize_path(path, canonical);
+	else {
+		if (base_path == NULL || base_path[0] != '/')
+			return -VFS_EINVAL;
+		base_length = strlen(base_path);
+		path_length = strlen(path);
+		if (base_length + (base_length > 1U ? 1U : 0U) + path_length >=
+		    sizeof(combined))
+			return -VFS_ENAMETOOLONG;
+		memcpy(combined, base_path, base_length);
+		if (base_length > 1U)
+			combined[base_length++] = '/';
+		memcpy(combined + base_length, path, path_length + 1U);
+		error = canonicalize_path(combined, canonical);
+	}
+	if (error != 0)
+		return error;
+	base_length = strlen(canonical) + 1U;
+	if (base_length > capacity)
+		return -VFS_ENAMETOOLONG;
+	memcpy(output, canonical, base_length);
+	return 0;
+}
+
 bool
 vfs_init(void)
 {

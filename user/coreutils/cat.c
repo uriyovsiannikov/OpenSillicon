@@ -31,7 +31,6 @@ user_main(uint64_t argc, char **argv)
 	if (argc == 1)
 		return copy_descriptor(0) ? 0 : 1;
 	for (index = 1; index < argc; index++) {
-		char path[PATH_SIZE];
 		long descriptor;
 		if (u_streq(argv[index], "-")) {
 			if (!copy_descriptor(0)) {
@@ -40,14 +39,7 @@ user_main(uint64_t argc, char **argv)
 			}
 			continue;
 		}
-		if (!u_normalize_path("/", argv[index], path, sizeof(path))) {
-			u_puts("cat: path too long: ");
-			u_puts(argv[index]);
-			u_puts("\n");
-			failed = 1;
-			continue;
-		}
-		descriptor = u_open(path, U_O_RDONLY);
+		descriptor = u_open(argv[index], U_O_RDONLY);
 		if (descriptor < 0) {
 			u_puts("cat: cannot open: ");
 			u_puts(argv[index]);

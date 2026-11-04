@@ -73,6 +73,8 @@ uint64_t vfs_allocate_inode(void);
 int vfs_mount(const char *path, struct vnode *root);
 int vfs_replace_root(struct vnode *root);
 int vfs_lookup(const char *path, struct vnode **result);
+int vfs_resolve_path(const char *base_path, const char *path,
+	char *output, size_t capacity);
 int vfs_lookup_at(const char *base_path, const char *path,
 	struct vnode **result);
 int vfs_create_path(const char *path, enum vnode_type type, uint32_t mode,

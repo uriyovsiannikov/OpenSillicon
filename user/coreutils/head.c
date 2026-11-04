@@ -61,18 +61,11 @@ head_descriptor(uint64_t descriptor, uint64_t limit)
 static int
 head_file(const char *name, uint64_t limit)
 {
-	char path[PATH_SIZE];
 	long descriptor;
 	int result;
 	if (u_streq(name, "-"))
 		return head_descriptor(0, limit);
-	if (!u_normalize_path("/", name, path, sizeof(path))) {
-		u_puts("head: path too long: ");
-		u_puts(name);
-		u_puts("\n");
-		return 0;
-	}
-	descriptor = u_open(path, U_O_RDONLY);
+	descriptor = u_open(name, U_O_RDONLY);
 	if (descriptor < 0) {
 		u_puts("head: cannot open: ");
 		u_puts(name);

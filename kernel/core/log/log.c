@@ -2,13 +2,18 @@
 #include <stddef.h>
 
 #include "kernel/log.h"
-#include "kernel/tty.h"
+#include "kernel/fd.h"
+#include "kernel/spinlock.h"
+#include "kernel/vfs.h"
 
 #define COM1 0x3f8
-#define BOOT_STATUS_BUFFER_SIZE 4096U
+#define BOOT_LOG_BUFFER_SIZE (64U * 1024U)
 
-static char pending_boot_status[BOOT_STATUS_BUFFER_SIZE];
-static size_t pending_boot_status_length;
+static char boot_log[BOOT_LOG_BUFFER_SIZE];
+static size_t boot_log_length;
+static bool boot_log_overflow;
+static bool boot_log_flushed;
+static struct spinlock log_lock = SPINLOCK_INITIALIZER;
 
 static inline void
 outb(uint16_t port, uint8_t value)
@@ -59,14 +64,35 @@ serial_write(const char *buffer, size_t length)
 	return true;
 }
 
+static void
+log_write(const char *buffer, size_t length)
+{
+	uint64_t flags = spinlock_lock_irqsave(&log_lock);
+	size_t i;
+
+	for (i = 0; i < length; i++) {
+		if (buffer[i] == '\n')
+			serial_putc('\r');
+		serial_putc(buffer[i]);
+	}
+	if (!boot_log_flushed) {
+		if (length <= sizeof(boot_log) - boot_log_length) {
+			for (i = 0; i < length; i++)
+				boot_log[boot_log_length++] = buffer[i];
+		} else {
+			boot_log_overflow = true;
+		}
+	}
+	spinlock_unlock_irqrestore(&log_lock, flags);
+}
+
 void
 klog(const char *message)
 {
-	while (*message != '\0') {
-		if (*message == '\n')
-			serial_putc('\r');
-		serial_putc(*message++);
-	}
+	size_t length = 0;
+	while (message[length] != '\0')
+		length++;
+	log_write(message, length);
 }
 
 void
@@ -79,8 +105,10 @@ klog_u64(uint64_t value)
 		digits[count++] = (char)('0' + value % 10);
 		value /= 10;
 	} while (value != 0 && count < sizeof(digits));
-	while (count != 0)
-		serial_putc(digits[--count]);
+	while (count != 0) {
+		char digit = digits[--count];
+		log_write(&digit, 1);
+	}
 }
 
 void
@@ -114,25 +142,41 @@ klog_status(const char *component, bool success, const char *detail)
 	}
 	APPEND_STATUS("\n");
 	#undef APPEND_STATUS
-	(void)serial_write(line, length);
-	if (tty_framebuffer_available()) {
-		if (pending_boot_status_length != 0) {
-			(void)tty_write(pending_boot_status,
-			    pending_boot_status_length);
-			pending_boot_status_length = 0;
-		}
-		(void)tty_write(line, length);
-	} else {
-		/* Keep complete status lines only. In particular, never truncate an
-		 * ANSI escape sequence and leave the terminal parser in CSI state. */
-		if (length <= sizeof(pending_boot_status) -
-		    pending_boot_status_length) {
-			size_t i;
-			for (i = 0; i < length; i++)
-				pending_boot_status[pending_boot_status_length++] =
-				    line[i];
-		}
+	log_write(line, length);
+}
+
+void
+klog_flush_boot_log(void)
+{
+	struct fd_object *file = NULL;
+	uint64_t flags = spinlock_lock_irqsave(&log_lock);
+	size_t length = boot_log_length;
+	size_t offset = 0;
+	bool overflow = boot_log_overflow;
+	int error;
+
+	/* Freeze the buffer before filesystem I/O; later logs stay on serial. */
+	boot_log_flushed = true;
+	spinlock_unlock_irqrestore(&log_lock, flags);
+	error = vfs_open("/tmp/btlog.log",
+	    VFS_O_WRONLY | VFS_O_CREAT | VFS_O_TRUNC, 0644, &file);
+	if (error != 0) {
+		klog("OpenSillicon: could not create /tmp/btlog.log\n");
+		return;
 	}
+	while (offset < length) {
+		size_t written = 0;
+		error = fd_object_write(file, boot_log + offset,
+		    length - offset, &written);
+		if (error != 0 || written == 0) {
+			klog("OpenSillicon: writing /tmp/btlog.log failed\n");
+			break;
+		}
+		offset += written;
+	}
+	fd_object_put(file);
+	if (overflow)
+		klog("OpenSillicon: boot log buffer full; /tmp/btlog.log is truncated\n");
 }
 
 _Noreturn void

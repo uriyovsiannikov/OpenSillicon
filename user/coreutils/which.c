@@ -9,8 +9,12 @@ resolve_command(const char *command, char *path)
 	if (command[0] == '/')
 		return u_normalize_path("/", command, path, PATH_SIZE);
 	for (i = 0; command[i] != '\0'; i++) {
-		if (command[i] == '/')
-			return u_normalize_path("/", command, path, PATH_SIZE);
+		if (command[i] == '/') {
+			char cwd[PATH_SIZE];
+			if (u_getcwd(cwd, sizeof(cwd)) < 0)
+				return 0;
+			return u_normalize_path(cwd, command, path, PATH_SIZE);
+		}
 	}
 	if (u_strlen(command) + 6 >= PATH_SIZE)
 		return 0;

@@ -22,6 +22,28 @@ static __thread volatile uint64_t tls_initialized = TLS_INITIAL_VALUE;
 static __thread volatile uint64_t tls_zero;
 static uint64_t tls_storage[TLS_STORAGE_WORDS] __attribute__((aligned(16)));
 
+static void
+init_status(const char *component, int success, const char *detail)
+{
+	size_t length;
+	size_t i;
+
+	u_puts("\033[34m*\033[0m Initializing ");
+	u_puts(component);
+	u_puts(" ...");
+	length = u_strlen(component);
+	for (i = length + 20; i < 46; i++)
+		u_puts(" ");
+	u_puts(success ? " \033[32m[ OK ]\033[0m\n" :
+	    " \033[31m[ ER ]\033[0m");
+	if (!success && detail != 0) {
+		u_puts(" ");
+		u_puts(detail);
+	}
+	if (!success)
+		u_puts("\n");
+}
+
 static int
 verify_startup_stack(const uint64_t *stack)
 {
@@ -183,31 +205,30 @@ user_main(uint64_t argc, char **argv, const uint64_t *startup_stack)
 		u_exit(1);
 	}
 	start_sleep_regression(startup_stack);
-	u_puts("OpenSillicon init: starting /bin/sh\n");
+	init_status("init", 1, 0);
 	for (;;) {
 		long child = u_fork();
 		uint8_t status = 0xff;
 
 		if (child == 0) {
 			(void)u_exec_path("/bin/sh");
-			u_puts("OpenSillicon init: exec /bin/sh failed\n");
+			init_status("/bin/sh", 0, "exec failed");
 			u_exit(127);
 		}
 		if (child > 0) {
+			init_status("/bin/sh", 1, 0);
 			if (u_waitpid((uint64_t)child, &status) < 0) {
-				u_puts("OpenSillicon init: waitpid /bin/sh failed\n");
+				init_status("/bin/sh", 0, "waitpid failed");
 				status = 255;
 			}
-			u_puts("OpenSillicon init: shell exited status ");
-			u_put_u64(status);
-			u_puts("\n");
+			if (status != 0)
+				init_status("/bin/sh", 0, "exited with an error");
 		}
 		else
-			u_puts("OpenSillicon init: fork /bin/sh failed\n");
+			init_status("/bin/sh", 0, "fork failed");
 		if (u_sleep_ticks(10) != 0) {
 			u_puts("OpenSillicon init: restart delay failed\n");
 			u_exit(1);
 		}
-		u_puts("OpenSillicon init: restarting /bin/sh\n");
 	}
 }
