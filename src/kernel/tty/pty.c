@@ -336,9 +336,12 @@ pty_create(struct fd_table *table, int *master, int *slave)
 	int result;
 
 	if (pty == NULL || first == NULL || second == NULL) {
-		pty_free(pty);
-		pty_free(first);
-		pty_free(second);
+		if (pty != NULL)
+			pty_free(pty);
+		if (first != NULL)
+			pty_free(first);
+		if (second != NULL)
+			pty_free(second);
 		return -ENOMEM;
 	}
 	*pty = (struct pty_state){.master_open = true, .slave_open = true,
