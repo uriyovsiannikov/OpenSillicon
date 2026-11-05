@@ -284,17 +284,16 @@ syscall_select(struct interrupt_frame *frame)
 			return frame;
 		}
 		ready = fd_object_poll(object, requested);
+		if (ready != 0)
+			ready_count++;
 		if ((ready & FD_POLL_READ) != 0) {
 			fd_set_add(&ready_read, descriptor);
-			ready_count++;
 		}
 		if ((ready & FD_POLL_WRITE) != 0) {
 			fd_set_add(&ready_write, descriptor);
-			ready_count++;
 		}
 		if ((ready & FD_POLL_ERROR) != 0) {
 			fd_set_add(&ready_except, descriptor);
-			ready_count++;
 		}
 	}
 	if (ready_count != 0) {
