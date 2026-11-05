@@ -710,6 +710,7 @@ vfs_open_as(const char *path, uint32_t flags, uint32_t mode,
 	struct vnode *node = NULL;
 	struct fd_object *file;
 	char canonical[VFS_PATH_MAX];
+	bool created = false;
 	int error;
 
 	if (result == NULL || (flags & ~allowed) != 0 ||
@@ -724,9 +725,11 @@ vfs_open_as(const char *path, uint32_t flags, uint32_t mode,
 	if (error != 0)
 		return error;
 	error = vfs_lookup_as(canonical, uid, gid, &node);
-	if (error == -VFS_ENOENT && (flags & VFS_O_CREAT) != 0)
+	if (error == -VFS_ENOENT && (flags & VFS_O_CREAT) != 0) {
 		error = vfs_create_path_as(path, VNODE_REGULAR, mode, uid, gid,
 		    &node);
+		created = error == 0;
+	}
 	if (error != 0)
 		return error;
 	if (node->type == VNODE_DIRECTORY &&
@@ -747,7 +750,10 @@ vfs_open_as(const char *path, uint32_t flags, uint32_t mode,
 		if ((flags & VFS_O_ACCMODE) == VFS_O_WRONLY ||
 		    (flags & VFS_O_ACCMODE) == VFS_O_RDWR)
 			requested |= VFS_ACCESS_WRITE;
-		if (!vfs_access(node, uid, gid, requested)) {
+		/* The caller is authorized by the parent-directory check performed
+		 * during creation. Do not reject the descriptor it just created
+		 * because the requested mode is more restrictive than its access. */
+		if (!created && !vfs_access(node, uid, gid, requested)) {
 			vnode_put(node);
 			return -VFS_EACCES;
 		}
