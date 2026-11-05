@@ -1,1 +1,0 @@
-Filesystem code provides common file access and several ways to store or expose files. The subdirectories include VFS, SilliconFS, RAM-backed filesystems, boot-time files, device and process views, and block-device integration.

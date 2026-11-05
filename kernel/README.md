@@ -1,1 +1,0 @@
-The kernel directory holds the core of OpenSillicon. The main entry point starts the system, and the Makefile describes how kernel sources are built. The subdirectories provide architecture support, memory management, processes, scheduling, drivers, filesystems, networking, terminal I/O, and communication between processes.
