@@ -3,6 +3,7 @@
 #include "arch/x86_64/acpi.h"
 #include "kernel/heap.h"
 #include "kernel/log.h"
+#include "kernel/spinlock.h"
 #include "kernel/timer.h"
 #include "kernel/vmm.h"
 #include "acpi.h"
@@ -369,6 +370,7 @@ AcpiOsReleaseLock(ACPI_SPINLOCK handle, ACPI_CPU_FLAGS flags)
 }
 
 struct acpi_os_semaphore {
+	struct spinlock lock;
 	uint32_t count;
 	uint32_t maximum;
 };
@@ -383,8 +385,11 @@ AcpiOsCreateSemaphore(UINT32 maximum, UINT32 initial, ACPI_SEMAPHORE *out)
 	semaphore = kheap_alloc(sizeof(*semaphore));
 	if (semaphore == NULL)
 		return AE_NO_MEMORY;
-	semaphore->count = initial;
-	semaphore->maximum = maximum;
+	*semaphore = (struct acpi_os_semaphore){
+		.lock = SPINLOCK_INITIALIZER,
+		.count = initial,
+		.maximum = maximum
+	};
 	*out = semaphore;
 	return AE_OK;
 }
@@ -406,13 +411,13 @@ AcpiOsWaitSemaphore(ACPI_SEMAPHORE handle, UINT32 units, UINT16 timeout)
 	deadline = timeout == ACPI_WAIT_FOREVER ? UINT64_MAX :
 	    timer_ticks() + ((uint64_t)timeout + 9) / 10;
 	for (;;) {
-		ACPI_CPU_FLAGS flags = irq_save();
+		uint64_t flags = spinlock_lock_irqsave(&semaphore->lock);
 		if (semaphore->count >= units) {
 			semaphore->count -= units;
-			irq_restore(flags);
+			spinlock_unlock_irqrestore(&semaphore->lock, flags);
 			return AE_OK;
 		}
-		irq_restore(flags);
+		spinlock_unlock_irqrestore(&semaphore->lock, flags);
 		if (timeout == 0 || timer_ticks() >= deadline)
 			return AE_TIME;
 		__asm__ volatile ("pause");
@@ -427,13 +432,13 @@ AcpiOsSignalSemaphore(ACPI_SEMAPHORE handle, UINT32 units)
 
 	if (semaphore == NULL || units == 0)
 		return AE_BAD_PARAMETER;
-	flags = irq_save();
+	flags = spinlock_lock_irqsave(&semaphore->lock);
 	if (units > semaphore->maximum - semaphore->count) {
-		irq_restore(flags);
+		spinlock_unlock_irqrestore(&semaphore->lock, flags);
 		return AE_LIMIT;
 	}
 	semaphore->count += units;
-	irq_restore(flags);
+	spinlock_unlock_irqrestore(&semaphore->lock, flags);
 	return AE_OK;
 }
 
