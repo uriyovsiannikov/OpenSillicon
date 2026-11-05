@@ -252,7 +252,9 @@ ahci_initialize(const struct pci_device_info *controller,
 	if (virtual_base >= vmm_vmalloc_end() ||
 	    mmio_page_count > (vmm_vmalloc_end() - virtual_base) / PAGE_SIZE ||
 	    bar - bar_offset > UINT64_MAX -
-	    (mmio_page_count - 1) * PAGE_SIZE)
+	    (mmio_page_count - 1) * PAGE_SIZE ||
+	    !vmm_physical_range_mmio_safe(bar - bar_offset,
+	    mmio_page_count * PAGE_SIZE))
 		return false;
 	while (mapped_pages < mmio_page_count) {
 		if (!vmm_map_page(vmm_kernel_address_space(),
