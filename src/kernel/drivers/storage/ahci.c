@@ -219,6 +219,25 @@ allocate_dma(uint64_t *physical, void **virtual_address, bool address64)
 	return true;
 }
 
+static bool
+allocate_command_dma(uint64_t physical[4], void *virtual_address[4],
+	bool address64)
+{
+	for (size_t i = 0; i < 4; i++) {
+		if (allocate_dma(&physical[i], &virtual_address[i], address64))
+			continue;
+		while (i != 0) {
+			i--;
+			if (!pmm_free_page(physical[i])) {
+				klog("AHCI DMA allocation rollback failed\n");
+				kernel_halt();
+			}
+		}
+		return false;
+	}
+	return true;
+}
+
 bool
 ahci_initialize(const struct pci_device_info *controller,
 	struct block_device *device)
@@ -292,6 +311,8 @@ ahci_initialize(const struct pci_device_info *controller,
 	for (port_index = 0; port_index < 32; port_index++) {
 		volatile uint32_t *port;
 		uint32_t ssts;
+		uint64_t dma_physical[4];
+		void *dma_virtual[4];
 		uint64_t headers_phys, fis_phys, table_phys, buffer_phys;
 		void *headers_virt, *fis_virt, *table_virt, *buffer_virt;
 
@@ -315,11 +336,16 @@ ahci_initialize(const struct pci_device_info *controller,
 		    (mmio_read(port, PORT_CMD) & PORT_CMD_FR) != 0; i++)
 			;
 		if (i == AHCI_TIMEOUT ||
-		    !allocate_dma(&headers_phys, &headers_virt, address64) ||
-		    !allocate_dma(&fis_phys, &fis_virt, address64) ||
-		    !allocate_dma(&table_phys, &table_virt, address64) ||
-		    !allocate_dma(&buffer_phys, &buffer_virt, address64))
+		    !allocate_command_dma(dma_physical, dma_virtual, address64))
 			return false;
+		headers_phys = dma_physical[0];
+		fis_phys = dma_physical[1];
+		table_phys = dma_physical[2];
+		buffer_phys = dma_physical[3];
+		headers_virt = dma_virtual[0];
+		fis_virt = dma_virtual[1];
+		table_virt = dma_virtual[2];
+		buffer_virt = dma_virtual[3];
 		state.buffer_physical = buffer_phys;
 		state.headers = headers_virt;
 		(void)fis_virt;
