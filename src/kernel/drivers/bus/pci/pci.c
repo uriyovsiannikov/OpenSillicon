@@ -245,6 +245,8 @@ map_ecam_bus(const struct acpi_mcfg_region *region, uint8_t bus)
 	uint64_t physical_base = region->base +
 	    ((uint64_t)(bus - region->start_bus) << 20);
 
+	if (!vmm_physical_range_mmio_safe(physical_base, ECAM_BUS_SIZE))
+		return false;
 	if (ecam_segment == region->segment && ecam_bus == bus)
 		return true;
 	if (ecam_bus != UINT8_MAX) {
