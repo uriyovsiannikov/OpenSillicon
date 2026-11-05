@@ -5,6 +5,7 @@
 #include "kernel/dma.h"
 #include "kernel/pmm.h"
 #include "kernel/log.h"
+#include "kernel/spinlock.h"
 #include "kernel/vmm.h"
 
 #define PAGE_SIZE 4096ULL
@@ -73,6 +74,7 @@ struct ahci_state {
 };
 
 static struct ahci_state state;
+static struct spinlock ahci_command_lock = SPINLOCK_INITIALIZER;
 
 static uint32_t
 mmio_read(volatile uint32_t *base, uint32_t offset)
@@ -153,6 +155,7 @@ ahci_transfer(uint64_t lba, uint32_t count, void *buffer, bool write)
 {
 	uint32_t i;
 	uint8_t *bytes = buffer;
+	uint64_t flags = spinlock_lock_irqsave(&ahci_command_lock);
 
 	for (i = 0; i < count; i++) {
 		int error;
@@ -162,12 +165,15 @@ ahci_transfer(uint64_t lba, uint32_t count, void *buffer, bool write)
 			    state.sector_size);
 		error = issue_command(write ? AHCI_CMD_WRITE_DMA_EXT :
 		    AHCI_CMD_READ_DMA_EXT, lba + i, 1, write, true);
-		if (error != 0)
+		if (error != 0) {
+			spinlock_unlock_irqrestore(&ahci_command_lock, flags);
 			return error;
+		}
 		if (!write)
 			memcpy(bytes + (size_t)i * state.sector_size, state.dma_buffer,
 			    state.sector_size);
 	}
+	spinlock_unlock_irqrestore(&ahci_command_lock, flags);
 	return 0;
 }
 
@@ -190,11 +196,17 @@ device_write(struct block_device *device, uint64_t lba, uint32_t count,
 static int
 device_flush(struct block_device *device)
 {
+	uint64_t flags;
+	int error;
+
 	(void)device;
 	if (!state.supports_flush)
 		return -EOPNOTSUPP;
-	return issue_command(state.supports_flush_ext ? AHCI_CMD_FLUSH_CACHE_EXT :
+	flags = spinlock_lock_irqsave(&ahci_command_lock);
+	error = issue_command(state.supports_flush_ext ? AHCI_CMD_FLUSH_CACHE_EXT :
 	    AHCI_CMD_FLUSH_CACHE, 0, 0, false, false);
+	spinlock_unlock_irqrestore(&ahci_command_lock, flags);
+	return error;
 }
 
 static const struct block_device_operations operations = {
