@@ -313,6 +313,17 @@ ahci_initialize(const struct pci_device_info *controller,
 		klog("AHCI PCI command write failed; command ");
 		klog_u64(controller->command);
 		klog("\n");
+		while (mapped_pages != 0) {
+			uint64_t physical;
+			mapped_pages--;
+			if (!vmm_unmap_page(vmm_kernel_address_space(),
+			    virtual_base + mapped_pages * PAGE_SIZE, &physical) ||
+			    physical != bar - bar_offset + mapped_pages * PAGE_SIZE) {
+				klog("AHCI MMIO mapping rollback failed\n");
+				kernel_halt();
+			}
+		}
+		state.registers = NULL;
 		return false;
 	}
 	mmio_write(state.registers, AHCI_GHC,
