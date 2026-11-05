@@ -36,6 +36,7 @@ static struct acpi_mcfg_region mcfg_cache[ACPI_MCFG_MAX_REGIONS];
 static size_t mcfg_count;
 static struct acpi_mapping acpi_mappings[ACPI_MAP_SLOTS];
 static uint64_t acpi_map_next;
+static struct spinlock acpi_mapping_lock = SPINLOCK_INITIALIZER;
 
 static uint16_t
 read_u16(const uint8_t *bytes)
@@ -494,17 +495,19 @@ AcpiOsMapMemory(ACPI_PHYSICAL_ADDRESS where, ACPI_SIZE length)
 		return NULL;
 	span = (offset + length + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
 	page_count = span / PAGE_SIZE;
-	if (physical_base > UINT64_MAX - span || page_count > SIZE_MAX ||
-	    acpi_map_next == 0)
+	if (physical_base > UINT64_MAX - span || page_count > SIZE_MAX)
 		return NULL;
+	uint64_t flags = spinlock_lock_irqsave(&acpi_mapping_lock);
 	for (slot = 0; slot < ACPI_MAP_SLOTS; slot++) {
 		if (!acpi_mappings[slot].active)
 			break;
 	}
-	if (slot == ACPI_MAP_SLOTS ||
+	if (slot == ACPI_MAP_SLOTS || acpi_map_next == 0 ||
 	    acpi_map_next > vmm_vmalloc_device_start() ||
-	    span > vmm_vmalloc_device_start() - acpi_map_next)
+	    span > vmm_vmalloc_device_start() - acpi_map_next) {
+		spinlock_unlock_irqrestore(&acpi_mapping_lock, flags);
 		return NULL;
+	}
 	virtual_base = acpi_map_next;
 	for (mapped = 0; mapped < page_count; mapped++) {
 		if (!vmm_map_page(vmm_kernel_address_space(),
@@ -519,6 +522,7 @@ AcpiOsMapMemory(ACPI_PHYSICAL_ADDRESS where, ACPI_SIZE length)
 			(void)vmm_unmap_page(vmm_kernel_address_space(),
 			    virtual_base + mapped * PAGE_SIZE, &ignored);
 		}
+		spinlock_unlock_irqrestore(&acpi_mapping_lock, flags);
 		return NULL;
 	}
 	acpi_mappings[slot] = (struct acpi_mapping){
@@ -528,6 +532,7 @@ AcpiOsMapMemory(ACPI_PHYSICAL_ADDRESS where, ACPI_SIZE length)
 		.active = true
 	};
 	acpi_map_next += span;
+	spinlock_unlock_irqrestore(&acpi_mapping_lock, flags);
 	return (void *)(uintptr_t)(virtual_base + offset);
 }
 
@@ -536,6 +541,7 @@ AcpiOsUnmapMemory(void *logical, ACPI_SIZE length)
 {
 	uintptr_t address = (uintptr_t)logical;
 	size_t slot;
+	uint64_t flags = spinlock_lock_irqsave(&acpi_mapping_lock);
 
 	(void)length;
 	for (slot = 0; slot < ACPI_MAP_SLOTS; slot++) {
@@ -576,8 +582,10 @@ AcpiOsUnmapMemory(void *logical, ACPI_SIZE length)
 					break;
 			}
 		}
+		spinlock_unlock_irqrestore(&acpi_mapping_lock, flags);
 		return;
 	}
+	spinlock_unlock_irqrestore(&acpi_mapping_lock, flags);
 }
 
 ACPI_STATUS
@@ -586,9 +594,11 @@ AcpiOsGetPhysicalAddress(void *logical, ACPI_PHYSICAL_ADDRESS *physical)
 	uintptr_t address = (uintptr_t)logical;
 	uint64_t hhdm = vmm_hhdm_offset();
 	size_t slot;
+	uint64_t flags;
 
 	if (logical == NULL || physical == NULL)
 		return AE_BAD_PARAMETER;
+	flags = spinlock_lock_irqsave(&acpi_mapping_lock);
 	for (slot = 0; slot < ACPI_MAP_SLOTS; slot++) {
 		const struct acpi_mapping *mapping = &acpi_mappings[slot];
 		uint64_t size;
@@ -600,9 +610,11 @@ AcpiOsGetPhysicalAddress(void *logical, ACPI_PHYSICAL_ADDRESS *physical)
 		    address - mapping->virtual_base < size) {
 			*physical = mapping->physical_base +
 			    (address - mapping->virtual_base);
+			spinlock_unlock_irqrestore(&acpi_mapping_lock, flags);
 			return AE_OK;
 		}
 	}
+	spinlock_unlock_irqrestore(&acpi_mapping_lock, flags);
 	if (address < hhdm)
 		return AE_BAD_PARAMETER;
 	*physical = address - hhdm;
