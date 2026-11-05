@@ -13,6 +13,7 @@
 #define AHCI_GHC 0x04U
 #define AHCI_PI 0x0cU
 #define AHCI_PORTS 0x100U
+#define AHCI_MMIO_SIZE (AHCI_PORTS + 32U * 0x80U)
 #define PORT_CLB 0x00U
 #define PORT_FB 0x08U
 #define PORT_IS 0x10U
@@ -228,6 +229,8 @@ ahci_initialize(const struct pci_device_info *controller,
 	uint64_t bar;
 	uint64_t virtual_base;
 	uint64_t bar_offset;
+	size_t mmio_page_count;
+	size_t mapped_pages = 0;
 	uint16_t identify[256];
 	bool address64;
 	uint32_t i;
@@ -244,12 +247,31 @@ ahci_initialize(const struct pci_device_info *controller,
 		return false;
 	bar_offset = bar & (PAGE_SIZE - 1);
 	virtual_base = (vmm_vmalloc_start() + 0x300000ULL) & ~(PAGE_SIZE - 1);
-	if (virtual_base + 2 * PAGE_SIZE >= vmm_vmalloc_end() ||
-	    !vmm_map_page(vmm_kernel_address_space(), virtual_base,
-	    bar - bar_offset, VMM_WRITE | VMM_UNCACHED) ||
-	    !vmm_map_page(vmm_kernel_address_space(), virtual_base + PAGE_SIZE,
-	    bar - bar_offset + PAGE_SIZE, VMM_WRITE | VMM_UNCACHED))
+	mmio_page_count = (size_t)((bar_offset + AHCI_MMIO_SIZE + PAGE_SIZE - 1) /
+	    PAGE_SIZE);
+	if (virtual_base >= vmm_vmalloc_end() ||
+	    mmio_page_count > (vmm_vmalloc_end() - virtual_base) / PAGE_SIZE ||
+	    bar - bar_offset > UINT64_MAX -
+	    (mmio_page_count - 1) * PAGE_SIZE)
 		return false;
+	while (mapped_pages < mmio_page_count) {
+		if (!vmm_map_page(vmm_kernel_address_space(),
+		    virtual_base + mapped_pages * PAGE_SIZE,
+		    bar - bar_offset + mapped_pages * PAGE_SIZE,
+		    VMM_WRITE | VMM_UNCACHED)) {
+			while (mapped_pages != 0) {
+				uint64_t physical;
+				mapped_pages--;
+				if (!vmm_unmap_page(vmm_kernel_address_space(),
+				    virtual_base + mapped_pages * PAGE_SIZE, &physical)) {
+					klog("AHCI MMIO mapping rollback failed\n");
+					kernel_halt();
+				}
+			}
+			return false;
+		}
+		mapped_pages++;
+	}
 	state.registers = (volatile uint32_t *)(uintptr_t)(virtual_base + bar_offset);
 	/* The PCI command register is changed only for this AHCI function. */
 	if (!pci_config_write(controller->segment, controller->bus,
