@@ -549,6 +549,28 @@ AcpiOsUnmapMemory(void *logical, ACPI_SIZE length)
 			    mapping->virtual_base + page * PAGE_SIZE, &ignored);
 		}
 		mapping->active = false;
+		if (mapping->virtual_base + size == acpi_map_next) {
+			acpi_map_next = mapping->virtual_base;
+			for (;;) {
+				bool reclaimed = false;
+				for (size_t previous = 0; previous < ACPI_MAP_SLOTS;
+				    previous++) {
+					const struct acpi_mapping *candidate =
+					    &acpi_mappings[previous];
+					if (candidate->active && candidate->virtual_base <
+					    acpi_map_next && candidate->page_count <=
+					    UINT64_MAX / PAGE_SIZE &&
+					    candidate->virtual_base +
+					    candidate->page_count * PAGE_SIZE == acpi_map_next) {
+						acpi_map_next = candidate->virtual_base;
+						reclaimed = true;
+						break;
+					}
+				}
+				if (!reclaimed)
+					break;
+			}
+		}
 		return;
 	}
 }
@@ -681,27 +703,34 @@ AcpiOsWritePort(ACPI_IO_ADDRESS address, UINT32 value, UINT32 width)
 ACPI_STATUS
 AcpiOsReadMemory(ACPI_PHYSICAL_ADDRESS address, UINT64 *value, UINT32 width)
 {
-	volatile uint8_t *pointer = AcpiOsMapMemory(address, width / 8);
+	volatile uint8_t *pointer;
 
-	if (pointer == NULL || value == NULL ||
+	if (value == NULL ||
 	    (width != 8 && width != 16 && width != 32 && width != 64))
+		return AE_BAD_PARAMETER;
+	pointer = AcpiOsMapMemory(address, width / 8);
+	if (pointer == NULL)
 		return AE_BAD_PARAMETER;
 	*value = 0;
 	for (UINT32 i = 0; i < width / 8; i++)
 		*value |= (uint64_t)pointer[i] << (i * 8);
+	AcpiOsUnmapMemory((void *)pointer, width / 8);
 	return AE_OK;
 }
 
 ACPI_STATUS
 AcpiOsWriteMemory(ACPI_PHYSICAL_ADDRESS address, UINT64 value, UINT32 width)
 {
-	volatile uint8_t *pointer = AcpiOsMapMemory(address, width / 8);
+	volatile uint8_t *pointer;
 
-	if (pointer == NULL ||
-	    (width != 8 && width != 16 && width != 32 && width != 64))
+	if (width != 8 && width != 16 && width != 32 && width != 64)
+		return AE_BAD_PARAMETER;
+	pointer = AcpiOsMapMemory(address, width / 8);
+	if (pointer == NULL)
 		return AE_BAD_PARAMETER;
 	for (UINT32 i = 0; i < width / 8; i++)
 		pointer[i] = (uint8_t)(value >> (i * 8));
+	AcpiOsUnmapMemory((void *)pointer, width / 8);
 	return AE_OK;
 }
 
