@@ -1,0 +1,967 @@
+/**
+ * @file mib2_impl_ip.c
+ * @brief MIB-II module implementation (IP group)
+ *
+ * @section License
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * Copyright (C) 2010-2026 Oryx Embedded SARL. All rights reserved.
+ *
+ * This file is part of CycloneTCP Open.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software Foundation,
+ * Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ *
+ * @author Oryx Embedded SARL (www.oryx-embedded.com)
+ * @version 2.6.6
+ **/
+
+//Switch to the appropriate trace level
+#define TRACE_LEVEL SNMP_TRACE_LEVEL
+
+//Dependencies
+#include "core/net.h"
+#include "ipv4/arp_cache.h"
+#include "mibs/mib_common.h"
+#include "mibs/mib2_module.h"
+#include "mibs/mib2_impl.h"
+#include "mibs/mib2_impl_ip.h"
+#include "core/crypto.h"
+#include "encoding/asn1.h"
+#include "encoding/oid.h"
+#include "debug.h"
+
+//Check TCP/IP stack configuration
+#if (MIB2_SUPPORT == ENABLED && MIB2_IP_GROUP_SUPPORT == ENABLED)
+
+
+/**
+ * @brief Get ipInReceives object value
+ * @param[in] object Pointer to the MIB object descriptor
+ * @param[in] oid Object identifier (object name and instance identifier)
+ * @param[in] oidLen Length of the OID, in bytes
+ * @param[out] value Object value
+ * @param[in,out] valueLen Length of the object value, in bytes
+ * @return Error code
+ **/
+
+error_t mib2GetIpInReceives(const MibObject *object, const uint8_t *oid,
+   size_t oidLen, MibVariant *value, size_t *valueLen)
+{
+   NetContext *context;
+
+   //Point to the TCP/IP stack context
+   context = netGetDefaultContext();
+
+   //Total number of input datagrams received from interfaces, including those
+   //received in error
+   value->counter32 = (uint32_t) context->ipv4SystemStats.inReceives;
+
+   //Return status code
+   return NO_ERROR;
+}
+
+
+/**
+ * @brief Get ipInHdrErrors object value
+ * @param[in] object Pointer to the MIB object descriptor
+ * @param[in] oid Object identifier (object name and instance identifier)
+ * @param[in] oidLen Length of the OID, in bytes
+ * @param[out] value Object value
+ * @param[in,out] valueLen Length of the object value, in bytes
+ * @return Error code
+ **/
+
+error_t mib2GetIpInHdrErrors(const MibObject *object, const uint8_t *oid,
+   size_t oidLen, MibVariant *value, size_t *valueLen)
+{
+   NetContext *context;
+
+   //Point to the TCP/IP stack context
+   context = netGetDefaultContext();
+
+   //Number of input datagrams discarded due to errors in their IP headers,
+   //including bad checksums, version number mismatch, other format errors,
+   //time-to-live exceeded, errors discovered in processing their IP options,
+   //etc
+   value->counter32 = context->ipv4SystemStats.inHdrErrors;
+
+   //Return status code
+   return NO_ERROR;
+}
+
+
+/**
+ * @brief Get ipInAddrErrors object value
+ * @param[in] object Pointer to the MIB object descriptor
+ * @param[in] oid Object identifier (object name and instance identifier)
+ * @param[in] oidLen Length of the OID, in bytes
+ * @param[out] value Object value
+ * @param[in,out] valueLen Length of the object value, in bytes
+ * @return Error code
+ **/
+
+error_t mib2GetIpInAddrErrors(const MibObject *object, const uint8_t *oid,
+   size_t oidLen, MibVariant *value, size_t *valueLen)
+{
+   NetContext *context;
+
+   //Point to the TCP/IP stack context
+   context = netGetDefaultContext();
+
+   //Number of input datagrams discarded because the IP address in their IP
+   //header's destination field was not a valid address to be received at this
+   //entity
+   value->counter32 = context->ipv4SystemStats.inAddrErrors;
+
+   //Return status code
+   return NO_ERROR;
+}
+
+
+/**
+ * @brief Get ipForwDatagrams object value
+ * @param[in] object Pointer to the MIB object descriptor
+ * @param[in] oid Object identifier (object name and instance identifier)
+ * @param[in] oidLen Length of the OID, in bytes
+ * @param[out] value Object value
+ * @param[in,out] valueLen Length of the object value, in bytes
+ * @return Error code
+ **/
+
+error_t mib2GetIpForwDatagrams(const MibObject *object, const uint8_t *oid,
+   size_t oidLen, MibVariant *value, size_t *valueLen)
+{
+   NetContext *context;
+
+   //Point to the TCP/IP stack context
+   context = netGetDefaultContext();
+
+   //Number of input datagrams for which this entity was not their final IP
+   //destination, as a result of which an attempt was made to find a route to
+   //forward them to that final destination
+   value->counter32 = (uint32_t) context->ipv4SystemStats.inForwDatagrams;
+
+   //Return status code
+   return NO_ERROR;
+}
+
+
+/**
+ * @brief Get ipInUnknownProtos object value
+ * @param[in] object Pointer to the MIB object descriptor
+ * @param[in] oid Object identifier (object name and instance identifier)
+ * @param[in] oidLen Length of the OID, in bytes
+ * @param[out] value Object value
+ * @param[in,out] valueLen Length of the object value, in bytes
+ * @return Error code
+ **/
+
+error_t mib2GetIpInUnknownProtos(const MibObject *object, const uint8_t *oid,
+   size_t oidLen, MibVariant *value, size_t *valueLen)
+{
+   NetContext *context;
+
+   //Point to the TCP/IP stack context
+   context = netGetDefaultContext();
+
+   //Number of locally-addressed datagrams received successfully but discarded
+   //because of an unknown or unsupported protocol
+   value->counter32 = context->ipv4SystemStats.inUnknownProtos;
+
+   //Return status code
+   return NO_ERROR;
+}
+
+
+/**
+ * @brief Get ipInDiscards object value
+ * @param[in] object Pointer to the MIB object descriptor
+ * @param[in] oid Object identifier (object name and instance identifier)
+ * @param[in] oidLen Length of the OID, in bytes
+ * @param[out] value Object value
+ * @param[in,out] valueLen Length of the object value, in bytes
+ * @return Error code
+ **/
+
+error_t mib2GetIpInDiscards(const MibObject *object, const uint8_t *oid,
+   size_t oidLen, MibVariant *value, size_t *valueLen)
+{
+   NetContext *context;
+
+   //Point to the TCP/IP stack context
+   context = netGetDefaultContext();
+
+   //Number of input IP datagrams for which no problems were encountered to
+   //prevent their continued processing, but which were discarded
+   value->counter32 = context->ipv4SystemStats.inDiscards;
+
+   //Return status code
+   return NO_ERROR;
+}
+
+
+/**
+ * @brief Get ipInDelivers object value
+ * @param[in] object Pointer to the MIB object descriptor
+ * @param[in] oid Object identifier (object name and instance identifier)
+ * @param[in] oidLen Length of the OID, in bytes
+ * @param[out] value Object value
+ * @param[in,out] valueLen Length of the object value, in bytes
+ * @return Error code
+ **/
+
+error_t mib2GetIpInDelivers(const MibObject *object, const uint8_t *oid,
+   size_t oidLen, MibVariant *value, size_t *valueLen)
+{
+   NetContext *context;
+
+   //Point to the TCP/IP stack context
+   context = netGetDefaultContext();
+
+   //Total number of input datagrams successfully delivered to IP user-protocols
+   value->counter32 = (uint32_t) context->ipv4SystemStats.inDelivers;
+
+   //Return status code
+   return NO_ERROR;
+}
+
+
+/**
+ * @brief Get ipOutRequests object value
+ * @param[in] object Pointer to the MIB object descriptor
+ * @param[in] oid Object identifier (object name and instance identifier)
+ * @param[in] oidLen Length of the OID, in bytes
+ * @param[out] value Object value
+ * @param[in,out] valueLen Length of the object value, in bytes
+ * @return Error code
+ **/
+
+error_t mib2GetIpOutRequests(const MibObject *object, const uint8_t *oid,
+   size_t oidLen, MibVariant *value, size_t *valueLen)
+{
+   NetContext *context;
+
+   //Point to the TCP/IP stack context
+   context = netGetDefaultContext();
+
+   //Total number of IP datagrams which local IP user-protocols supplied to IP
+   //in requests for transmission
+   value->counter32 = (uint32_t) context->ipv4SystemStats.outRequests;
+
+   //Return status code
+   return NO_ERROR;
+}
+
+
+/**
+ * @brief Get ipOutDiscards object value
+ * @param[in] object Pointer to the MIB object descriptor
+ * @param[in] oid Object identifier (object name and instance identifier)
+ * @param[in] oidLen Length of the OID, in bytes
+ * @param[out] value Object value
+ * @param[in,out] valueLen Length of the object value, in bytes
+ * @return Error code
+ **/
+
+error_t mib2GetIpOutDiscards(const MibObject *object, const uint8_t *oid,
+   size_t oidLen, MibVariant *value, size_t *valueLen)
+{
+   NetContext *context;
+
+   //Point to the TCP/IP stack context
+   context = netGetDefaultContext();
+
+   //Number of output IP datagrams for which no problem was encountered to
+   //prevent their transmission to their destination, but which were discarded
+   value->counter32 = context->ipv4SystemStats.outDiscards;
+
+   //Return status code
+   return NO_ERROR;
+}
+
+
+/**
+ * @brief Get ipOutNoRoutes object value
+ * @param[in] object Pointer to the MIB object descriptor
+ * @param[in] oid Object identifier (object name and instance identifier)
+ * @param[in] oidLen Length of the OID, in bytes
+ * @param[out] value Object value
+ * @param[in,out] valueLen Length of the object value, in bytes
+ * @return Error code
+ **/
+
+error_t mib2GetIpOutNoRoutes(const MibObject *object, const uint8_t *oid,
+   size_t oidLen, MibVariant *value, size_t *valueLen)
+{
+   NetContext *context;
+
+   //Point to the TCP/IP stack context
+   context = netGetDefaultContext();
+
+   //Number of IP datagrams discarded because no route could be found to
+   //transmit them to their destination
+   value->counter32 = context->ipv4SystemStats.outNoRoutes;
+
+   //Return status code
+   return NO_ERROR;
+}
+
+
+/**
+ * @brief Get ipReasmReqds object value
+ * @param[in] object Pointer to the MIB object descriptor
+ * @param[in] oid Object identifier (object name and instance identifier)
+ * @param[in] oidLen Length of the OID, in bytes
+ * @param[out] value Object value
+ * @param[in,out] valueLen Length of the object value, in bytes
+ * @return Error code
+ **/
+
+error_t mib2GetIpReasmReqds(const MibObject *object, const uint8_t *oid,
+   size_t oidLen, MibVariant *value, size_t *valueLen)
+{
+   NetContext *context;
+
+   //Point to the TCP/IP stack context
+   context = netGetDefaultContext();
+
+   //Number of IP fragments received which needed to be reassembled at this
+   //entity
+   value->counter32 = context->ipv4SystemStats.reasmReqds;
+
+   //Return status code
+   return NO_ERROR;
+}
+
+
+/**
+ * @brief Get ipReasmOKs object value
+ * @param[in] object Pointer to the MIB object descriptor
+ * @param[in] oid Object identifier (object name and instance identifier)
+ * @param[in] oidLen Length of the OID, in bytes
+ * @param[out] value Object value
+ * @param[in,out] valueLen Length of the object value, in bytes
+ * @return Error code
+ **/
+
+error_t mib2GetIpReasmOKs(const MibObject *object, const uint8_t *oid,
+   size_t oidLen, MibVariant *value, size_t *valueLen)
+{
+   NetContext *context;
+
+   //Point to the TCP/IP stack context
+   context = netGetDefaultContext();
+
+   //Number of IP datagrams successfully reassembled
+   value->counter32 = context->ipv4SystemStats.reasmOKs;
+
+   //Return status code
+   return NO_ERROR;
+}
+
+
+/**
+ * @brief Get ipReasmFails object value
+ * @param[in] object Pointer to the MIB object descriptor
+ * @param[in] oid Object identifier (object name and instance identifier)
+ * @param[in] oidLen Length of the OID, in bytes
+ * @param[out] value Object value
+ * @param[in,out] valueLen Length of the object value, in bytes
+ * @return Error code
+ **/
+
+error_t mib2GetIpReasmFails(const MibObject *object, const uint8_t *oid,
+   size_t oidLen, MibVariant *value, size_t *valueLen)
+{
+   NetContext *context;
+
+   //Point to the TCP/IP stack context
+   context = netGetDefaultContext();
+
+   //Number of failures detected by the IP reassembly algorithm
+   value->counter32 = context->ipv4SystemStats.reasmFails;
+
+   //Return status code
+   return NO_ERROR;
+}
+
+
+/**
+ * @brief Get ipFragOKs object value
+ * @param[in] object Pointer to the MIB object descriptor
+ * @param[in] oid Object identifier (object name and instance identifier)
+ * @param[in] oidLen Length of the OID, in bytes
+ * @param[out] value Object value
+ * @param[in,out] valueLen Length of the object value, in bytes
+ * @return Error code
+ **/
+
+error_t mib2GetIpFragOKs(const MibObject *object, const uint8_t *oid,
+   size_t oidLen, MibVariant *value, size_t *valueLen)
+{
+   NetContext *context;
+
+   //Point to the TCP/IP stack context
+   context = netGetDefaultContext();
+
+   //Number of IP datagrams that have been successfully fragmented at this
+   //entity
+   value->counter32 = context->ipv4SystemStats.outFragOKs;
+
+   //Return status code
+   return NO_ERROR;
+}
+
+
+/**
+ * @brief Get ipFragFails object value
+ * @param[in] object Pointer to the MIB object descriptor
+ * @param[in] oid Object identifier (object name and instance identifier)
+ * @param[in] oidLen Length of the OID, in bytes
+ * @param[out] value Object value
+ * @param[in,out] valueLen Length of the object value, in bytes
+ * @return Error code
+ **/
+
+error_t mib2GetIpFragFails(const MibObject *object, const uint8_t *oid,
+   size_t oidLen, MibVariant *value, size_t *valueLen)
+{
+   NetContext *context;
+
+   //Point to the TCP/IP stack context
+   context = netGetDefaultContext();
+
+   //Number of IP datagrams that have been discarded because they needed to be
+   //fragmented at this entity but could not be
+   value->counter32 = context->ipv4SystemStats.outFragFails;
+
+   //Return status code
+   return NO_ERROR;
+}
+
+
+/**
+ * @brief Get ipFragCreates object value
+ * @param[in] object Pointer to the MIB object descriptor
+ * @param[in] oid Object identifier (object name and instance identifier)
+ * @param[in] oidLen Length of the OID, in bytes
+ * @param[out] value Object value
+ * @param[in,out] valueLen Length of the object value, in bytes
+ * @return Error code
+ **/
+
+error_t mib2GetIpFragCreates(const MibObject *object, const uint8_t *oid,
+   size_t oidLen, MibVariant *value, size_t *valueLen)
+{
+   NetContext *context;
+
+   //Point to the TCP/IP stack context
+   context = netGetDefaultContext();
+
+   //Number of IP datagram fragments that have been generated as a result of
+   //fragmentation at this entity
+   value->counter32 = context->ipv4SystemStats.outFragCreates;
+
+   //Return status code
+   return NO_ERROR;
+}
+
+
+/**
+ * @brief Get ipAddrEntry object value
+ * @param[in] object Pointer to the MIB object descriptor
+ * @param[in] oid Object identifier (object name and instance identifier)
+ * @param[in] oidLen Length of the OID, in bytes
+ * @param[out] value Object value
+ * @param[in,out] valueLen Length of the object value, in bytes
+ * @return Error code
+ **/
+
+error_t mib2GetIpAddrEntry(const MibObject *object, const uint8_t *oid,
+   size_t oidLen, MibVariant *value, size_t *valueLen)
+{
+   error_t error;
+   size_t n;
+   uint_t i;
+   uint_t index;
+   Ipv4Addr ipAddr;
+   Ipv4AddrEntry *entry;
+   NetContext *context;
+   NetInterface *interface;
+
+   //Point to the TCP/IP stack context
+   context = netGetDefaultContext();
+
+   //Point to the instance identifier
+   n = object->oidLen;
+
+   //ipAdEntAddr is used as instance identifier
+   error = mibDecodeIpv4Addr(oid, oidLen, &n, &ipAddr);
+   //Invalid instance identifier?
+   if(error)
+      return error;
+
+   //Sanity check
+   if(n != oidLen)
+      return ERROR_INSTANCE_NOT_FOUND;
+
+   //Loop through network interfaces
+   for(index = 1; index <= context->numInterfaces; index++)
+   {
+      //Point to the current interface
+      interface = &context->interfaces[index - 1];
+
+      //Loop through the list of IPv4 addresses assigned to the interface
+      for(i = 0; i < IPV4_ADDR_LIST_SIZE; i++)
+      {
+         //Point to the current entry
+         entry = &interface->ipv4Context.addrList[i];
+
+         //Compare the current address against the IP address used as
+         //instance identifier
+         if(entry->state == IPV4_ADDR_STATE_VALID &&
+            entry->addr == ipAddr)
+         {
+            break;
+         }
+      }
+
+      //IPv4 address found?
+      if(i < IPV4_ADDR_LIST_SIZE)
+         break;
+   }
+
+   //IP address not assigned to any interface?
+   if(index > context->numInterfaces)
+      return ERROR_INSTANCE_NOT_FOUND;
+
+   //ipAdEntAddr object?
+   if(osStrcmp(object->name, "ipAdEntAddr") == 0)
+   {
+      //Get object value
+      ipv4CopyAddr(value->ipAddr, &entry->addr);
+   }
+   //ipAdEntIfIndex object?
+   else if(osStrcmp(object->name, "ipAdEntIfIndex") == 0)
+   {
+      //Get object value
+      value->integer = index;
+   }
+   //ipAdEntNetMask object?
+   else if(osStrcmp(object->name, "ipAdEntNetMask") == 0)
+   {
+      //Get object value
+      ipv4CopyAddr(value->ipAddr, &entry->subnetMask);
+   }
+   //ipAdEntBcastAddr object?
+   else if(osStrcmp(object->name, "ipAdEntBcastAddr") == 0)
+   {
+      //Get object value
+      value->integer = 1;
+   }
+   //ipAdEntReasmMaxSize object?
+   else if(osStrcmp(object->name, "ipAdEntReasmMaxSize") == 0)
+   {
+      //Get object value
+      value->integer = IPV4_MAX_FRAG_DATAGRAM_SIZE;
+   }
+   //Unknown object?
+   else
+   {
+      //The specified object does not exist
+      error = ERROR_OBJECT_NOT_FOUND;
+   }
+
+   //Return status code
+   return error;
+}
+
+
+/**
+ * @brief Get next ipAddrEntry object
+ * @param[in] object Pointer to the MIB object descriptor
+ * @param[in] oid Object identifier
+ * @param[in] oidLen Length of the OID, in bytes
+ * @param[out] nextOid OID of the next object in the MIB
+ * @param[out] nextOidLen Length of the next object identifier, in bytes
+ * @return Error code
+ **/
+
+error_t mib2GetNextIpAddrEntry(const MibObject *object, const uint8_t *oid,
+   size_t oidLen, uint8_t *nextOid, size_t *nextOidLen)
+{
+   error_t error;
+   uint_t i;
+   size_t n;
+   uint_t index;
+   bool_t acceptable;
+   Ipv4Addr ipAddr;
+   Ipv4AddrEntry *entry;
+   NetContext *context;
+   NetInterface *interface;
+
+   //Point to the TCP/IP stack context
+   context = netGetDefaultContext();
+
+   //Initialize IP address
+   ipAddr = IPV4_UNSPECIFIED_ADDR;
+
+   //Make sure the buffer is large enough to hold the OID prefix
+   if(*nextOidLen < object->oidLen)
+      return ERROR_BUFFER_OVERFLOW;
+
+   //Copy OID prefix
+   osMemcpy(nextOid, object->oid, object->oidLen);
+
+   //Loop through network interfaces
+   for(index = 1; index <= context->numInterfaces; index++)
+   {
+      //Point to the current interface
+      interface = &context->interfaces[index - 1];
+
+      //Loop through the list of IPv4 addresses assigned to the interface
+      for(i = 0; i < IPV4_ADDR_LIST_SIZE; i++)
+      {
+         //Point to the current entry
+         entry = &interface->ipv4Context.addrList[i];
+
+         //Valid IPv4 address?
+         if(entry->state == IPV4_ADDR_STATE_VALID)
+         {
+            //Append the instance identifier to the OID prefix
+            n = object->oidLen;
+
+            //ipAdEntAddr is used as instance identifier
+            error = mibEncodeIpv4Addr(nextOid, *nextOidLen, &n, entry->addr);
+            //Any error to report?
+            if(error)
+               return error;
+
+            //Check whether the resulting object identifier lexicographically
+            //follows the specified OID
+            if(oidComp(nextOid, n, oid, oidLen) > 0)
+            {
+               //Perform lexicographic comparison
+               if(ipAddr == IPV4_UNSPECIFIED_ADDR)
+               {
+                  acceptable = TRUE;
+               }
+               else if(ntohl(entry->addr) < ntohl(ipAddr))
+               {
+                  acceptable = TRUE;
+               }
+               else
+               {
+                  acceptable = FALSE;
+               }
+
+               //Save the closest object identifier that follows the specified
+               //OID in lexicographic order
+               if(acceptable)
+                  ipAddr = entry->addr;
+            }
+         }
+      }
+   }
+
+   //The specified OID does not lexicographically precede the name
+   //of some object?
+   if(ipAddr == IPV4_UNSPECIFIED_ADDR)
+      return ERROR_OBJECT_NOT_FOUND;
+
+   //Append the instance identifier to the OID prefix
+   n = object->oidLen;
+
+   //ipAdEntAddr is used as instance identifier
+   error = mibEncodeIpv4Addr(nextOid, *nextOidLen, &n, ipAddr);
+   //Any error to report?
+   if(error)
+      return error;
+
+   //Save the length of the resulting object identifier
+   *nextOidLen = n;
+   //Next object found
+   return NO_ERROR;
+}
+
+
+/**
+ * @brief Set ipNetToMediaEntry object value
+ * @param[in] object Pointer to the MIB object descriptor
+ * @param[in] oid Object identifier (object name and instance identifier)
+ * @param[in] oidLen Length of the OID, in bytes
+ * @param[in] value Object value
+ * @param[in] valueLen Length of the object value, in bytes
+ * @param[in] commit This flag tells whether the changes shall be committed
+ *   to the MIB base
+ * @return Error code
+ **/
+
+error_t mib2SetIpNetToMediaEntry(const MibObject *object, const uint8_t *oid,
+   size_t oidLen, const MibVariant *value, size_t valueLen, bool_t commit)
+{
+   //Not implemented
+   return ERROR_WRITE_FAILED;
+}
+
+
+/**
+ * @brief Get ipNetToMediaEntry object value
+ * @param[in] object Pointer to the MIB object descriptor
+ * @param[in] oid Object identifier (object name and instance identifier)
+ * @param[in] oidLen Length of the OID, in bytes
+ * @param[out] value Object value
+ * @param[in,out] valueLen Length of the object value, in bytes
+ * @return Error code
+ **/
+
+error_t mib2GetIpNetToMediaEntry(const MibObject *object, const uint8_t *oid,
+   size_t oidLen, MibVariant *value, size_t *valueLen)
+{
+#if (ETH_SUPPORT == ENABLED)
+   error_t error;
+   size_t n;
+   uint_t index;
+   Ipv4Addr ipAddr;
+   NetContext *context;
+   NetInterface *interface;
+   ArpCacheEntry *entry;
+
+   //Point to the TCP/IP stack context
+   context = netGetDefaultContext();
+
+   //Point to the instance identifier
+   n = object->oidLen;
+
+   //ipNetToMediaIfIndex is used as 1st instance identifier
+   error = mibDecodeIndex(oid, oidLen, &n, &index);
+   //Invalid instance identifier?
+   if(error)
+      return error;
+
+   //ipNetToMediaNetAddress is used as 2nd instance identifier
+   error = mibDecodeIpv4Addr(oid, oidLen, &n, &ipAddr);
+   //Invalid instance identifier?
+   if(error)
+      return error;
+
+   //Sanity check
+   if(n != oidLen)
+      return ERROR_INSTANCE_NOT_FOUND;
+
+   //Check index range
+   if(index < 1 || index > context->numInterfaces)
+      return ERROR_INSTANCE_NOT_FOUND;
+
+   //Point to the network interface
+   interface = &context->interfaces[index - 1];
+
+   //Search the ARP cache for the specified IP address
+   entry = arpFindEntry(interface, ipAddr);
+
+   //No matching entry found?
+   if(entry == NULL)
+      return ERROR_INSTANCE_NOT_FOUND;
+
+   //ipNetToMediaIfIndex object?
+   if(osStrcmp(object->name, "ipNetToMediaIfIndex") == 0)
+   {
+      //Get object value
+      value->integer = index;
+   }
+   //ipNetToMediaPhysAddress object?
+   else if(osStrcmp(object->name, "ipNetToMediaPhysAddress") == 0)
+   {
+      //Make sure the buffer is large enough to hold the entire object
+      if(*valueLen >= MIB2_PHYS_ADDRESS_SIZE)
+      {
+         //Copy object value
+         macCopyAddr(value->octetString, &entry->macAddr);
+         //Return object length
+         *valueLen = MIB2_PHYS_ADDRESS_SIZE;
+      }
+      else
+      {
+         //Report an error
+         error = ERROR_BUFFER_OVERFLOW;
+      }
+   }
+   //ipNetToMediaNetAddress object?
+   else if(osStrcmp(object->name, "ipNetToMediaNetAddress") == 0)
+   {
+      //Get object value
+      ipv4CopyAddr(value->ipAddr, &entry->ipAddr);
+   }
+   //ipNetToMediaType object?
+   else if(osStrcmp(object->name, "ipNetToMediaType") == 0)
+   {
+      //Get object value
+      value->integer = MIB2_IP_NET_TO_MEDIA_TYPE_DYNAMIC;
+   }
+   //Unknown object?
+   else
+   {
+      //The specified object does not exist
+      error = ERROR_OBJECT_NOT_FOUND;
+   }
+
+   //Return status code
+   return error;
+#else
+   //Not implemented
+   return ERROR_OBJECT_NOT_FOUND;
+#endif
+}
+
+
+/**
+ * @brief Get next ipNetToMediaEntry object
+ * @param[in] object Pointer to the MIB object descriptor
+ * @param[in] oid Object identifier
+ * @param[in] oidLen Length of the OID, in bytes
+ * @param[out] nextOid OID of the next object in the MIB
+ * @param[out] nextOidLen Length of the next object identifier, in bytes
+ * @return Error code
+ **/
+
+error_t mib2GetNextIpNetToMediaEntry(const MibObject *object, const uint8_t *oid,
+   size_t oidLen, uint8_t *nextOid, size_t *nextOidLen)
+{
+#if (ETH_SUPPORT == ENABLED)
+   error_t error;
+   uint_t i;
+   uint_t j;
+   size_t n;
+   uint_t index;
+   bool_t acceptable;
+   Ipv4Addr ipAddr;
+   NetContext *context;
+   NetInterface *interface;
+   ArpCacheEntry *entry;
+
+   //Point to the TCP/IP stack context
+   context = netGetDefaultContext();
+
+   //Initialize variables
+   index = 0;
+   ipAddr = IPV4_UNSPECIFIED_ADDR;
+
+   //Make sure the buffer is large enough to hold the OID prefix
+   if(*nextOidLen < object->oidLen)
+      return ERROR_BUFFER_OVERFLOW;
+
+   //Copy OID prefix
+   osMemcpy(nextOid, object->oid, object->oidLen);
+
+   //Loop through network interfaces
+   for(i = 1; i <= context->numInterfaces; i++)
+   {
+      //Point to the current interface
+      interface = &context->interfaces[i - 1];
+
+      //Loop through ARP cache entries
+      for(j = 0; j < ARP_CACHE_SIZE; j++)
+      {
+         //Point to the current entry
+         entry = &interface->arpCache[j];
+
+         //Valid entry?
+         if(entry->state != ARP_STATE_NONE)
+         {
+            //Append the instance identifier to the OID prefix
+            n = object->oidLen;
+
+            //ipNetToMediaIfIndex is used as 1st instance identifier
+            error = mibEncodeIndex(nextOid, *nextOidLen, &n, i);
+            //Any error to report?
+            if(error)
+               return error;
+
+            //ipNetToMediaNetAddress is used as 2nd instance identifier
+            error = mibEncodeIpv4Addr(nextOid, *nextOidLen, &n, entry->ipAddr);
+            //Any error to report?
+            if(error)
+               return error;
+
+            //Check whether the resulting object identifier lexicographically
+            //follows the specified OID
+            if(oidComp(nextOid, n, oid, oidLen) > 0)
+            {
+               //Perform lexicographic comparison
+               if(index == 0)
+               {
+                  acceptable = TRUE;
+               }
+               else if(i < index)
+               {
+                  acceptable = TRUE;
+               }
+               else if(i > index)
+               {
+                  acceptable = FALSE;
+               }
+               else if(ntohl(entry->ipAddr) < ntohl(ipAddr))
+               {
+                  acceptable = TRUE;
+               }
+               else
+               {
+                  acceptable = FALSE;
+               }
+
+               //Save the closest object identifier that follows the specified
+               //OID in lexicographic order
+               if(acceptable)
+               {
+                  index = i;
+                  ipAddr = entry->ipAddr;
+               }
+            }
+         }
+      }
+   }
+
+   //The specified OID does not lexicographically precede the name
+   //of some object?
+   if(index == 0)
+      return ERROR_OBJECT_NOT_FOUND;
+
+   //Append the instance identifier to the OID prefix
+   n = object->oidLen;
+
+   //ipNetToMediaIfIndex is used as 1st instance identifier
+   error = mibEncodeIndex(nextOid, *nextOidLen, &n, index);
+   //Any error to report?
+   if(error)
+      return error;
+
+   //ipNetToMediaNetAddress is used as 2nd instance identifier
+   error = mibEncodeIpv4Addr(nextOid, *nextOidLen, &n, ipAddr);
+   //Any error to report?
+   if(error)
+      return error;
+
+   //Save the length of the resulting object identifier
+   *nextOidLen = n;
+   //Next object found
+   return NO_ERROR;
+#else
+   //Not implemented
+   return ERROR_OBJECT_NOT_FOUND;
+#endif
+}
+
+#endif

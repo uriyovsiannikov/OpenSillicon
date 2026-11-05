@@ -1,0 +1,447 @@
+/**
+ * @file mib2_impl_if.c
+ * @brief MIB-II module implementation (Interface group)
+ *
+ * @section License
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * Copyright (C) 2010-2026 Oryx Embedded SARL. All rights reserved.
+ *
+ * This file is part of CycloneTCP Open.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software Foundation,
+ * Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ *
+ * @author Oryx Embedded SARL (www.oryx-embedded.com)
+ * @version 2.6.6
+ **/
+
+//Switch to the appropriate trace level
+#define TRACE_LEVEL SNMP_TRACE_LEVEL
+
+//Dependencies
+#include "core/net.h"
+#include "mibs/mib_common.h"
+#include "mibs/mib2_module.h"
+#include "mibs/mib2_impl.h"
+#include "mibs/mib2_impl_if.h"
+#include "core/crypto.h"
+#include "encoding/asn1.h"
+#include "encoding/oid.h"
+#include "debug.h"
+
+//Check TCP/IP stack configuration
+#if (MIB2_SUPPORT == ENABLED && MIB2_IF_GROUP_SUPPORT == ENABLED)
+
+
+/**
+ * @brief Get ifNumber object value
+ * @param[in] object Pointer to the MIB object descriptor
+ * @param[in] oid Object identifier (object name and instance identifier)
+ * @param[in] oidLen Length of the OID, in bytes
+ * @param[out] value Object value
+ * @param[in,out] valueLen Length of the object value, in bytes
+ * @return Error code
+ **/
+
+error_t mib2GetIfNumber(const MibObject *object, const uint8_t *oid,
+   size_t oidLen, MibVariant *value, size_t *valueLen)
+{
+   NetContext *context;
+
+   //Point to the TCP/IP stack context
+   context = netGetDefaultContext();
+
+   //Number of network interfaces present on this system
+   value->integer = context->numInterfaces;
+
+   //Return status code
+   return NO_ERROR;
+}
+
+
+/**
+ * @brief Set ifEntry object value
+ * @param[in] object Pointer to the MIB object descriptor
+ * @param[in] oid Object identifier (object name and instance identifier)
+ * @param[in] oidLen Length of the OID, in bytes
+ * @param[in] value Object value
+ * @param[in] valueLen Length of the object value, in bytes
+ * @param[in] commit This flag tells whether the changes shall be committed
+ *   to the MIB base
+ * @return Error code
+ **/
+
+error_t mib2SetIfEntry(const MibObject *object, const uint8_t *oid,
+   size_t oidLen, const MibVariant *value, size_t valueLen, bool_t commit)
+{
+   //Not implemented
+   return ERROR_WRITE_FAILED;
+}
+
+
+/**
+ * @brief Get ifEntry object value
+ * @param[in] object Pointer to the MIB object descriptor
+ * @param[in] oid Object identifier (object name and instance identifier)
+ * @param[in] oidLen Length of the OID, in bytes
+ * @param[out] value Object value
+ * @param[in,out] valueLen Length of the object value, in bytes
+ * @return Error code
+ **/
+
+error_t mib2GetIfEntry(const MibObject *object, const uint8_t *oid,
+   size_t oidLen, MibVariant *value, size_t *valueLen)
+{
+   error_t error;
+   size_t n;
+   uint_t index;
+   NetContext *context;
+   NetInterface *interface;
+   NetInterface *physicalInterface;
+
+   //Point to the TCP/IP stack context
+   context = netGetDefaultContext();
+
+   //Point to the instance identifier
+   n = object->oidLen;
+
+   //ifIndex is used as instance identifier
+   error = mibDecodeIndex(oid, oidLen, &n, &index);
+   //Invalid instance identifier?
+   if(error)
+      return error;
+
+   //Sanity check
+   if(n != oidLen)
+      return ERROR_INSTANCE_NOT_FOUND;
+
+   //Check index range
+   if(index < 1 || index > context->numInterfaces)
+      return ERROR_INSTANCE_NOT_FOUND;
+
+   //Point to the underlying interface
+   interface = &context->interfaces[index - 1];
+   //Point to the physical interface
+   physicalInterface = nicGetPhysicalInterface(interface);
+
+   //ifIndex object?
+   if(osStrcmp(object->name, "ifIndex") == 0)
+   {
+      //Get object value
+      value->integer = index;
+   }
+   //ifDescr object?
+   else if(osStrcmp(object->name, "ifDescr") == 0)
+   {
+      //Retrieve the length of the interface name
+      n = osStrlen(interface->name);
+
+      //Make sure the buffer is large enough to hold the entire object
+      if(*valueLen >= n)
+      {
+         //Copy object value
+         osMemcpy(value->octetString, interface->name, n);
+         //Return object length
+         *valueLen = n;
+      }
+      else
+      {
+         //Report an error
+         error = ERROR_BUFFER_OVERFLOW;
+      }
+   }
+   //ifType object?
+   else if(osStrcmp(object->name, "ifType") == 0)
+   {
+#if (ETH_VLAN_SUPPORT == ENABLED)
+      //VLAN interface?
+      if(interface->vlanId != 0)
+      {
+         //Layer 2 virtual LAN using 802.1Q
+         value->integer = MIB2_IF_TYPE_L2_VLAN;
+      }
+      else
+#endif
+      {
+         //Sanity check
+         if(physicalInterface->nicDriver != NULL)
+         {
+            //Get interface type
+            switch(physicalInterface->nicDriver->type)
+            {
+            //Ethernet interface
+            case NIC_TYPE_ETHERNET:
+               value->integer = MIB2_IF_TYPE_ETHERNET_CSMACD;
+               break;
+
+            //PPP interface
+            case NIC_TYPE_PPP:
+               value->integer = MIB2_IF_TYPE_PPP;
+               break;
+
+            //IEEE 802.15.4 WPAN interface
+            case NIC_TYPE_6LOWPAN:
+               value->integer = MIB2_IF_TYPE_IEEE_802_15_4;
+               break;
+
+            //Unknown interface type
+            default:
+               value->integer = MIB2_IF_TYPE_OTHER;
+               break;
+            }
+         }
+         else
+         {
+            //Unknown interface type
+            value->integer = MIB2_IF_TYPE_OTHER;
+         }
+      }
+   }
+   //ifMtu object?
+   else if(osStrcmp(object->name, "ifMtu") == 0)
+   {
+      //Get interface MTU
+      if(physicalInterface->nicDriver != NULL)
+      {
+         value->integer = physicalInterface->nicDriver->mtu;
+      }
+      else
+      {
+         value->integer = 0;
+      }
+   }
+   //ifSpeed object?
+   else if(osStrcmp(object->name, "ifSpeed") == 0)
+   {
+      //Get interface's current bandwidth
+      value->gauge32 = interface->linkSpeed;
+   }
+#if (ETH_SUPPORT == ENABLED)
+   //ifPhysAddress object?
+   else if(osStrcmp(object->name, "ifPhysAddress") == 0)
+   {
+      NetInterface *logicalInterface;
+
+      //Point to the logical interface
+      logicalInterface = nicGetLogicalInterface(interface);
+
+      //Make sure the buffer is large enough to hold the entire object
+      if(*valueLen >= MIB2_PHYS_ADDRESS_SIZE)
+      {
+         //Copy object value
+         macCopyAddr(value->octetString, &logicalInterface->macAddr);
+         //Return object length
+         *valueLen = MIB2_PHYS_ADDRESS_SIZE;
+      }
+      else
+      {
+         //Report an error
+         error = ERROR_BUFFER_OVERFLOW;
+      }
+   }
+#endif
+   //ifAdminStatus object?
+   else if(osStrcmp(object->name, "ifAdminStatus") == 0)
+   {
+      //Check whether the interface is enabled for operation
+      if(physicalInterface->nicDriver != NULL)
+      {
+         value->integer = MIB2_IF_ADMIN_STATUS_UP;
+      }
+      else
+      {
+         value->integer = MIB2_IF_ADMIN_STATUS_DOWN;
+      }
+   }
+   //ifOperStatus object?
+   else if(osStrcmp(object->name, "ifOperStatus") == 0)
+   {
+      //Get the current operational state of the interface
+      if(interface->linkState)
+      {
+         value->integer = MIB2_IF_OPER_STATUS_UP;
+      }
+      else
+      {
+         value->integer = MIB2_IF_OPER_STATUS_DOWN;
+      }
+   }
+   //ifLastChange object?
+   else if(osStrcmp(object->name, "ifLastChange") == 0)
+   {
+      //Get object value
+      value->timeTicks = interface->ifStats.lastChange;
+   }
+   //ifInOctets object?
+   else if(osStrcmp(object->name, "ifInOctets") == 0)
+   {
+      //Get object value
+      value->counter32 = (uint32_t) interface->ifStats.inOctets;
+   }
+   //ifInUcastPkts object?
+   else if(osStrcmp(object->name, "ifInUcastPkts") == 0)
+   {
+      //Get object value
+      value->counter32 = (uint32_t) interface->ifStats.inUcastPkts;
+   }
+   //ifInNUcastPkts object?
+   else if(osStrcmp(object->name, "ifInNUcastPkts") == 0)
+   {
+      //Get object value
+      value->counter32 = interface->ifStats.inNUcastPkts;
+   }
+   //ifInDiscards object?
+   else if(osStrcmp(object->name, "ifInDiscards") == 0)
+   {
+      //Get object value
+      value->counter32 = interface->ifStats.inDiscards;
+   }
+   //ifInErrors object?
+   else if(osStrcmp(object->name, "ifInErrors") == 0)
+   {
+      //Get object value
+      value->counter32 = interface->ifStats.inErrors;
+   }
+   //ifInUnknownProtos object?
+   else if(osStrcmp(object->name, "ifInUnknownProtos") == 0)
+   {
+      //Get object value
+      value->counter32 = interface->ifStats.inUnknownProtos;
+   }
+   //ifOutOctets object?
+   else if(osStrcmp(object->name, "ifOutOctets") == 0)
+   {
+      //Get object value
+      value->counter32 = (uint32_t) interface->ifStats.outOctets;
+   }
+   //ifOutUcastPkts object?
+   else if(osStrcmp(object->name, "ifOutUcastPkts") == 0)
+   {
+      //Get object value
+      value->counter32 = (uint32_t) interface->ifStats.outUcastPkts;
+   }
+   //ifOutNUcastPkts object?
+   else if(osStrcmp(object->name, "ifOutNUcastPkts") == 0)
+   {
+      //Get object value
+      value->counter32 = interface->ifStats.outNUcastPkts;
+   }
+   //ifOutDiscards object?
+   else if(osStrcmp(object->name, "ifOutDiscards") == 0)
+   {
+      //Get object value
+      value->counter32 = interface->ifStats.outDiscards;
+   }
+   //ifOutErrors object?
+   else if(osStrcmp(object->name, "ifOutErrors") == 0)
+   {
+      //Get object value
+      value->counter32 = interface->ifStats.outErrors;
+   }
+   //ifOutQLen object?
+   else if(osStrcmp(object->name, "ifOutQLen") == 0)
+   {
+      //Get object value
+      value->gauge32 = 0;
+   }
+   //ifSpecific object?
+   else if(osStrcmp(object->name, "ifSpecific") == 0)
+   {
+      //Make sure the buffer is large enough to hold the entire object
+      if(*valueLen >= 1)
+      {
+         //If this information is not present, its value should be set to the
+         //object identifier 0.0
+         value->oid[0] = 0;
+
+         //Return object length
+         *valueLen = 1;
+      }
+      else
+      {
+         //Report an error
+         error = ERROR_BUFFER_OVERFLOW;
+      }
+   }
+   //Unknown object?
+   else
+   {
+      //The specified object does not exist
+      error = ERROR_OBJECT_NOT_FOUND;
+   }
+
+   //Return status code
+   return error;
+}
+
+
+/**
+ * @brief Get next ifEntry object
+ * @param[in] object Pointer to the MIB object descriptor
+ * @param[in] oid Object identifier
+ * @param[in] oidLen Length of the OID, in bytes
+ * @param[out] nextOid OID of the next object in the MIB
+ * @param[out] nextOidLen Length of the next object identifier, in bytes
+ * @return Error code
+ **/
+
+error_t mib2GetNextIfEntry(const MibObject *object, const uint8_t *oid,
+   size_t oidLen, uint8_t *nextOid, size_t *nextOidLen)
+{
+   error_t error;
+   size_t n;
+   uint_t index;
+   NetContext *context;
+
+   //Point to the TCP/IP stack context
+   context = netGetDefaultContext();
+
+   //Make sure the buffer is large enough to hold the OID prefix
+   if(*nextOidLen < object->oidLen)
+      return ERROR_BUFFER_OVERFLOW;
+
+   //Copy OID prefix
+   osMemcpy(nextOid, object->oid, object->oidLen);
+
+   //Loop through network interfaces
+   for(index = 1; index <= context->numInterfaces; index++)
+   {
+      //Append the instance identifier to the OID prefix
+      n = object->oidLen;
+
+      //ifIndex is used as instance identifier
+      error = mibEncodeIndex(nextOid, *nextOidLen, &n, index);
+      //Any error to report?
+      if(error)
+         return error;
+
+      //Check whether the resulting object identifier lexicographically
+      //follows the specified OID
+      if(oidComp(nextOid, n, oid, oidLen) > 0)
+      {
+         //Save the length of the resulting object identifier
+         *nextOidLen = n;
+         //Next object found
+         return NO_ERROR;
+      }
+   }
+
+   //The specified OID does not lexicographically precede the name
+   //of some object
+   return ERROR_OBJECT_NOT_FOUND;
+}
+
+#endif

@@ -1,0 +1,958 @@
+/**
+ * @file ipv4_misc.c
+ * @brief Helper functions for IPv4
+ *
+ * @section License
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * Copyright (C) 2010-2026 Oryx Embedded SARL. All rights reserved.
+ *
+ * This file is part of CycloneTCP Open.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software Foundation,
+ * Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ *
+ * @author Oryx Embedded SARL (www.oryx-embedded.com)
+ * @version 2.6.6
+ **/
+
+//Switch to the appropriate trace level
+#define TRACE_LEVEL IPV4_TRACE_LEVEL
+
+//Dependencies
+#include "core/net.h"
+#include "ipv4/ipv4.h"
+#include "ipv4/ipv4_misc.h"
+#include "debug.h"
+
+//Check TCP/IP stack configuration
+#if (IPV4_SUPPORT == ENABLED)
+
+
+/**
+ * @brief Append a Router Alert option to an IPv4 packet
+ * @param[in] buffer Multi-part buffer containing the payload
+ * @param[in,out] offset Offset to the first payload byte
+ * @return Error code
+ **/
+
+error_t ipv4AddRouterAlertOption(NetBuffer *buffer, size_t *offset)
+{
+   error_t error;
+   Ipv4RouterAlertOption *option;
+
+   //Make sure there is sufficient space for the option
+   if(*offset >= sizeof(Ipv4RouterAlertOption))
+   {
+      //Make room for the option
+      *offset -= sizeof(Ipv4RouterAlertOption);
+      //Point to the option
+      option = netBufferAt(buffer, *offset, 0);
+
+      //Format Router Alert option
+      option->type = IPV4_OPTION_RTRALT;
+      option->length = sizeof(Ipv4RouterAlertOption);
+      option->value = HTONS(0);
+
+      //Successful processing
+      error = NO_ERROR;
+   }
+   else
+   {
+      //Report an error
+      error = ERROR_INVALID_PARAMETER;
+   }
+
+   //Return status code
+   return error;
+}
+
+
+/**
+ * @brief Source IPv4 address filtering
+ * @param[in] interface Underlying network interface
+ * @param[in] ipAddr Source IPv4 address to be checked
+ * @return Error code
+ **/
+
+error_t ipv4CheckSourceAddr(NetInterface *interface, Ipv4Addr ipAddr)
+{
+   //Broadcast and multicast addresses must not be used as source address
+   //(refer to RFC 1122, section 3.2.1.3)
+   if(ipv4IsBroadcastAddr(interface, ipAddr) || ipv4IsMulticastAddr(ipAddr))
+   {
+      //Debug message
+      TRACE_WARNING("Wrong source IPv4 address!\r\n");
+      //The source address not is acceptable
+      return ERROR_INVALID_ADDRESS;
+   }
+
+   //The source address is acceptable
+   return NO_ERROR;
+}
+
+
+/**
+ * @brief Destination IPv4 address filtering
+ * @param[in] interface Underlying network interface
+ * @param[in] ipAddr Destination IPv4 address to be checked
+ * @return Error code
+ **/
+
+error_t ipv4CheckDestAddr(NetInterface *interface, Ipv4Addr ipAddr)
+{
+   error_t error;
+   uint_t i;
+
+   //Filter out any invalid addresses
+   error = ERROR_INVALID_ADDRESS;
+
+   //Broadcast address?
+   if(ipv4IsBroadcastAddr(interface, ipAddr))
+   {
+      //Always accept broadcast address
+      error = NO_ERROR;
+   }
+   else
+   {
+      //Loop through the list of IPv4 addresses assigned to the interface
+      for(i = 0; i < IPV4_ADDR_LIST_SIZE; i++)
+      {
+         Ipv4AddrEntry *entry;
+
+         //Point to the current entry
+         entry = &interface->ipv4Context.addrList[i];
+
+         //Valid entry?
+         if(entry->state != IPV4_ADDR_STATE_INVALID)
+         {
+            //Check whether the destination address matches a valid unicast
+            //address assigned to the interface
+            if(entry->addr == ipAddr)
+            {
+               //The destination address is acceptable
+               error = NO_ERROR;
+               //We are done
+               break;
+            }
+         }
+      }
+   }
+
+   //Return status code
+   return error;
+}
+
+
+/**
+ * @brief IPv4 source address selection
+ *
+ * This function selects the source address and the relevant network interface
+ * to be used in order to join the specified destination address
+ *
+ * @param[in] context Pointer to the TCP/IP stack context
+ * @param[in,out] interface A pointer to a valid network interface may be provided as
+ *   a hint. The function returns a pointer identifying the interface to be used
+ * @param[in] destAddr Destination IPv4 address
+ * @param[out] srcAddr Local IPv4 address to be used
+ * @return Error code
+ **/
+
+error_t ipv4SelectSourceAddr(NetContext *context, NetInterface **interface,
+   Ipv4Addr destAddr, Ipv4Addr *srcAddr)
+{
+   error_t error;
+   uint_t i;
+   uint_t j;
+   NetInterface *currentInterface;
+   NetInterface *bestInterface;
+   Ipv4AddrEntry *currentAddr;
+   Ipv4AddrEntry *bestAddr;
+
+   //Initialize variables
+   bestInterface = NULL;
+   bestAddr = NULL;
+
+   //Loop through network interfaces
+   for(i = 0; i < context->numInterfaces; i++)
+   {
+      //Point to the current interface
+      currentInterface = &context->interfaces[i];
+
+      //A network interface may be provided as a hint
+      if(*interface != currentInterface && *interface != NULL)
+      {
+         //Select the next interface in the list
+         continue;
+      }
+
+      //Check link state
+      if(!currentInterface->linkState)
+      {
+         //Select the next interface in the list
+         continue;
+      }
+
+      //A sort of the candidate source addresses is being performed
+      for(j = 0; j < IPV4_ADDR_LIST_SIZE; j++)
+      {
+         //Point to the current entry
+         currentAddr = &currentInterface->ipv4Context.addrList[j];
+
+         //Check the state of the address
+         if(currentAddr->state == IPV4_ADDR_STATE_VALID)
+         {
+            //Select the first address as default
+            if(bestAddr == NULL)
+            {
+               //Give the current source address the higher precedence
+               bestInterface = currentInterface;
+               bestAddr = currentAddr;
+
+               //Select the next address in the list
+               continue;
+            }
+
+            //Prefer same address
+            if(bestAddr->addr == destAddr)
+            {
+               //Select the next address in the list
+               continue;
+            }
+            else if(currentAddr->addr == destAddr)
+            {
+               //Give the current source address the higher precedence
+               bestInterface = currentInterface;
+               bestAddr = currentAddr;
+
+               //Select the next address in the list
+               continue;
+            }
+
+            //Check whether the destination address matches the default gateway
+            if(bestAddr->defaultGateway == destAddr)
+            {
+               //Select the next address in the list
+               continue;
+            }
+            else if(currentAddr->defaultGateway == destAddr)
+            {
+               //Give the current source address the higher precedence
+               bestInterface = currentInterface;
+               bestAddr = currentAddr;
+
+               //Select the next address in the list
+               continue;
+            }
+
+            //Prefer appropriate scope
+            if(ipv4GetAddrScope(currentAddr->addr) < ipv4GetAddrScope(bestAddr->addr))
+            {
+               if(ipv4GetAddrScope(currentAddr->addr) >= ipv4GetAddrScope(destAddr))
+               {
+                  //Give the current source address the higher precedence
+                  bestInterface = currentInterface;
+                  bestAddr = currentAddr;
+               }
+
+               //Select the next address in the list
+               continue;
+            }
+            else if(ipv4GetAddrScope(bestAddr->addr) < ipv4GetAddrScope(currentAddr->addr))
+            {
+               if(ipv4GetAddrScope(bestAddr->addr) < ipv4GetAddrScope(destAddr))
+               {
+                  //Give the current source address the higher precedence
+                  bestInterface = currentInterface;
+                  bestAddr = currentAddr;
+               }
+
+               //Select the next address in the list
+               continue;
+            }
+
+            //If the destination address lies on one of the subnets to which
+            //the host is directly connected, the corresponding source address
+            //may be chosen (refer to RFC 1122, section 3.3.4.3)
+            if(ipv4IsOnSubnet(bestAddr, destAddr))
+            {
+               if(ipv4IsOnSubnet(currentAddr, destAddr))
+               {
+                  //Use longest subnet mask
+                  if(ipv4GetPrefixLength(currentAddr->subnetMask) >
+                     ipv4GetPrefixLength(bestAddr->subnetMask))
+                  {
+                     //Give the current source address the higher precedence
+                     bestInterface = currentInterface;
+                     bestAddr = currentAddr;
+                  }
+               }
+
+               //Select the next address in the list
+               continue;
+            }
+            else
+            {
+               if(ipv4IsOnSubnet(currentAddr, destAddr))
+               {
+                  //Give the current source address the higher precedence
+                  bestInterface = currentInterface;
+                  bestAddr = currentAddr;
+
+                  //Select the next address in the list
+                  continue;
+               }
+            }
+
+            //The default gateways may be consulted. If these gateways are
+            //assigned to different interfaces, the interface corresponding
+            //to the gateway with the highest preference may be chosen
+            if(bestAddr->defaultGateway != IPV4_UNSPECIFIED_ADDR)
+            {
+               //Select the next address in the list
+               continue;
+            }
+            else if(currentAddr->defaultGateway != IPV4_UNSPECIFIED_ADDR)
+            {
+               //Give the current source address the higher precedence
+               bestInterface = currentInterface;
+               bestAddr = currentAddr;
+
+               //Select the next address in the list
+               continue;
+            }
+         }
+      }
+   }
+
+   //Valid source address?
+   if(bestAddr != NULL)
+   {
+      //Return the out-going interface and the source address to be used
+      *interface = bestInterface;
+      *srcAddr = bestAddr->addr;
+
+      //Successful source address selection
+      error = NO_ERROR;
+   }
+   else
+   {
+      //Report an error
+      error = ERROR_NO_ADDRESS;
+   }
+
+   //Return status code
+   return error;
+}
+
+
+/**
+ * @brief Default gateway selection
+ * @param[in] interface Underlying network interface
+ * @param[in] srcAddr Source IPv4 address
+ * @param[out] defaultGatewayAddr IPv4 address of the gateway
+ * @return Error code
+ **/
+
+error_t ipv4SelectDefaultGateway(NetInterface *interface, Ipv4Addr srcAddr,
+   Ipv4Addr *defaultGatewayAddr)
+{
+   uint_t i;
+   Ipv4AddrEntry *entry;
+
+   //Loop through the list of default gateways
+   for(i = 0; i < IPV4_ADDR_LIST_SIZE; i++)
+   {
+      //Point to the current entry
+      entry = &interface->ipv4Context.addrList[i];
+
+      //Check whether the gateway address is valid
+      if(entry->state == IPV4_ADDR_STATE_VALID &&
+         entry->defaultGateway != IPV4_UNSPECIFIED_ADDR)
+      {
+         //Under the strong ES model, the source address is included as a
+         //parameter in order to select a gateway that is directly reachable
+         //on the corresponding physical interface (refer to RFC 1122,
+         //section 3.3.4.2)
+         if(entry->addr == srcAddr)
+         {
+            //Return the IPv4 address of the default gateway
+            *defaultGatewayAddr = entry->defaultGateway;
+            //Successful default gateway selection
+            return NO_ERROR;
+         }
+      }
+   }
+
+   //No default gateway found
+   return ERROR_NO_ROUTE;
+}
+
+
+/**
+ * @brief Check whether a valid IPv4 address has been assigned to the interface
+ * @param[in] interface Underlying network interface
+ * @return TRUE if a valid IPv4 address has been assigned, else FALSE
+ **/
+
+bool_t ipv4IsHostAddrValid(NetInterface *interface)
+{
+   uint_t i;
+   bool_t flag;
+   Ipv4AddrEntry *entry;
+
+   //Initialize flag
+   flag = FALSE;
+
+   //Loop through the list of IPv4 addresses assigned to the interface
+   for(i = 0; i < IPV4_ADDR_LIST_SIZE; i++)
+   {
+      //Point to the current entry
+      entry = &interface->ipv4Context.addrList[i];
+
+      //Valid entry?
+      if(entry->state == IPV4_ADDR_STATE_VALID)
+      {
+         flag = TRUE;
+      }
+   }
+
+   //Return TRUE if a valid IPv4 address has been assigned to the interface
+   return flag;
+}
+
+
+/**
+ * @brief Check whether an IPv4 address is on-link
+ * @param[in] interface Underlying network interface
+ * @param[in] ipAddr IPv4 address to be checked
+ * @return TRUE if the IPv4 address is on-link, else FALSE
+ **/
+
+bool_t ipv4IsOnLink(NetInterface *interface, Ipv4Addr ipAddr)
+{
+   uint_t i;
+   bool_t flag;
+   Ipv4AddrEntry *entry;
+
+   //Initialize flag
+   flag = FALSE;
+
+   //Loop through the list of IPv4 addresses assigned to the interface
+   for(i = 0; i < IPV4_ADDR_LIST_SIZE && !flag; i++)
+   {
+      //Point to the current entry
+      entry = &interface->ipv4Context.addrList[i];
+
+      //Valid entry?
+      if(entry->state != IPV4_ADDR_STATE_INVALID)
+      {
+         //Check whether the specified IPv4 address belongs to the same subnet
+         if(ipv4IsOnSubnet(entry, ipAddr))
+         {
+            flag = TRUE;
+         }
+      }
+   }
+
+   //Return TRUE if the specified IPv4 address is on-link
+   return flag;
+}
+
+
+/**
+ * @brief Check whether an IPv4 address is a broadcast address
+ * @param[in] interface Underlying network interface
+ * @param[in] ipAddr IPv4 address to be checked
+ * @return TRUE if the IPv4 address is a broadcast address, else FALSE
+ **/
+
+bool_t ipv4IsBroadcastAddr(NetInterface *interface, Ipv4Addr ipAddr)
+{
+   uint_t i;
+   bool_t flag;
+   Ipv4AddrEntry *entry;
+
+   //Initialize flag
+   flag = FALSE;
+
+   //Check whether the specified IPv4 address is the broadcast address
+   if(ipAddr == IPV4_BROADCAST_ADDR)
+   {
+      flag = TRUE;
+   }
+   else
+   {
+      //Loop through the list of IPv4 addresses assigned to the interface
+      for(i = 0; i < IPV4_ADDR_LIST_SIZE && !flag; i++)
+      {
+         //Point to the current entry
+         entry = &interface->ipv4Context.addrList[i];
+
+         //Valid entry?
+         if(entry->state != IPV4_ADDR_STATE_INVALID)
+         {
+            //Check whether the specified IPv4 address belongs to the same subnet
+            if(ipv4IsOnSubnet(entry, ipAddr))
+            {
+               //Make sure the subnet mask is not 255.255.255.255
+               if(entry->subnetMask != IPV4_BROADCAST_ADDR)
+               {
+                  //Directed broadcast address?
+                  if((ipAddr | entry->subnetMask) == IPV4_BROADCAST_ADDR)
+                  {
+                     flag = TRUE;
+                  }
+               }
+            }
+         }
+      }
+   }
+
+   //Return TRUE if the specified IPv4 address is a broadcast address
+   return flag;
+}
+
+
+/**
+ * @brief Check whether an IPv4 address is a tentative address
+ * @param[in] interface Underlying network interface
+ * @param[in] ipAddr IPv4 address to be checked
+ * @return TRUE if the IPv4 address is a tentative address, else FALSE
+ **/
+
+bool_t ipv4IsTentativeAddr(NetInterface *interface, Ipv4Addr ipAddr)
+{
+   uint_t i;
+   bool_t flag;
+   Ipv4AddrEntry *entry;
+
+   //Initialize flag
+   flag = FALSE;
+
+   //Loop through the list of IPv4 addresses assigned to the interface
+   for(i = 0; i < IPV4_ADDR_LIST_SIZE && !flag; i++)
+   {
+      //Point to the current entry
+      entry = &interface->ipv4Context.addrList[i];
+
+      //Tentative address?
+      if(entry->state == IPV4_ADDR_STATE_TENTATIVE)
+      {
+         //Check whether the specified address matches a valid unicast
+         //address assigned to the interface
+         if(entry->addr == ipAddr)
+         {
+            flag = TRUE;
+         }
+      }
+   }
+
+   //Return TRUE if the specified IPv4 address is a tentative address
+   return flag;
+}
+
+
+/**
+ * @brief Check whether the specified IPv4 is assigned to the host
+ * @param[in] context Pointer to the TCP/IP stack context
+ * @param[in] ipAddr IPv4 address to be checked
+ * @return TRUE if the IPv4 address matches any address assigned to the host,
+ *   else FALSE
+ **/
+
+bool_t ipv4IsLocalHostAddr(NetContext *context, Ipv4Addr ipAddr)
+{
+   uint_t i;
+   uint_t j;
+   bool_t flag;
+   NetInterface *interface;
+   Ipv4AddrEntry *entry;
+
+   //Initialize flag
+   flag = FALSE;
+
+   //Loopback address?
+   if(ipv4IsLoopbackAddr(ipAddr))
+   {
+      //The 127.0.0.0/8 block is assigned for use as the host loopback address.
+      //A datagram sent by a higher-level protocol to an address anywhere within
+      //this block loops back inside the host (refer to RFC 5735, section 3)
+      flag = TRUE;
+   }
+   else
+   {
+      //Loop through network interfaces
+      for(i = 0; i < context->numInterfaces && !flag; i++)
+      {
+         //Point to the current interface
+         interface = &context->interfaces[i];
+
+         //Iterate through the list of addresses assigned to the interface
+         for(j = 0; j < IPV4_ADDR_LIST_SIZE && !flag; j++)
+         {
+            //Point to the current entry
+            entry = &interface->ipv4Context.addrList[j];
+
+            //Check whether the specified IPv4 address matches any address
+            //assigned to the host
+            if(entry->state == IPV4_ADDR_STATE_VALID &&
+               entry->addr == ipAddr)
+            {
+               flag = TRUE;
+            }
+         }
+      }
+   }
+
+   //Return TRUE if the specified address matches any address assigned to the host
+   return flag;
+}
+
+
+/**
+ * @brief Compare IPv4 address prefixes
+ * @param[in] ipAddr1 First IPv4 address
+ * @param[in] ipAddr2 Second IPv4 address
+ * @param[in] length Prefix length
+ * @return TRUE if the prefixes match each other, else FALSE
+ **/
+
+bool_t ipv4CompPrefix(Ipv4Addr ipAddr1, Ipv4Addr ipAddr2, size_t length)
+{
+   uint32_t mask;
+
+   //Check prefix length
+   if(length == 0)
+   {
+      return TRUE;
+   }
+   else if(length < 32)
+   {
+      //Calculate the mask to be applied
+      mask = ((1 << length) - 1) << (32 - length);
+      //Convert the mask to network byte order
+      mask = htonl(mask);
+   }
+   else if(length == 32)
+   {
+      mask = IPV4_ADDR(255, 255, 255, 255);
+   }
+   else
+   {
+      return FALSE;
+   }
+
+   //Compare address prefixes
+   return ((ipAddr1 & mask) == (ipAddr2 & mask));
+}
+
+
+/**
+ * @brief Retrieve the scope of an IPv4 address
+ * @param[in] ipAddr IPv4 address
+ * @return IPv4 address scope
+ **/
+
+uint_t ipv4GetAddrScope(Ipv4Addr ipAddr)
+{
+   uint_t scope;
+
+   //Broadcast address?
+   if(ipAddr == IPV4_BROADCAST_ADDR)
+   {
+      //The broadcast address is never forwarded by the routers connecting
+      //the local network to other networks
+      scope = IPV4_ADDR_SCOPE_LINK_LOCAL;
+   }
+   //Multicast address?
+   else if(ipv4IsMulticastAddr(ipAddr))
+   {
+      //Local Network Control Block?
+      if((ipAddr & IPV4_MULTICAST_LNCB_MASK) == IPV4_MULTICAST_LNCB_PREFIX)
+      {
+         //Addresses in the Local Network Control Block are used for protocol
+         //control traffic that is not forwarded off link
+         scope = IPV4_ADDR_SCOPE_LINK_LOCAL;
+      }
+      //Any other multicast address?
+      else
+      {
+         //Other addresses are assigned global scope
+         scope = IPV4_ADDR_SCOPE_GLOBAL;
+      }
+   }
+   //Unicast address?
+   else
+   {
+      //Loopback address?
+      if((ipAddr & IPV4_LOOPBACK_MASK) == IPV4_LOOPBACK_PREFIX)
+      {
+         //IPv4 loopback addresses, which have the prefix 127.0.0.0/8,
+         //are assigned interface-local scope
+         scope = IPV4_ADDR_SCOPE_INTERFACE_LOCAL;
+      }
+      //Link-local address?
+      else if((ipAddr & IPV4_LINK_LOCAL_MASK) == IPV4_LINK_LOCAL_PREFIX)
+      {
+         //IPv4 auto-configuration addresses, which have the prefix
+         //169.254.0.0/16, are assigned link-local scope
+         scope = IPV4_ADDR_SCOPE_LINK_LOCAL;
+      }
+      //Any other unicast address?
+      else
+      {
+         //Other addresses are assigned global scope
+         scope = IPV4_ADDR_SCOPE_GLOBAL;
+      }
+   }
+
+   //Return the scope of the specified IPv4 address
+   return scope;
+}
+
+
+/**
+ * @brief Calculate prefix length for a given subnet mask
+ * @param[in] mask Subnet mask
+ * @return Prefix length
+ **/
+
+uint_t ipv4GetPrefixLength(Ipv4Addr mask)
+{
+   uint_t i;
+
+   //Convert from network byte order to host byte order
+   mask = ntohl(mask);
+
+   //Count of the number of leading 1 bits in the network mask
+   for(i = 0; i < 32; i++)
+   {
+      //Check the value of the current bit
+      if(!(mask & (1U << (31 - i))))
+      {
+         break;
+      }
+   }
+
+   //Return prefix length
+   return i;
+}
+
+
+/**
+ * @brief Get IPv4 broadcast address
+ * @param[in] interface Pointer to the desired network interface
+ * @param[out] addr IPv4 broadcast address
+ **/
+
+error_t ipv4GetBroadcastAddr(NetInterface *interface, Ipv4Addr *addr)
+{
+   error_t error;
+   uint_t i;
+   Ipv4AddrEntry *entry;
+
+   //Check parameters
+   if(interface != NULL && addr != NULL)
+   {
+      //Initialize status code
+      error = ERROR_NO_ADDRESS;
+
+      //Loop through the list of IPv4 addresses assigned to the interface
+      for(i = 0; i < IPV4_ADDR_LIST_SIZE; i++)
+      {
+         //Point to the current entry
+         entry = &interface->ipv4Context.addrList[i];
+
+         //Valid entry?
+         if(entry->state != IPV4_ADDR_STATE_INVALID)
+         {
+            //The broadcast address is obtained by performing a bitwise OR
+            //operation between the bit complement of the subnet mask and the
+            //host IP address
+            *addr = entry->addr;
+            *addr |= ~entry->subnetMask;
+
+            //We are done
+            error = NO_ERROR;
+            break;
+         }
+      }
+   }
+   else
+   {
+      //Report an error
+      error = ERROR_INVALID_PARAMETER;
+   }
+
+   //Return status code
+   return error;
+}
+
+
+/**
+ * @brief Trap IGMP packets
+ * @param[in] header Pointer to the IPv4 header
+ * @return TRUE if the IPv4 packet contains an IGMP message, else FALSE
+ **/
+
+bool_t ipv4TrapIgmpPacket(Ipv4Header *header)
+{
+   bool_t flag;
+
+   //Initialize flag
+   flag = FALSE;
+
+   //Make sure the IPv4 packet is not fragmented
+   if((ntohs(header->fragmentOffset) & (IPV4_FLAG_MF | IPV4_OFFSET_MASK)) == 0)
+   {
+      //Valid IGMP message?
+      if(ipv4IsMulticastAddr(header->destAddr) &&
+         header->protocol == IPV4_PROTOCOL_IGMP)
+      {
+         flag = TRUE;
+      }
+   }
+
+   //Return TRUE if the IPv4 packet contains an IGMP message
+   return flag;
+}
+
+
+/**
+ * @brief Update IPv4 input statistics
+ * @param[in] interface Underlying network interface
+ * @param[in] destIpAddr Destination IP address
+ * @param[in] length Length of the incoming IP packet
+ **/
+
+void ipv4UpdateInStats(NetInterface *interface, Ipv4Addr destIpAddr,
+   size_t length)
+{
+   //Check whether the destination address is a unicast, broadcast or multicast
+   //address
+   if(ipv4IsBroadcastAddr(interface, destIpAddr))
+   {
+      //Number of IP broadcast datagrams transmitted
+      IPV4_SYSTEM_STATS_INC_COUNTER64(inBcastPkts, 1);
+      IPV4_IF_STATS_INC_COUNTER64(inBcastPkts, 1);
+   }
+   else if(ipv4IsMulticastAddr(destIpAddr))
+   {
+      //Number of IP multicast datagrams transmitted
+      IPV4_SYSTEM_STATS_INC_COUNTER64(inMcastPkts, 1);
+      IPV4_IF_STATS_INC_COUNTER64(inMcastPkts, 1);
+
+      //Total number of octets transmitted in IP multicast datagrams
+      IPV4_SYSTEM_STATS_INC_COUNTER64(inMcastOctets, length);
+      IPV4_IF_STATS_INC_COUNTER64(inMcastOctets, length);
+   }
+   else
+   {
+      //The destination address is a unicast address
+   }
+}
+
+
+/**
+ * @brief Update IPv4 output statistics
+ * @param[in] interface Underlying network interface
+ * @param[in] destIpAddr Destination IP address
+ * @param[in] length Length of the outgoing IP packet
+ **/
+
+void ipv4UpdateOutStats(NetInterface *interface, Ipv4Addr destIpAddr,
+   size_t length)
+{
+   //Check whether the destination address is a unicast, broadcast or multicast
+   //address
+   if(ipv4IsBroadcastAddr(interface, destIpAddr))
+   {
+      //Number of IP broadcast datagrams transmitted
+      IPV4_SYSTEM_STATS_INC_COUNTER64(outBcastPkts, 1);
+      IPV4_IF_STATS_INC_COUNTER64(outBcastPkts, 1);
+   }
+   else if(ipv4IsMulticastAddr(destIpAddr))
+   {
+      //Number of IP multicast datagrams transmitted
+      IPV4_SYSTEM_STATS_INC_COUNTER64(outMcastPkts, 1);
+      IPV4_IF_STATS_INC_COUNTER64(outMcastPkts, 1);
+
+      //Total number of octets transmitted in IP multicast datagrams
+      IPV4_SYSTEM_STATS_INC_COUNTER64(outMcastOctets, length);
+      IPV4_IF_STATS_INC_COUNTER64(outMcastOctets, length);
+   }
+   else
+   {
+      //The destination address is a unicast address
+   }
+
+   //Total number of IP datagrams that this entity supplied to the lower layers
+   //for transmission
+   IPV4_SYSTEM_STATS_INC_COUNTER64(outTransmits, 1);
+   IPV4_IF_STATS_INC_COUNTER64(outTransmits, 1);
+
+   //Total number of octets in IP datagrams delivered to the lower layers for
+   //transmission
+   IPV4_SYSTEM_STATS_INC_COUNTER64(outOctets, length);
+   IPV4_IF_STATS_INC_COUNTER64(outOctets, length);
+}
+
+
+/**
+ * @brief Update Ethernet error statistics
+ * @param[in] interface Underlying network interface
+ * @param[in] error Status code describing the error
+ **/
+
+void ipv4UpdateErrorStats(NetInterface *interface, error_t error)
+{
+   //Check error code
+   switch(error)
+   {
+   case ERROR_INVALID_HEADER:
+      //Number of input datagrams discarded due to errors in their IP headers
+      IPV4_SYSTEM_STATS_INC_COUNTER32(inHdrErrors, 1);
+      IPV4_IF_STATS_INC_COUNTER32(inHdrErrors, 1);
+      break;
+
+   case ERROR_INVALID_ADDRESS:
+      //Number of input datagrams discarded because the destination IP address
+      //was not a valid address
+      IPV4_SYSTEM_STATS_INC_COUNTER32(inAddrErrors, 1);
+      IPV4_IF_STATS_INC_COUNTER32(inAddrErrors, 1);
+      break;
+
+   case ERROR_PROTOCOL_UNREACHABLE:
+      //Number of locally-addressed datagrams received successfully but
+      //discarded because of an unknown or unsupported protocol
+      IPV4_SYSTEM_STATS_INC_COUNTER32(inUnknownProtos, 1);
+      IPV4_IF_STATS_INC_COUNTER32(inUnknownProtos, 1);
+      break;
+
+   case ERROR_INVALID_LENGTH:
+      //Number of input IP datagrams discarded because the datagram frame
+      //didn't carry enough data
+      IPV4_SYSTEM_STATS_INC_COUNTER32(inTruncatedPkts, 1);
+      IPV4_IF_STATS_INC_COUNTER32(inTruncatedPkts, 1);
+      break;
+
+   default:
+      //Just for sanity
+      break;
+   }
+}
+
+#endif
