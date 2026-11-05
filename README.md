@@ -31,11 +31,14 @@ make run-gui   # UEFI QEMU, graphical display
 
 ## source map
 
-- `kernel/` - kernel, architecture code, drivers, filesystems, and networking.
-- `user/` - init, shell, utilities, `libos`, and xorg components.
-- `include/` - kernel and userspace ABI headers.
-- `tests/` - host and qemu test harnesses.
-- `tools/` - image and filesystem build tools.
+- `src/kernel/` - kernel, architecture code, drivers, filesystems, and networking.
+- `src/user/` - init, shell, utilities, `libos`, and xorg components.
+- `src/include/` - kernel and userspace ABI headers.
+- `src/tests/` - host and qemu test harnesses.
+- `src/tools/` - image and filesystem build tools.
+- `src/mk/`, `src/limine/`, and `src/initramfs/` - build rules, bootloader files,
+  and the initial ramdisk tree.
+- `src/build/` - generated build artifacts.
 
 ## license
 
