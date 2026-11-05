@@ -136,7 +136,8 @@ kheap_alloc_locked(size_t size)
 	uint64_t needed;
 	struct heap_block *block;
 
-	if (!initialized || size == 0 || size > UINT64_MAX - 31)
+	if (!initialized || size == 0 || size > UINT64_MAX -
+	    (sizeof(struct heap_block) + sizeof(uint64_t) + 15ULL))
 		return NULL;
 	needed = ((uint64_t)size + sizeof(struct heap_block) + sizeof(uint64_t) + 15)
 	    & ~15ULL;
