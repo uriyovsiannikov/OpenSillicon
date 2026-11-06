@@ -42,16 +42,28 @@ fbCreatePixmapBpp(ScreenPtr pScreen, int width, int height, int depth, int bpp)
 
     int base;
 
-    paddedWidth = ((width * bpp + FB_MASK) >> FB_SHIFT) * sizeof(FbBits);
+    if (width < 0 || height < 0 || bpp <= 0 ||
+        (size_t) width > ((size_t) -1 - FB_MASK) / bpp)
+        return NullPixmap;
+    paddedWidth = ((size_t) width * bpp + FB_MASK) >> FB_SHIFT;
+    if (paddedWidth > (size_t) -1 / sizeof(FbBits))
+        return NullPixmap;
+    paddedWidth *= sizeof(FbBits);
     if (paddedWidth / 4 > 32767 || height > 32767)
+        return NullPixmap;
+    if (height && paddedWidth > (size_t) -1 / height)
         return NullPixmap;
     datasize = height * paddedWidth;
     base = pScreen->totalPixmapSize;
     adjust = 0;
     if (base & 7)
         adjust = 8 - (base & 7);
+    if (datasize > (size_t) -1 - adjust)
+        return NullPixmap;
     datasize += adjust;
 #ifdef FB_DEBUG
+    if (paddedWidth > ((size_t) -1 - datasize) / 2)
+        return NullPixmap;
     datasize += 2 * paddedWidth;
 #endif
     pPixmap = AllocatePixmap(pScreen, datasize);
