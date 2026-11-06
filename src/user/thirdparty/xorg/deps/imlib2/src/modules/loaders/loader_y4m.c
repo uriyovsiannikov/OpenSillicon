@@ -92,11 +92,13 @@ y4m__int(ptrdiff_t *out, const uint8_t **p, const uint8_t *end)
 
     for (; s < end && *s >= '0' && *s <= '9'; ++s)
     {
-        n = (n * 10) + (*s - '0');
-        if (n > INT_MAX)
+        uint64_t        digit = *s - '0';
+
+        if (n > (INT_MAX - digit) / 10)
         {
             return 0;
         }
+        n = (n * 10) + digit;
     }
     *out = n;
     *p = s;
@@ -319,9 +321,12 @@ Y4M_PARSE_API enum Y4mParseStatus
 y4m_parse_init(Y4mParse *res, const void *buffer, ptrdiff_t size)
 {
     static const char magic[] = "YUV4MPEG2 ";
+    enum Y4mParseStatus status;
 
     memset(res, 0x0, sizeof(*res));
     res->w = res->h = -1;
+    if (size < 0 || !buffer)
+        return Y4M_PARSE_NOT_Y4M;
     res->p = buffer;
     res->end = res->p + size;
 
@@ -329,7 +334,10 @@ y4m_parse_init(Y4mParse *res, const void *buffer, ptrdiff_t size)
     {
         return Y4M_PARSE_NOT_Y4M;
     }
-    return y4m__parse_params(res, &res->p, res->end);
+    status = y4m__parse_params(res, &res->p, res->end);
+    if (status == Y4M_PARSE_OK && !IMAGE_DIMENSIONS_OK(res->w, res->h))
+        return Y4M_PARSE_CORRUPTED;
+    return status;
 }
 
 Y4M_PARSE_API enum Y4mParseStatus
