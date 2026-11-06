@@ -47,6 +47,7 @@
 #endif
 
 #include "xfixesint.h"
+#include <limits.h>
 #include "scrnintstr.h"
 #include "cursorstr.h"
 #include "dixevents.h"
@@ -346,6 +347,8 @@ ProcXFixesGetCursorImage(ClientPtr client)
     GetSpritePosition(&x, &y);
     width = pCursor->bits->width;
     height = pCursor->bits->height;
+    if (height && width > (INT_MAX - 65536) / 4 / height)
+        return BadAlloc;
     npixels = width * height;
     rep = malloc(sizeof(xXFixesGetCursorImageReply) + npixels * sizeof(CARD32));
     if (!rep)
@@ -498,6 +501,8 @@ ProcXFixesGetCursorImageAndName(ClientPtr client)
     GetSpritePosition(&x, &y);
     width = pCursor->bits->width;
     height = pCursor->bits->height;
+    if (height && width > (INT_MAX - 65536) / 4 / height)
+        return BadAlloc;
     npixels = width * height;
     name = pCursor->name ? NameForAtom(pCursor->name) : "";
     nbytes = strlen(name);
