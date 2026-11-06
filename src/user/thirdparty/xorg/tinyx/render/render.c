@@ -2420,7 +2420,13 @@ SProcRenderCompositeGlyphs(ClientPtr client)
 
     int size;
 
+    int remaining;
+
+    int data_space;
+
     REQUEST(xRenderCompositeGlyphsReq);
+
+    REQUEST_AT_LEAST_SIZE(xRenderCompositeGlyphsReq);
 
     switch (stuff->renderReqType) {
     default:
@@ -2443,7 +2449,10 @@ SProcRenderCompositeGlyphs(ClientPtr client)
     swaps(&stuff->ySrc);
     buffer = (CARD8 *) (stuff + 1);
     end = (CARD8 *) stuff + (client->req_len << 2);
-    while (buffer + sizeof(xGlyphElt) < end) {
+    while (buffer < end) {
+        remaining = end - buffer;
+        if (remaining < sizeof(xGlyphElt))
+            return BadLength;
         elt = (xGlyphElt *) buffer;
         buffer += sizeof(xGlyphElt);
 
@@ -2452,11 +2461,18 @@ SProcRenderCompositeGlyphs(ClientPtr client)
 
         i = elt->len;
         if (i == 0xff) {
+            if (end - buffer < sizeof(CARD32))
+                return BadLength;
             swapl((int *) buffer);
             buffer += 4;
         }
         else {
-            space = size * i;
+            data_space = size * i;
+            space = data_space;
+            if (space & 3)
+                space += 4 - (space & 3);
+            if (space > end - buffer)
+                return BadLength;
             switch (size) {
             case 1:
                 buffer += i;
@@ -2474,8 +2490,7 @@ SProcRenderCompositeGlyphs(ClientPtr client)
                 }
                 break;
             }
-            if (space & 3)
-                buffer += 4 - (space & 3);
+            buffer += space - data_space;
         }
     }
     return (*ProcRenderVector[stuff->renderReqType]) (client);
