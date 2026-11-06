@@ -276,7 +276,7 @@ init_tile(Tile * tile, int width, int height, int bpp)
    tile->bpp = bpp;
    tile->ewidth = width;
    tile->eheight = height;
-   tile->data = malloc(sizeof(uint8_t) * width * height * bpp);
+   tile->data = calloc((size_t)width * height * bpp, sizeof(uint8_t));
    if (!tile->data)
      {
         D("Couldn't allocate tile.\n");
@@ -597,14 +597,18 @@ flatten_image(void)
 
 /* stuff that was adapted from xcf.c */
 
-static void
-xcf_seek_pos(int pos)
+static int
+xcf_seek_pos(uint32_t pos)
 {
-   if (image->cp != pos)
+   if (pos > INT_MAX)
+      return 0;
+   if (image->cp != (int)pos)
      {
-        image->cp = pos;
-        fseek(image->fp, image->cp, SEEK_SET);
+        if (fseek(image->fp, (long)pos, SEEK_SET) != 0)
+           return 0;
+        image->cp = (int)pos;
      }
+   return 1;
 }
 
 static int
@@ -743,7 +747,8 @@ xcf_load_image_props(void)
                           "Substituting grayscale map.\n");
                   if (image->cp > INT_MAX - (int)image->num_cols)
                      return 0;
-                  xcf_seek_pos(image->cp + image->num_cols);
+                  if (!xcf_seek_pos((uint32_t)(image->cp + image->num_cols)))
+                     return 0;
                   image->cp += (int)image->num_cols;
                   for (i = 0; i < image->num_cols; i++)
                     {
@@ -1151,7 +1156,9 @@ xcf_load_level(Tile ** tiles_p, int hierarchy_width, int hierarchy_height,
    if (tiles == NULL)
       return 0;
 
-   image->cp += xcf_read_int32(image->fp, &offset, 1);
+   if (xcf_read_int32(image->fp, &offset, 1) != 4)
+      return 0;
+   image->cp += 4;
    if (offset == 0)
       return 1;
 
@@ -1174,16 +1181,28 @@ xcf_load_level(Tile ** tiles_p, int hierarchy_width, int hierarchy_height,
 
         /* read in the offset of the next tile so we can calculate the amount
          * of data needed for this tile */
-        image->cp += xcf_read_int32(image->fp, &offset2, 1);
+        if (xcf_read_int32(image->fp, &offset2, 1) != 4)
+           return 0;
+        image->cp += 4;
 
         /* if the offset is 0 then we need to read in the maximum possible
          * allowing for negative compression */
         if (offset2 == 0)
-           offset2 = offset + TILE_WIDTH * TILE_WIDTH * 4 * 1.5;        /* 1.5 is probably more
-                                                                         * than we need to allow */
+          {
+             const uint32_t max_tile_data =
+                TILE_WIDTH * TILE_WIDTH * 4U * 3U / 2U;
+             if (offset > (uint32_t)INT_MAX - max_tile_data)
+                return 0;
+             offset2 = offset + max_tile_data;
+          }
+        else if (offset2 <= offset || offset2 > INT_MAX)
+          {
+             return 0;
+          }
 
         /* seek to the tile offset */
-        xcf_seek_pos(offset);
+        if (!xcf_seek_pos(offset))
+           return 0;
 
         /* read in the current_tile */
         switch (image->compression)
@@ -1215,10 +1234,13 @@ xcf_load_level(Tile ** tiles_p, int hierarchy_width, int hierarchy_height,
         /* restore the saved position so we'll be ready to
          *  read the next offset.
          */
-        xcf_seek_pos(saved_pos);
+        if (!xcf_seek_pos(saved_pos))
+           return 0;
 
         /* read in the offset of the next tile */
-        image->cp += xcf_read_int32(image->fp, &offset, 1);
+        if (xcf_read_int32(image->fp, &offset, 1) != 4)
+           return 0;
+        image->cp += 4;
      }
 
    if (offset != 0)
@@ -1255,7 +1277,9 @@ xcf_load_hierarchy(Tile ** tiles, int *num_rows, int *num_cols, int *bpp)
       image->cp += 4;
    }
 
-   image->cp += xcf_read_int32(image->fp, &offset, 1);  /* top level */
+   if (xcf_read_int32(image->fp, &offset, 1) != 4 || offset == 0)
+      return 0;
+   image->cp += 4;                      /* top level */
 
    D("Loading hierarchy: width %i, height %i,  bpp %i\n", width, height, *bpp);
 
@@ -1263,7 +1287,9 @@ xcf_load_hierarchy(Tile ** tiles, int *num_rows, int *num_cols, int *bpp)
     */
    do
      {
-        image->cp += xcf_read_int32(image->fp, &junk, 1);
+        if (xcf_read_int32(image->fp, &junk, 1) != 4)
+           return 0;
+        image->cp += 4;
      }
    while (junk != 0);
 
@@ -1273,7 +1299,8 @@ xcf_load_hierarchy(Tile ** tiles, int *num_rows, int *num_cols, int *bpp)
    saved_pos = image->cp;
 
    /* seek to the level offset */
-   xcf_seek_pos(offset);
+   if (!xcf_seek_pos(offset))
+      return 0;
 
    /* read in the level */
    if (!xcf_load_level(tiles, width, height, *bpp, num_rows, num_cols))
@@ -1282,7 +1309,8 @@ xcf_load_hierarchy(Tile ** tiles, int *num_rows, int *num_cols, int *bpp)
    /* restore the saved position so we'll be ready to
     *  read the next offset.
     */
-   xcf_seek_pos(saved_pos);
+   if (!xcf_seek_pos(saved_pos))
+      return 0;
 
    D("Loaded hierarchy successfully.\n");
 
@@ -1373,10 +1401,13 @@ xcf_load_channel(void)
       goto error;
 
    /* read the hierarchy and layer mask offsets */
-   image->cp += xcf_read_int32(image->fp, &hierarchy_offset, 1);
+   if (xcf_read_int32(image->fp, &hierarchy_offset, 1) != 4)
+      goto error;
+   image->cp += 4;
 
    /* read in the hierarchy */
-   xcf_seek_pos(hierarchy_offset);
+   if (!xcf_seek_pos(hierarchy_offset))
+      goto error;
    if (!xcf_load_hierarchy
        (&(layer->tiles), &(layer->num_rows), &(layer->num_cols), &(layer->bpp)))
       goto error;
@@ -1439,11 +1470,14 @@ xcf_load_layer(void)
       return layer;
 
    /* read the hierarchy and layer mask offsets */
-   image->cp += xcf_read_int32(image->fp, &hierarchy_offset, 1);
-   image->cp += xcf_read_int32(image->fp, &layer_mask_offset, 1);
+   if (xcf_read_int32(image->fp, &hierarchy_offset, 1) != 4 ||
+       xcf_read_int32(image->fp, &layer_mask_offset, 1) != 4)
+      goto error;
+   image->cp += 8;
 
    /* read in the hierarchy */
-   xcf_seek_pos(hierarchy_offset);
+   if (!xcf_seek_pos(hierarchy_offset))
+      goto error;
    if (!xcf_load_hierarchy
        (&(layer->tiles), &(layer->num_rows), &(layer->num_cols), &(layer->bpp)))
       goto error;
@@ -1452,7 +1486,8 @@ xcf_load_layer(void)
    if (layer_mask_offset != 0)
      {
         D("Loading layer mask.\n");
-        xcf_seek_pos(layer_mask_offset);
+        if (!xcf_seek_pos(layer_mask_offset))
+           goto error;
 
         layer_mask = xcf_load_channel();
         if (!layer_mask)
@@ -1516,7 +1551,9 @@ xcf_load_image(void)
    while (1)
      {
         /* read in the offset of the next layer */
-        image->cp += xcf_read_int32(image->fp, &offset, 1);
+        if (xcf_read_int32(image->fp, &offset, 1) != 4)
+           goto error;
+        image->cp += 4;
 
         /* if the offset is 0 then we are at the end
          *  of the layer list.
@@ -1530,7 +1567,8 @@ xcf_load_image(void)
         saved_pos = image->cp;
 
         /* seek to the layer offset */
-        xcf_seek_pos(offset);
+        if (!xcf_seek_pos(offset))
+           goto error;
 
         /* read in the layer */
         layer = xcf_load_layer();
@@ -1548,7 +1586,8 @@ xcf_load_image(void)
         /* restore the saved position so we'll be ready to
          *  read the next offset.
          */
-        xcf_seek_pos(saved_pos);
+        if (!xcf_seek_pos(saved_pos))
+           goto error;
 
      }
 
