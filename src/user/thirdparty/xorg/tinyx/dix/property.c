@@ -50,6 +50,7 @@ SOFTWARE.
 
 #include <X11/X.h>
 #include <X11/Xproto.h>
+#include <limits.h>
 #include "windowstr.h"
 #include "propertyst.h"
 #include "dixstruct.h"
@@ -198,6 +199,8 @@ ProcChangeProperty(ClientPtr client)
     if (len > ((0xffffffff - sizeof(xChangePropertyReq)) >> 2))
         return BadLength;
     sizeInBytes = format >> 3;
+    if (len > (INT_MAX - sizeof(xChangePropertyReq) - 3) / sizeInBytes)
+        return BadLength;
     totalSize = len * sizeInBytes;
     REQUEST_FIXED_SIZE(xChangePropertyReq, totalSize);
 
@@ -238,6 +241,8 @@ ChangeWindowProperty(WindowPtr pWin, Atom property, Atom type, int format,
     pointer data;
 
     sizeInBytes = format >> 3;
+    if (len > INT_MAX / sizeInBytes)
+        return BadAlloc;
     totalSize = len * sizeInBytes;
 
     /* first see if property already exists */
@@ -270,6 +275,10 @@ ChangeWindowProperty(WindowPtr pWin, Atom property, Atom type, int format,
         pWin->optional->userProps = pProp;
     }
     else {
+        if (mode != PropModeReplace &&
+            pProp->size > INT_MAX / sizeInBytes - len)
+            return BadAlloc;
+
         /* To append or prepend to a property the request format and type
            must match those of the already defined property.  The
            existing format and type are irrelevant when using the mode
