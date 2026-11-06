@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "kernel/rdseed.h"
+#include "kernel/spinlock.h"
 
 #define CPUID_RDSEED (1U << 18)
 
@@ -11,6 +12,7 @@ static bool feature_supported;
 static enum kernel_rdseed_status provider_status =
 	KERNEL_RDSEED_NOT_INITIALIZED;
 static bool request_active;
+static struct spinlock rdseed_lock = SPINLOCK_INITIALIZER;
 
 #ifdef RDSEED_TESTING
 static kernel_rdseed_test_cpuid_fn test_cpuid;
@@ -21,24 +23,13 @@ static void *test_context;
 static uint64_t
 rdseed_guard_enter(void)
 {
-#ifdef OPEN_SILLICON_KERNEL
-	uint64_t flags;
-	__asm__ volatile ("pushfq; popq %0; cli" : "=r" (flags) : : "memory");
-	return flags;
-#else
-	return 0;
-#endif
+	return spinlock_lock_irqsave(&rdseed_lock);
 }
 
 static void
 rdseed_guard_leave(uint64_t flags)
 {
-#ifdef OPEN_SILLICON_KERNEL
-	if ((flags & (1ULL << 9)) != 0)
-		__asm__ volatile ("sti" : : : "memory");
-#else
-	(void)flags;
-#endif
+	spinlock_unlock_irqrestore(&rdseed_lock, flags);
 }
 
 static void

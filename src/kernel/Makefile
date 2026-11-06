@@ -102,7 +102,8 @@ $(BUILD_DIR)/entropy.o: src/kernel/random/entropy.c src/include/kernel/entropy.h
 		src/include/kernel/virtio_rng.h src/include/kernel/spinlock.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -DOPEN_SILLICON_KERNEL -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/rdseed.o: src/kernel/drivers/entropy/rdseed.c src/include/kernel/rdseed.h | $(BUILD_DIR)
+$(BUILD_DIR)/rdseed.o: src/kernel/drivers/entropy/rdseed.c \
+		src/include/kernel/rdseed.h src/include/kernel/spinlock.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -DOPEN_SILLICON_KERNEL -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/virtio_rng.o: src/kernel/drivers/entropy/virtio_rng.c \
@@ -281,7 +282,8 @@ $(BUILD_DIR)/fpu.o: src/kernel/arch/x86_64/cpu/fpu.c \
 		src/include/arch/x86_64/fpu.h src/include/kernel/log.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD_DIR)/random.o: src/kernel/random/random.c src/include/kernel/random.h | $(BUILD_DIR)
+$(BUILD_DIR)/random.o: src/kernel/random/random.c src/include/kernel/random.h \
+		src/include/kernel/spinlock.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/lapic.o: src/kernel/arch/x86_64/controllers/lapic.c \

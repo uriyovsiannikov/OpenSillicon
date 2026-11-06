@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "kernel/random.h"
+#include "kernel/spinlock.h"
 
 #define CPUID_RDRAND (1U << 30)
 #define RDRAND_RETRY_LIMIT 10U
@@ -13,6 +14,7 @@ static bool feature_supported;
 static enum kernel_random_source_status provider_status =
 	KERNEL_RANDOM_NOT_INITIALIZED;
 static bool request_active;
+static struct spinlock random_lock = SPINLOCK_INITIALIZER;
 
 #ifdef KERNEL_RANDOM_TEST
 static bool test_source_active;
@@ -23,24 +25,13 @@ static void *test_source_context;
 static uint64_t
 random_guard_enter(void)
 {
-#ifdef OPEN_SILLICON_KERNEL
-	uint64_t flags;
-	__asm__ volatile ("pushfq; popq %0; cli" : "=r" (flags) : : "memory");
-	return flags;
-#else
-	return 0;
-#endif
+	return spinlock_lock_irqsave(&random_lock);
 }
 
 static void
 random_guard_leave(uint64_t flags)
 {
-#ifdef OPEN_SILLICON_KERNEL
-	if ((flags & (1ULL << 9)) != 0)
-		__asm__ volatile ("sti" : : : "memory");
-#else
-	(void)flags;
-#endif
+	spinlock_unlock_irqrestore(&random_lock, flags);
 }
 
 static void
