@@ -63,6 +63,9 @@ load(ImlibImage * im, ImlibProgressFunction progress,
    if (!im->key)
       return 0;
 
+   if (!im->real_file || strlen(im->real_file) >= sizeof(file) ||
+       strlen(im->key) >= sizeof(key))
+      return 0;
    strcpy(file, im->real_file);
    strcpy(key, im->key);
    if (!can_read(file))
@@ -255,6 +258,8 @@ save(ImlibImage * im, ImlibProgressFunction progress, char progress_granularity)
       alpha = 1;
    if ((!im->file) || (!im->real_file))
       return 0;
+   if (strlen(im->real_file) >= sizeof(file))
+      return 0;
    strcpy(file, im->real_file);
 
    tmp = strrchr(file, ':');
@@ -262,6 +267,8 @@ save(ImlibImage * im, ImlibProgressFunction progress, char progress_granularity)
       return 0;
    *tmp++ = '\0';
    if (!*tmp)
+      return 0;
+   if (strlen(tmp) >= sizeof(key))
       return 0;
    strcpy(key, tmp);
 
