@@ -184,12 +184,12 @@ kernel_rdseed_word(uint64_t *output)
 		result = KERNEL_RDSEED_NOT_READY;
 	} else if (!feature_supported) {
 		result = KERNEL_RDSEED_UNSUPPORTED_RESULT;
-	} else if (request_active) {
+	} else if (__atomic_exchange_n(&request_active, true,
+	    __ATOMIC_ACQUIRE)) {
 		result = KERNEL_RDSEED_TEMPORARY_FAILURE;
 	} else {
-		request_active = true;
 		result = word_locked(output);
-		request_active = false;
+		__atomic_store_n(&request_active, false, __ATOMIC_RELEASE);
 	}
 	rdseed_guard_leave(flags);
 	return result;
@@ -216,11 +216,10 @@ kernel_rdseed_bytes(void *output, size_t length)
 	}
 	if (length == 0)
 		goto done;
-	if (request_active) {
+	if (__atomic_exchange_n(&request_active, true, __ATOMIC_ACQUIRE)) {
 		result = KERNEL_RDSEED_TEMPORARY_FAILURE;
 		goto done;
 	}
-	request_active = true;
 	for (size_t offset = 0; offset < length; ) {
 		uint64_t word = 0;
 		result = word_locked(&word);
@@ -242,7 +241,7 @@ kernel_rdseed_bytes(void *output, size_t length)
 			destination[i] = temporary[i];
 	}
 	zeroize(temporary, sizeof(temporary));
-	request_active = false;
+	__atomic_store_n(&request_active, false, __ATOMIC_RELEASE);
 done:
 	rdseed_guard_leave(flags);
 	return result;
@@ -267,7 +266,7 @@ kernel_rdseed_test_reset(void)
 	init_attempted = false;
 	feature_supported = false;
 	provider_status = KERNEL_RDSEED_NOT_INITIALIZED;
-	request_active = false;
+	__atomic_store_n(&request_active, false, __ATOMIC_RELEASE);
 	test_cpuid = NULL;
 	test_instruction = NULL;
 	test_context = NULL;
