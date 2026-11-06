@@ -8,6 +8,8 @@
 #include "config.h"
 #include "Imlib2_Loader.h"
 
+#include <limits.h>
+
 #define DBG_PFX "LDR-ani"
 
 #define T(a,b,c,d) ((a << 0) | (b << 8) | (c << 16) | (d << 24))
@@ -22,6 +24,7 @@
 #define RIFF_TYPE_seq   T('s', 'e', 'q', ' ')
 
 #define RIFF_NAME_ACON  T('A', 'C', 'O', 'N')
+#define RIFF_MAX_NEST   32
 
 static const char *const _formats[] = { "ani" };
 
@@ -95,21 +98,24 @@ _riff_parse(ImlibImage *im, riff_ctx_t *ctx, const char *fdata,
             unsigned int fsize, const char *fptr)
 {
     int             rc;
-    unsigned int    type;
-    int             size, avail;
+    unsigned int    type, raw_size;
+    int             size;
+    size_t          avail, chunk_len;
     int             fcount, i;
     ImlibImageFrame *pf;
     const ani_chunk_t *chunk;
 
     rc = LOAD_FAIL;
+    if (ctx->nest >= RIFF_MAX_NEST)
+        return LOAD_BADFILE;
     ctx->nest += 1;
 
     pf = NULL;
     fcount = 0;
 
-    for (; rc == 0; fptr += 8 + size)
+    for (; rc == 0; fptr += 8 + (size_t)size + ((unsigned int)size & 1U))
     {
-        avail = fdata + fsize - fptr;   /* Bytes left in chunk */
+        avail = (size_t)((fdata + fsize) - fptr);  /* Bytes left in chunk */
 
         if (avail <= 0)
             break;              /* Normal end (= 0) */
@@ -123,12 +129,18 @@ _riff_parse(ImlibImage *im, riff_ctx_t *ctx, const char *fdata,
         chunk = PCAST(const ani_chunk_t *, fptr);
 
         type = SWAP_LE_32(chunk->hdr.type);
-        size = SWAP_LE_32(chunk->hdr.size);
+        raw_size = SWAP_LE_32(chunk->hdr.size);
+        if (raw_size > INT_MAX)
+        {
+            rc = LOAD_BADFILE;
+            break;
+        }
+        size = raw_size;
 
         if (ctx->nest == 1 && fptr == fdata)
         {
             /* First chunk of file */
-            if (type != RIFF_TYPE_RIFF ||
+            if (avail < 12 || type != RIFF_TYPE_RIFF ||
                 (SWAP_LE_32(chunk->list.name)) != RIFF_NAME_ACON)
                 return LOAD_FAIL;
             size = 4;
@@ -138,7 +150,13 @@ _riff_parse(ImlibImage *im, riff_ctx_t *ctx, const char *fdata,
         D("%5lu: %*s Chunk: %.4s size %u: ",
           OFFS(fptr), ctx->nest, "", fptr, size);
 
-        if (avail < 8 + size)
+        if (size < 0)
+        {
+            rc = LOAD_BADFILE;
+            break;
+        }
+        chunk_len = (size_t)size + ((size_t)size & 1U);
+        if (chunk_len > avail - 8)
         {
             Dx("incorrect size\n");
             rc = LOAD_BADFILE;
@@ -157,6 +175,11 @@ _riff_parse(ImlibImage *im, riff_ctx_t *ctx, const char *fdata,
             break;
         case RIFF_TYPE_LIST:
             Dx("'%.*s'\n", 4, fptr + 8);
+            if (size < 4)
+            {
+                rc = LOAD_BADFILE;
+                break;
+            }
             rc = _riff_parse(im, ctx, fptr + 12, size - 4, fptr + 12);
             break;
         case RIFF_TYPE_icon:
@@ -175,6 +198,11 @@ _riff_parse(ImlibImage *im, riff_ctx_t *ctx, const char *fdata,
             rc = _load_embedded(im, 1, fptr + 8, size);
             break;
         case RIFF_TYPE_anih:
+            if (size < 36)
+            {
+                rc = LOAD_BADFILE;
+                break;
+            }
 #define AH (chunk->anih)
 /**INDENT-OFF**/
              Dx("sz=%u nf=%u/%u WxH=%ux%u bc=%u np=%u dr=%u fl=%u\n",
@@ -183,6 +211,12 @@ _riff_parse(ImlibImage *im, riff_ctx_t *ctx, const char *fdata,
             SWAP_LE_32(AH.bpp), SWAP_LE_32(AH.planes),
             SWAP_LE_32(AH.rate), SWAP_LE_32(AH.flags));
 /**INDENT-ON**/
+            if (SWAP_LE_32(AH.frames) > INT_MAX ||
+                SWAP_LE_32(AH.steps) > INT_MAX / 4)
+            {
+                rc = LOAD_BADFILE;
+                break;
+            }
             ctx->nframes = SWAP_LE_32(AH.frames);
             ctx->nfsteps = SWAP_LE_32(AH.steps);
             if (im->frame <= 0)
@@ -203,14 +237,14 @@ _riff_parse(ImlibImage *im, riff_ctx_t *ctx, const char *fdata,
             pf->frame_delay = (1000 * SWAP_LE_32(AH.rate)) / 60;
             break;
         case RIFF_TYPE_rate:
-            ctx->rates = PCAST(const uint32_t *, fptr + 8);
-
-            if ((int)size != 4 * ctx->nfsteps)
+            ctx->rates = NULL;
+            if (ctx->nfsteps <= 0 || size != 4 * ctx->nfsteps)
             {
                 D("rate chunk size mismatch: %d != %d\n", size,
                   4 * ctx->nfsteps);
                 break;
             }
+            ctx->rates = PCAST(const uint32_t *, fptr + 8);
 #if IMLIB2_DEBUG
             for (i = 0; i < ctx->nfsteps; i++)
                 Dx(" %d", SWAP_LE_32(ctx->rates[i]));
@@ -218,14 +252,14 @@ _riff_parse(ImlibImage *im, riff_ctx_t *ctx, const char *fdata,
             Dx("\n");
             break;
         case RIFF_TYPE_seq:
-            ctx->seq = PCAST(const uint32_t *, fptr + 8);
-
-            if ((int)size != 4 * ctx->nfsteps)
+            ctx->seq = NULL;
+            if (ctx->nfsteps <= 0 || size != 4 * ctx->nfsteps)
             {
                 D("seq chunk size mismatch: %d != %d\n", size,
                   4 * ctx->nfsteps);
                 break;
             }
+            ctx->seq = PCAST(const uint32_t *, fptr + 8);
 #if IMLIB2_DEBUG
             for (i = 0; i < ctx->nfsteps; i++)
                 Dx(" %d", SWAP_LE_32(ctx->seq[i]));
@@ -233,7 +267,6 @@ _riff_parse(ImlibImage *im, riff_ctx_t *ctx, const char *fdata,
             Dx("\n");
             break;
         }
-        size = (size + 1) & ~1;
     }
 
     ctx->nest -= 1;
