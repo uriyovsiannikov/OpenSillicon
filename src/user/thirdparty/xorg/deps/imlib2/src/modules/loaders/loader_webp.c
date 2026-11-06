@@ -14,6 +14,7 @@ static int
 _load(ImlibImage *im, int load_data)
 {
     int             rc;
+    int             iter_valid;
     WebPData        webp_data;
     WebPDemuxer    *demux;
     WebPIterator    iter;
@@ -21,6 +22,7 @@ _load(ImlibImage *im, int load_data)
     ImlibImageFrame *pf;
 
     rc = LOAD_FAIL;
+    iter_valid = 0;
 
     if (im->fi->fsize < 12)
         return rc;
@@ -63,8 +65,7 @@ _load(ImlibImage *im, int load_data)
 
     if (!WebPDemuxGetFrame(demux, frame, &iter))
         goto quit;
-
-    WebPDemuxReleaseIterator(&iter);
+    iter_valid = 1;
 
     im->w = iter.width;
     im->h = iter.height;
@@ -106,9 +107,13 @@ _load(ImlibImage *im, int load_data)
     if (im->lc)
         __imlib_LoadProgress(im, 0, 0, im->w, im->h);
 
+    WebPDemuxReleaseIterator(&iter);
+    iter_valid = 0;
     rc = LOAD_SUCCESS;
 
   quit:
+    if (iter_valid)
+        WebPDemuxReleaseIterator(&iter);
     if (demux)
         WebPDemuxDelete(demux);
 
