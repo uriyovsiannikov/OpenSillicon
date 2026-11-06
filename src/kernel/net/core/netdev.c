@@ -34,7 +34,8 @@ net_device_stop(struct net_device *device)
 	    device->state != NET_DEVICE_UP)
 		return;
 	device->operations->shutdown(device);
-	device->state = NET_DEVICE_DOWN;
+	if (device->state == NET_DEVICE_UP)
+		device->state = NET_DEVICE_DOWN;
 }
 
 bool

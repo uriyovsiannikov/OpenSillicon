@@ -881,8 +881,8 @@ e1000_initialize_callback(struct net_device *network_device)
 static void
 e1000_shutdown_callback(struct net_device *network_device)
 {
-	(void)network_device;
-	(void)e1000_shutdown();
+	if (!e1000_shutdown())
+		network_device->state = NET_DEVICE_FAILED;
 }
 
 static bool
