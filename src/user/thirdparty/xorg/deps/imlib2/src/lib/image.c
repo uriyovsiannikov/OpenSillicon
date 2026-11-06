@@ -967,6 +967,7 @@ __imlib_SaveImage(ImlibImage *im, const char *file, ImlibLoadArgs *ila)
     ImlibLoader    *l;
     ImlibLoaderCtx  ilc;
     FILE           *fp = ila->fp;
+    char           *name = NULL;
     int             loader_ret;
 
     if (!file && !fp)
@@ -997,7 +998,25 @@ __imlib_SaveImage(ImlibImage *im, const char *file, ImlibLoadArgs *ila)
     if (ila->pfunc)
         __imlib_LoadCtxInit(im, &ilc, ila->pfunc, ila->pgran);
 
-    __imlib_ImageFileContextPush(im, file ? strdup(file) : NULL);
+    if (file)
+    {
+        name = strdup(file);
+        if (!name)
+        {
+            if (!ila->fp)
+                fclose(fp);
+            ila->err = ENOMEM;
+            return;
+        }
+    }
+    if (__imlib_ImageFileContextPush(im, name))
+    {
+        free(name);
+        if (!ila->fp)
+            fclose(fp);
+        ila->err = ENOMEM;
+        return;
+    }
     im->fi->fp = fp;
 
     /* call the saver */
