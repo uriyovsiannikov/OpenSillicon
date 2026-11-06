@@ -72,7 +72,8 @@ devfs_allocate(const char *name, enum devfs_device device)
 	node->vnode = (struct vnode){
 		.operations = &devfs_operations,
 		.type = type,
-		.mode = device == DEVFS_DIRECTORY ? 0555U : 0666U,
+		.mode = device == DEVFS_DIRECTORY ? 0555U :
+		    (device == DEVFS_CONSOLE || device == DEVFS_TTY ? 0600U : 0666U),
 		.inode = inode,
 		.references = 1,
 		.private_data = node
