@@ -144,8 +144,7 @@ kernel_random_retry(void)
 	bool ready = false;
 	if (init_attempted && feature_supported &&
 	    provider_status == KERNEL_RANDOM_TEMPORARILY_UNAVAILABLE &&
-	    !request_active) {
-		request_active = true;
+	    !__atomic_exchange_n(&request_active, true, __ATOMIC_ACQUIRE)) {
 		if (source_word_bounded(&probe)) {
 			source_ready = true;
 			provider_status = KERNEL_RANDOM_AVAILABLE;
@@ -155,7 +154,7 @@ kernel_random_retry(void)
 			provider_status = KERNEL_RANDOM_TEMPORARILY_UNAVAILABLE;
 		}
 		zeroize(&probe, sizeof(probe));
-		request_active = false;
+		__atomic_store_n(&request_active, false, __ATOMIC_RELEASE);
 	}
 	random_guard_leave(flags);
 	return ready;
@@ -192,11 +191,10 @@ kernel_random_bytes(void *output, size_t length)
 		return false;
 	flags = random_guard_enter();
 	if (!source_ready || provider_status != KERNEL_RANDOM_AVAILABLE ||
-	    request_active) {
+	    __atomic_exchange_n(&request_active, true, __ATOMIC_ACQUIRE)) {
 		random_guard_leave(flags);
 		return false;
 	}
-	request_active = true;
 	for (size_t offset = 0; offset < length; ) {
 		uint64_t word = 0;
 		size_t amount = length - offset;
@@ -220,7 +218,7 @@ kernel_random_bytes(void *output, size_t length)
 			destination[i] = temporary[i];
 	}
 	zeroize(temporary, sizeof(temporary));
-	request_active = false;
+	__atomic_store_n(&request_active, false, __ATOMIC_RELEASE);
 	random_guard_leave(flags);
 	return success;
 }
@@ -252,7 +250,7 @@ kernel_random_test_reset(void)
 	source_ready = false;
 	feature_supported = false;
 	provider_status = KERNEL_RANDOM_NOT_INITIALIZED;
-	request_active = false;
+	__atomic_store_n(&request_active, false, __ATOMIC_RELEASE);
 	test_source_active = false;
 	test_source = NULL;
 	test_source_context = NULL;

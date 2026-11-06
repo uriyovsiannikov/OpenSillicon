@@ -571,11 +571,11 @@ initialize(const struct pci_device_info *device)
 	state.available_index = 0;
 	state.used_index = 0;
 	state.initialized = true;
-	state.available = true;
+	__atomic_store_n(&state.available, true, __ATOMIC_RELEASE);
 	return VIRTIO_RNG_OK;
 
 failed:
-	state.available = false;
+	__atomic_store_n(&state.available, false, __ATOMIC_RELEASE);
 	if (state.io_decode_enabled && !quiesce_and_release())
 		return VIRTIO_RNG_TRANSPORT_FAILURE;
 	state.initialized = false;
@@ -594,7 +594,7 @@ virtio_rng_init(const struct pci_device_info *device)
 bool
 virtio_rng_available(void)
 {
-	return state.available && state.initialized && !state.quarantined;
+	return __atomic_load_n(&state.available, __ATOMIC_ACQUIRE);
 }
 
 enum virtio_rng_result
@@ -617,12 +617,16 @@ virtio_rng_read(void *output, size_t capacity, size_t *received)
 	if (capacity == 0)
 		return VIRTIO_RNG_OK;
 	flags = irq_save();
-	if (state.request_active) {
+	if (__atomic_exchange_n(&state.request_active, true, __ATOMIC_ACQUIRE)) {
 		irq_restore(flags);
 		return VIRTIO_RNG_BUSY;
 	}
-	state.request_active = true;
 	irq_restore(flags);
+	/* Shutdown can race after the initial availability check on another CPU. */
+	if (!virtio_rng_available()) {
+		__atomic_store_n(&state.request_active, false, __ATOMIC_RELEASE);
+		return VIRTIO_RNG_UNAVAILABLE;
+	}
 
 	data = state.data_memory.cpu_virtual_address;
 	observed = state.used_index;
@@ -638,7 +642,7 @@ virtio_rng_read(void *output, size_t capacity, size_t *received)
 	available_ring[state.available_index % state.queue_size] = 0;
 	if (!dma_acquire(state.data_buffer)) {
 		flags = irq_save();
-		state.request_active = false;
+		__atomic_store_n(&state.request_active, false, __ATOMIC_RELEASE);
 		irq_restore(flags);
 		return VIRTIO_RNG_TRANSPORT_FAILURE;
 	}
@@ -658,11 +662,11 @@ virtio_rng_read(void *output, size_t capacity, size_t *received)
 		__asm__ volatile ("pause" : : : "memory");
 	}
 	if (observed == state.used_index) {
-		state.available = false;
+		__atomic_store_n(&state.available, false, __ATOMIC_RELEASE);
 		{
 			bool stopped = quiesce_and_release();
 			flags = irq_save();
-			state.request_active = false;
+			__atomic_store_n(&state.request_active, false, __ATOMIC_RELEASE);
 			irq_restore(flags);
 			if (stopped)
 				state.initialized = false;
@@ -674,11 +678,11 @@ virtio_rng_read(void *output, size_t capacity, size_t *received)
 	completion = queue_used_ring()[state.used_index % state.queue_size];
 	if ((uint16_t)(observed - state.used_index) != 1 || completion.id != 0 ||
 	    completion.length == 0 || completion.length > capacity) {
-		state.available = false;
+		__atomic_store_n(&state.available, false, __ATOMIC_RELEASE);
 		{
 			bool stopped = quiesce_and_release();
 			flags = irq_save();
-			state.request_active = false;
+			__atomic_store_n(&state.request_active, false, __ATOMIC_RELEASE);
 			irq_restore(flags);
 			if (stopped)
 				state.initialized = false;
@@ -687,10 +691,10 @@ virtio_rng_read(void *output, size_t capacity, size_t *received)
 		}
 	}
 	if (!dma_complete(state.data_buffer)) {
-		state.available = false;
+		__atomic_store_n(&state.available, false, __ATOMIC_RELEASE);
 		(void)quiesce_and_release();
 		flags = irq_save();
-		state.request_active = false;
+		__atomic_store_n(&state.request_active, false, __ATOMIC_RELEASE);
 		irq_restore(flags);
 		state.initialized = false;
 		return VIRTIO_RNG_TRANSPORT_FAILURE;
@@ -702,7 +706,7 @@ virtio_rng_read(void *output, size_t capacity, size_t *received)
 		((uint8_t *)output)[i] = data[i];
 	*received = completion.length;
 	flags = irq_save();
-	state.request_active = false;
+	__atomic_store_n(&state.request_active, false, __ATOMIC_RELEASE);
 	irq_restore(flags);
 	return VIRTIO_RNG_OK;
 }
@@ -711,11 +715,11 @@ enum virtio_rng_result
 virtio_rng_shutdown(void)
 {
 	uint64_t flags = irq_save();
-	if (state.request_active) {
+	__atomic_store_n(&state.available, false, __ATOMIC_RELEASE);
+	if (__atomic_load_n(&state.request_active, __ATOMIC_ACQUIRE)) {
 		irq_restore(flags);
 		return VIRTIO_RNG_BUSY;
 	}
-	state.available = false;
 	irq_restore(flags);
 	if (!state.initialized && state.queue_buffer.generation == 0 &&
 	    state.data_buffer.generation == 0)
