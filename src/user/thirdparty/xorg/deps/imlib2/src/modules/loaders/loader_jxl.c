@@ -76,7 +76,10 @@ _load(ImlibImage *im, int load_data)
     rc = LOAD_FAIL;
     dec = NULL;
 
-    switch (JxlSignatureCheck(im->fi->fdata, 128))
+    if (im->fi->fsize < 0)
+        goto quit;
+
+    switch (JxlSignatureCheck(im->fi->fdata, (size_t)im->fi->fsize))
     {
     default:
 //   case JXL_SIG_NOT_ENOUGH_BYTES:
