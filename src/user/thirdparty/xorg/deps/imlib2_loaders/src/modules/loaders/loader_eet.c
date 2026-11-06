@@ -101,16 +101,17 @@ load(ImlibImage * im, ImlibProgressFunction progress,
            eet_close(ef);
            return 0;
         }
-      w = header[1];
-      h = header[2];
-      alpha = header[3];
-      compression = header[4];
-      if ((w > 8192) || (h > 8192))
+      if ((header[1] == 0) || (header[2] == 0) ||
+          (header[1] > 8192) || (header[2] > 8192))
         {
            free(ret);
            eet_close(ef);
            return 0;
         }
+      w = (int)header[1];
+      h = (int)header[2];
+      alpha = header[3];
+      compression = header[4];
       if ((compression == 0) && (size < ((w * h * 4) + 32)))
         {
            free(ret);

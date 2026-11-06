@@ -44,6 +44,7 @@
   Ok, hope this helps with understanding XCF.                 -- cK.
 */
 #include <netinet/in.h>
+#include <limits.h>
 
 #include "Imlib2_Loader.h"
 #include "loader_xcf.h"
@@ -264,13 +265,13 @@ free_tiles(Tile * tiles, int num_tiles)
    free(tiles);
 }
 
-static void
+static int
 init_tile(Tile * tile, int width, int height, int bpp)
 {
    D("%s: tile=%p\n", __func__, tile);
 
    if (!tile)
-      return;
+      return 0;
 
    tile->bpp = bpp;
    tile->ewidth = width;
@@ -279,7 +280,9 @@ init_tile(Tile * tile, int width, int height, int bpp)
    if (!tile->data)
      {
         D("Couldn't allocate tile.\n");
+        return 0;
      }
+   return 1;
 }
 
 static Tile        *
@@ -289,8 +292,8 @@ allocate_tiles(int width, int height, int bpp, int *num_rows, int *num_cols)
    int                 i, j, k, right_tile, bottom_tile;
    int                 tile_width, tile_height;
 
-   (*num_rows) = (height + TILE_HEIGHT - 1) / TILE_HEIGHT;
-   (*num_cols) = (width + TILE_WIDTH - 1) / TILE_WIDTH;
+   (*num_rows) = (height - 1) / TILE_HEIGHT + 1;
+   (*num_cols) = (width - 1) / TILE_WIDTH + 1;
 
    tiles = calloc((*num_rows) * (*num_cols), sizeof(Tile));
    if (!tiles)
@@ -310,7 +313,11 @@ allocate_tiles(int width, int height, int bpp, int *num_rows, int *num_cols)
           {
              tile_width = ((j == (*num_cols) - 1) ? right_tile : TILE_WIDTH);
              tile_height = ((i == (*num_rows) - 1) ? bottom_tile : TILE_HEIGHT);
-             init_tile(&(tiles[k]), tile_width, tile_height, bpp);
+             if (!init_tile(&(tiles[k]), tile_width, tile_height, bpp))
+               {
+                  free_tiles(tiles, (*num_rows) * (*num_cols));
+                  return NULL;
+               }
           }
      }
 
@@ -446,6 +453,8 @@ flatten_image(void)
    int                 layer_index;
 
    image->data = calloc(image->width * image->height, sizeof(uint32_t));
+   if (image->data == NULL)
+      return;
    layer_index = 0;
 
    while (l)
@@ -619,6 +628,26 @@ xcf_read_int32(FILE * fp, uint32_t * data, int count)
      }
 
    return 4 * nr;
+}
+
+/* Dimensions are used in signed pixel-count arithmetic throughout this
+ * loader.  Reject values that cannot be represented safely before casting.
+ */
+static int
+xcf_read_dimension(FILE * fp, int *dimension)
+{
+   uint32_t value;
+
+   if (xcf_read_int32(fp, &value, 1) != 4 || value == 0 || value > INT_MAX)
+      return 0;
+   *dimension = (int)value;
+   return 4;
+}
+
+static int
+xcf_valid_dimensions(int width, int height)
+{
+   return width > 0 && height > 0 && width <= INT_MAX / height;
 }
 
 static int
@@ -851,6 +880,8 @@ read_tiles_into_data(Tile * tiles, int num_cols, int width,
 
    /* Always allocate the data as 4 bytes per pixel */
    data = malloc(sizeof(uint32_t) * width * height);
+   if (!data)
+      return 1;
    *data_p = data;
 
    a = r = g = b = 0xff;
@@ -940,10 +971,15 @@ read_tiles_into_data(Tile * tiles, int num_cols, int width,
 static int
 xcf_load_tile(Tile * tile)
 {
-   image->cp +=
-      xcf_read_int8(image->fp, tile->data,
-                    tile->ewidth * tile->eheight * tile->bpp);
-   return 1;
+   size_t expected;
+   size_t bytes_read;
+
+   if (tile == NULL || tile->data == NULL)
+      return 0;
+   expected = (size_t)tile->ewidth * tile->eheight * tile->bpp;
+   bytes_read = fread(tile->data, 1, expected, image->fp);
+   image->cp += (int)bytes_read;
+   return bytes_read == expected;
 }
 
 static int
@@ -955,22 +991,28 @@ xcf_load_tile_rle(Tile * tile, int data_length)
    int                 length;
    int                 bpp;
    int                 i, j;
-   int                 nmemb_read_successfully;
-   uint8_t            *xcfdata, *xcfodata, *xcfdatalimit;
+   size_t              bytes_read;
+   uint8_t            *xcfdata, *xcfodata, *xcfdata_end;
 
    data = tile->data;
    bpp = tile->bpp;
 
+   if (data == NULL || data_length <= 0)
+      return 0;
+
    /*printf ("Reading encrypted tile %ix%ix%i, data_length %i\n", tile->ewidth, tile->eheight, tile->bpp, data_length); */
 
    xcfdata = xcfodata = malloc(sizeof(uint8_t) * data_length);
+   if (xcfodata == NULL)
+      return 0;
 
    /* we have to use fread instead of xcf_read_* because we may be
     * reading past the end of the file here */
-   nmemb_read_successfully = fread(xcfdata, 1, data_length, image->fp);
-   image->cp += nmemb_read_successfully;
-
-   xcfdatalimit = &xcfodata[nmemb_read_successfully - 1];
+   bytes_read = fread(xcfdata, 1, (size_t)data_length, image->fp);
+   image->cp += (int)bytes_read;
+   if (bytes_read != (size_t)data_length)
+      goto bogus_rle;
+   xcfdata_end = xcfodata + bytes_read;
 
    for (i = 0; i < bpp; i++)
      {
@@ -979,7 +1021,7 @@ xcf_load_tile_rle(Tile * tile, int data_length)
 
         while (size > 0)
           {
-             if (xcfdata > xcfdatalimit)
+             if (xcfdata >= xcfdata_end)
                {
                   goto bogus_rle;
                }
@@ -992,7 +1034,7 @@ xcf_load_tile_rle(Tile * tile, int data_length)
                   length = 255 - (length - 1);
                   if (length == 128)
                     {
-                       if (xcfdata >= xcfdatalimit)
+                       if ((size_t)(xcfdata_end - xcfdata) < 2U)
                          {
                             goto bogus_rle;
                          }
@@ -1001,17 +1043,13 @@ xcf_load_tile_rle(Tile * tile, int data_length)
                        xcfdata += 2;
                     }
 
+                  if (length <= 0 || length > size ||
+                      (size_t)(xcfdata_end - xcfdata) < (size_t)length)
+                    {
+                       goto bogus_rle;
+                    }
+
                   size -= length;
-
-                  if (size < 0)
-                    {
-                       goto bogus_rle;
-                    }
-
-                  if (&xcfdata[length - 1] > xcfdatalimit)
-                    {
-                       goto bogus_rle;
-                    }
 
                   while (length-- > 0)
                     {
@@ -1024,7 +1062,7 @@ xcf_load_tile_rle(Tile * tile, int data_length)
                   length += 1;
                   if (length == 128)
                     {
-                       if (xcfdata >= xcfdatalimit)
+                       if ((size_t)(xcfdata_end - xcfdata) < 2U)
                          {
                             goto bogus_rle;
                          }
@@ -1033,17 +1071,12 @@ xcf_load_tile_rle(Tile * tile, int data_length)
                        xcfdata += 2;
                     }
 
+                  if (length <= 0 || length > size || xcfdata >= xcfdata_end)
+                    {
+                       goto bogus_rle;
+                    }
+
                   size -= length;
-
-                  if (size < 0)
-                    {
-                       goto bogus_rle;
-                    }
-
-                  if (xcfdata > xcfdatalimit)
-                    {
-                       goto bogus_rle;
-                    }
 
                   val = *xcfdata++;
 
@@ -1080,8 +1113,11 @@ xcf_load_level(Tile ** tiles_p, int hierarchy_width, int hierarchy_height,
    Tile               *tiles;
    Tile               *current_tile;
 
-   image->cp += xcf_read_int32(image->fp, (uint32_t *) & width, 1);
-   image->cp += xcf_read_int32(image->fp, (uint32_t *) & height, 1);
+   if (xcf_read_dimension(image->fp, &width) != 4 ||
+       xcf_read_dimension(image->fp, &height) != 4 ||
+       !xcf_valid_dimensions(width, height))
+      return 0;
+   image->cp += 8;
 
    if ((width != hierarchy_width) || (height != hierarchy_height))
       return 0;
@@ -1089,6 +1125,8 @@ xcf_load_level(Tile ** tiles_p, int hierarchy_width, int hierarchy_height,
    D("Loading level of size %ix%i.\n", width, height);
    (*tiles_p) = allocate_tiles(width, height, bpp, num_rows, num_cols);
    tiles = (*tiles_p);
+   if (tiles == NULL)
+      return 0;
 
    image->cp += xcf_read_int32(image->fp, &offset, 1);
    if (offset == 0)
@@ -1180,9 +1218,19 @@ xcf_load_hierarchy(Tile ** tiles, int *num_rows, int *num_cols, int *bpp)
    int                 width;
    int                 height;
 
-   image->cp += xcf_read_int32(image->fp, (uint32_t *) & width, 1);
-   image->cp += xcf_read_int32(image->fp, (uint32_t *) & height, 1);
-   image->cp += xcf_read_int32(image->fp, (uint32_t *) bpp, 1);
+   if (xcf_read_dimension(image->fp, &width) != 4 ||
+       xcf_read_dimension(image->fp, &height) != 4)
+      return 0;
+   image->cp += 8;
+   {
+      uint32_t raw_bpp;
+      if (xcf_read_int32(image->fp, &raw_bpp, 1) != 4 ||
+          raw_bpp < 1 || raw_bpp > 4 ||
+          !xcf_valid_dimensions(width, height))
+         return 0;
+      *bpp = (int)raw_bpp;
+      image->cp += 4;
+   }
 
    image->cp += xcf_read_int32(image->fp, &offset, 1);  /* top level */
 
@@ -1279,8 +1327,11 @@ xcf_load_channel(void)
    D("Loading channel ...\n");
 
    /* read in the layer width, height and name */
-   image->cp += xcf_read_int32(image->fp, (uint32_t *) & width, 1);
-   image->cp += xcf_read_int32(image->fp, (uint32_t *) & height, 1);
+   if (xcf_read_dimension(image->fp, &width) != 4 ||
+       xcf_read_dimension(image->fp, &height) != 4 ||
+       !xcf_valid_dimensions(width, height))
+      return NULL;
+   image->cp += 8;
    image->cp += xcf_read_string(image->fp, &name, 1);
 
    /* Yeah, still ugly :) */
@@ -1333,8 +1384,11 @@ xcf_load_layer(void)
    D("Loading one layer ...\n");
 
    /* read in the layer width, height and type */
-   image->cp += xcf_read_int32(image->fp, (uint32_t *) & width, 1);
-   image->cp += xcf_read_int32(image->fp, (uint32_t *) & height, 1);
+   if (xcf_read_dimension(image->fp, &width) != 4 ||
+       xcf_read_dimension(image->fp, &height) != 4 ||
+       !xcf_valid_dimensions(width, height))
+      return NULL;
+   image->cp += 8;
    image->cp += xcf_read_int32(image->fp, (uint32_t *) & type, 1);
    image->cp += xcf_read_string(image->fp, &name, 1);
 
@@ -1413,8 +1467,11 @@ xcf_load_image(void)
    int                 num_successful_elements = 0;
 
    /* read in the image width, height and type */
-   image->cp += xcf_read_int32(image->fp, (uint32_t *) & width, 1);
-   image->cp += xcf_read_int32(image->fp, (uint32_t *) & height, 1);
+   if (xcf_read_dimension(image->fp, &width) != 4 ||
+       xcf_read_dimension(image->fp, &height) != 4 ||
+       !xcf_valid_dimensions(width, height))
+      goto hard_error;
+   image->cp += 8;
    image->cp += xcf_read_int32(image->fp, (uint32_t *) & image_type, 1);
 
    image->width = width;
@@ -1470,6 +1527,8 @@ xcf_load_image(void)
 
    /* Flat-o-rama now :) */
    flatten_image();
+   if (image->data == NULL)
+      goto error;
 
    return 1;                    /* Success */
 
