@@ -21,9 +21,10 @@ netdiag_parse_ipv4(const char *text, uint8_t address[4])
 		unsigned int value = 0;
 		size_t digits = 0;
 		while (*cursor >= '0' && *cursor <= '9') {
-			value = value * 10U + (unsigned int)(*cursor++ - '0');
-			if (value > 255U)
+			unsigned int digit = (unsigned int)(*cursor++ - '0');
+			if (value > (255U - digit) / 10U)
 				return false;
+			value = value * 10U + digit;
 			digits++;
 		}
 		if (digits == 0 || (part < 3 && *cursor++ != '.') ||
@@ -41,11 +42,14 @@ netdiag_parse_port(const char *text, uint16_t *port)
 	if (text == NULL || port == NULL || *text == '\0')
 		return false;
 	for (const char *cursor = text; *cursor != '\0'; cursor++) {
+		unsigned int digit;
+
 		if (*cursor < '0' || *cursor > '9')
 			return false;
-		value = value * 10U + (unsigned int)(*cursor - '0');
-		if (value > UINT16_MAX)
+		digit = (unsigned int)(*cursor - '0');
+		if (value > (UINT16_MAX - digit) / 10U)
 			return false;
+		value = value * 10U + digit;
 	}
 	if (value == 0)
 		return false;
