@@ -484,15 +484,14 @@ ProcGetProperty(ClientPtr client)
  *  Return type, format, value to client
  */
     n = (pProp->format / 8) * pProp->size;      /* size (bytes) of prop */
-    ind = stuff->longOffset << 2;
-
-    /* If longOffset is invalid such that it causes "len" to
-       be negative, it's a value error. */
-
-    if (n < ind) {
+    if (stuff->longOffset > n / 4) {
         client->errorValue = stuff->longOffset;
         return BadValue;
     }
+    ind = (unsigned long) stuff->longOffset * 4;
+
+    /* If longOffset is invalid such that it causes "len" to
+       be negative, it's a value error. */
 
     len = min(n - ind, 4 * stuff->longLength);
 
