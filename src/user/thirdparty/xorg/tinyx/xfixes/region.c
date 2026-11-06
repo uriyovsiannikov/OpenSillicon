@@ -377,6 +377,7 @@ ProcXFixesCopyRegion(ClientPtr client)
 
     REQUEST(xXFixesCopyRegionReq);
 
+    REQUEST_SIZE_MATCH(xXFixesCopyRegionReq);
     VERIFY_REGION(pSource, stuff->source, client, SecurityReadAccess);
     VERIFY_REGION(pDestination, stuff->destination, client,
                   SecurityWriteAccess);
