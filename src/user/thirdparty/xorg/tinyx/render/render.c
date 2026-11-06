@@ -1388,8 +1388,11 @@ ProcRenderCompositeGlyphs(ClientPtr client)
         listsBase = listsLocal;
     else {
         listsBase = (GlyphListPtr) ALLOCATE_LOCAL(nlist * sizeof(GlyphListRec));
-        if (!listsBase)
+        if (!listsBase) {
+            if (glyphsBase != glyphsLocal)
+                DEALLOCATE_LOCAL(glyphsBase);
             return BadAlloc;
+        }
     }
     buffer = (CARD8 *) (stuff + 1);
     glyphs = glyphsBase;
@@ -1449,8 +1452,13 @@ ProcRenderCompositeGlyphs(ClientPtr client)
             lists++;
         }
     }
-    if (buffer > end)
+    if (buffer > end) {
+        if (glyphsBase != glyphsLocal)
+            DEALLOCATE_LOCAL(glyphsBase);
+        if (listsBase != listsLocal)
+            DEALLOCATE_LOCAL(listsBase);
         return BadLength;
+    }
 
     CompositeGlyphs(stuff->op,
                     pSrc,
