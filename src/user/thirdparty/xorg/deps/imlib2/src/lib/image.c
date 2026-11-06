@@ -210,6 +210,8 @@ __imlib_ProduceImage(void)
     ImlibImage     *im;
 
     im = calloc(1, sizeof(ImlibImage));
+    if (!im)
+        return NULL;
     im->flags = F_FORMAT_IRRELEVANT;
 
     return im;
@@ -641,7 +643,26 @@ __imlib_LoadImage(const char *file, ImlibLoadArgs *ila)
     /* either image in cache is invalid or we dont even have it in cache */
     /* so produce a new one and load an image into that */
     im = __imlib_ProduceImage();
+    if (!im)
+    {
+        ila->err = ENOMEM;
+        if (fp && fp != ila->fp)
+            fclose(fp);
+        free(im_file);
+        free(im_key);
+        return NULL;
+    }
     im->file = strdup(file);
+    if (!im->file)
+    {
+        ila->err = ENOMEM;
+        free(im);
+        if (fp && fp != ila->fp)
+            fclose(fp);
+        free(im_file);
+        free(im_key);
+        return NULL;
+    }
     im->key = im_key;
     im->frame = ila->frame;
 
