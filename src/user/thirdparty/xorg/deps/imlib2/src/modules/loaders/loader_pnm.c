@@ -220,7 +220,7 @@ _load(ImlibImage *im, int load_data)
 {
     int             rc;
     int             p;
-    unsigned int    w, h, v, hlen;
+    unsigned int    w = 0, h = 0, v = 0, hlen;
     const uint8_t  *ptr;
     uint32_t       *ptr2, aval, rval, gval, bval;
     unsigned        i, j, x, y;
@@ -305,7 +305,9 @@ _load(ImlibImage *im, int load_data)
         }
     }
 
-    if (v > 65535)
+    /* PAM requires WIDTH, HEIGHT and a positive MAXVAL.  In particular,
+     * accepting MAXVAL 0 reaches a division by zero in the 16-bit paths. */
+    if (v == 0 || v > 65535)
         goto quit;
 
     unsigned int    bps = (v > 255) ? 2 : 1;    /* bytes per sample */
