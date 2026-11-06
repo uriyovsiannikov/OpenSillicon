@@ -657,18 +657,33 @@ xcf_read_string(FILE * fp, char **data, int count)
    int                 total;
    int                 i;
 
+   if (data == NULL || count < 0)
+      return 0;
    total = 0;
    for (i = 0; i < count; i++)
      {
-        total += xcf_read_int32(fp, &tmp, 1);
+        data[i] = NULL;
+        if (xcf_read_int32(fp, &tmp, 1) != 4)
+           return 0;
+        total += 4;
         if (tmp > 0)
           {
+             /* Names are not used for decoding.  Keep malformed lengths from
+              * requesting unreasonable allocations or overflowing fread's
+              * int-sized count parameter.
+              */
+             if (tmp > 1024U * 1024U)
+                return 0;
              data[i] = malloc(sizeof(uint8_t) * tmp);
-             total += xcf_read_int8(fp, (uint8_t *) data[i], tmp);
-          }
-        else
-          {
-             data[i] = NULL;
+             if (data[i] == NULL)
+                return 0;
+             if (fread(data[i], 1, (size_t)tmp, fp) != (size_t)tmp)
+               {
+                  free(data[i]);
+                  data[i] = NULL;
+                  return 0;
+               }
+             total += (int)tmp;
           }
      }
 
@@ -1332,7 +1347,10 @@ xcf_load_channel(void)
        !xcf_valid_dimensions(width, height))
       return NULL;
    image->cp += 8;
-   image->cp += xcf_read_string(image->fp, &name, 1);
+   err = xcf_read_string(image->fp, &name, 1);
+   if (err == 0)
+      return NULL;
+   image->cp += err;
 
    /* Yeah, still ugly :) */
    free(name);
@@ -1390,7 +1408,10 @@ xcf_load_layer(void)
       return NULL;
    image->cp += 8;
    image->cp += xcf_read_int32(image->fp, (uint32_t *) & type, 1);
-   image->cp += xcf_read_string(image->fp, &name, 1);
+   err = xcf_read_string(image->fp, &name, 1);
+   if (err == 0)
+      return NULL;
+   image->cp += err;
 
    /* ugly, I know */
    free(name);
