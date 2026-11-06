@@ -227,18 +227,19 @@ _load(ImlibImage *im, int load_data)
         }
         else if (rec == EXTENSION_RECORD_TYPE)
         {
-            int             ext_code;
+            int             ext_code, ext_len;
             GifByteType    *ext;
 
             ext = NULL;
-            DGifGetExtension(gif, &ext_code, &ext);
+            if (DGifGetExtension(gif, &ext_code, &ext) == GIF_ERROR)
+                goto done;
             while (ext)
             {
-                DL(" EXTENSION_RECORD_TYPE(%d): ic=%d: ext_code=%02x: %02x %02x %02x %02x %02x\n",      //
-                   rec, gif->ImageCount, ext_code,
-                   ext[0], ext[1], ext[2], ext[3], ext[4]);
+                ext_len = ext[0];
+                DL(" EXTENSION_RECORD_TYPE(%d): ic=%d: ext_code=%02x: len=%d\n",
+                   rec, gif->ImageCount, ext_code, ext_len);
                 if (ext_code == GRAPHICS_EXT_FUNC_CODE &&
-                    gif->ImageCount == frame - 1)
+                    gif->ImageCount == frame - 1 && ext_len >= 4)
                 {
                     int             frame_delay, disp;
 
@@ -259,7 +260,11 @@ _load(ImlibImage *im, int load_data)
                     }
                 }
                 ext = NULL;
-                DGifGetExtensionNext(gif, &ext);
+                if (DGifGetExtensionNext(gif, &ext) == GIF_ERROR)
+                {
+                    DL("Invalid extension block\n");
+                    goto done;
+                }
             }
         }
         else
