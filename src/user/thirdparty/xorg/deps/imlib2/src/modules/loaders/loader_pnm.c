@@ -2,6 +2,7 @@
 #include "Imlib2_Loader.h"
 
 #include <ctype.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <string.h>
 
@@ -70,7 +71,8 @@ static int
 mm_getu(unsigned int *pui)
 {
     int             ch;
-    int             uval;
+    unsigned int    uval;
+    unsigned int    digit;
     bool            comment;
 
     /* Strip whitespace and comments */
@@ -99,7 +101,10 @@ mm_getu(unsigned int *pui)
     /* Parse number */
     for (uval = 0;;)
     {
-        uval = 10 * uval + ch - '0';
+        digit = (unsigned int)(ch - '0');
+        if (uval > (UINT_MAX - digit) / 10)
+            return -1;
+        uval = 10 * uval + digit;
         ch = mm_getc();
         if (ch < 0)
             return ch;
