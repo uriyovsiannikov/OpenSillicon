@@ -306,9 +306,11 @@ allocate_rings(void)
 	device.tx_descriptors = device.tx_ring_memory.cpu_virtual_address;
 	device.rx_descriptors = device.rx_ring_memory.cpu_virtual_address;
 	if (!dma_ring_init(&device.tx_ring, device.tx_owners,
-	    E1000_TX_RING_COUNT, device.tx_ring_buffer, E1000_TX_RING_BYTES) ||
+	    sizeof(device.tx_owners), E1000_TX_RING_COUNT, device.tx_ring_buffer,
+	    E1000_TX_RING_BYTES) ||
 	    !dma_ring_init(&device.rx_ring, device.rx_owners,
-	    E1000_RX_RING_COUNT, device.rx_ring_buffer, E1000_RX_RING_BYTES) ||
+	    sizeof(device.rx_owners), E1000_RX_RING_COUNT, device.rx_ring_buffer,
+	    E1000_RX_RING_BYTES) ||
 	    !dma_ring_start(&device.tx_ring))
 		return false;
 	device.tx_ring_started = true;

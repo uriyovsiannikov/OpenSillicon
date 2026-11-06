@@ -4,7 +4,7 @@
 /* Public kernel interface for in-tree and loadable device drivers. Bump the
  * major version when an exported structure or function contract changes. */
 #define KERNEL_DRIVER_API_MAJOR 2U
-#define KERNEL_DRIVER_API_MINOR 23U
+#define KERNEL_DRIVER_API_MINOR 24U
 #define KERNEL_DRIVER_API_VERSION \
 	((KERNEL_DRIVER_API_MAJOR << 16) | KERNEL_DRIVER_API_MINOR)
 

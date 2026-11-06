@@ -18,12 +18,14 @@ dma_completion_barrier(void)
 
 bool
 dma_ring_init(struct dma_descriptor_ring *ring, uint8_t *owner_storage,
-	size_t descriptor_count, struct dma_buffer backing,
+	size_t owner_storage_bytes, size_t descriptor_count,
+	struct dma_buffer backing,
 	size_t descriptor_storage_bytes)
 {
 	struct dma_buffer_info info;
 
 	if (ring == NULL || owner_storage == NULL || descriptor_count == 0 ||
+	    owner_storage_bytes < descriptor_count ||
 	    descriptor_storage_bytes == 0 ||
 	    !dma_buffer_query(backing, &info) ||
 	    descriptor_storage_bytes > info.allocated_size)

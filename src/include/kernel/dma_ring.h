@@ -23,7 +23,8 @@ struct dma_descriptor_ring {
 };
 
 bool dma_ring_init(struct dma_descriptor_ring *ring, uint8_t *owner_storage,
-	size_t descriptor_count, struct dma_buffer backing,
+	size_t owner_storage_bytes, size_t descriptor_count,
+	struct dma_buffer backing,
 	size_t descriptor_storage_bytes);
 bool dma_ring_start(struct dma_descriptor_ring *ring);
 /* Call only after fully preparing the descriptor, including its device
