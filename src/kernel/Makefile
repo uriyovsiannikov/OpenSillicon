@@ -99,7 +99,7 @@ $(BUILD_DIR)/boot_entropy.o: src/kernel/core/boot/boot_entropy.c \
 
 $(BUILD_DIR)/entropy.o: src/kernel/random/entropy.c src/include/kernel/entropy.h \
 		src/include/kernel/random.h src/include/kernel/rdseed.h \
-		src/include/kernel/virtio_rng.h | $(BUILD_DIR)
+		src/include/kernel/virtio_rng.h src/include/kernel/spinlock.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -DOPEN_SILLICON_KERNEL -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/rdseed.o: src/kernel/drivers/entropy/rdseed.c src/include/kernel/rdseed.h | $(BUILD_DIR)

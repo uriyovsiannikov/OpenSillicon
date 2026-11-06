@@ -9,9 +9,9 @@
 
 #define KERNEL_ENTROPY_MAX_REQUEST 256U
 
-/* Manager operations are for serialized normal kernel context, not interrupt
- * handlers. The current busy guard and local interrupt masking implement the
- * project's single-CPU convention only; they are not an SMP lock. */
+/* Manager operations are for normal kernel context, not interrupt handlers.
+ * Shared manager metadata is protected across CPUs; reads remain serialized
+ * because providers may have a single shared hardware request buffer. */
 
 enum kernel_entropy_source {
 	KERNEL_ENTROPY_SOURCE_LIMINE = 0,

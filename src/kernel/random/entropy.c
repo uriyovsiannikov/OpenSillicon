@@ -5,6 +5,7 @@
 #include "kernel/entropy.h"
 #include "kernel/random.h"
 #include "kernel/rdseed.h"
+#include "kernel/spinlock.h"
 #include "kernel/virtio_rng.h"
 
 #define LIMINE_BYTES (BOOT_ENTROPY_MAX_VALUES * sizeof(uint64_t))
@@ -24,6 +25,7 @@ static struct source_entry sources[KERNEL_ENTROPY_SOURCE_COUNT];
 static uint8_t limine_candidate[LIMINE_BYTES];
 static size_t limine_offset;
 static size_t limine_length;
+static struct spinlock entropy_lock = SPINLOCK_INITIALIZER;
 
 static bool
 valid_source(enum kernel_entropy_source source)
@@ -35,24 +37,13 @@ valid_source(enum kernel_entropy_source source)
 static uint64_t
 entropy_guard_enter(void)
 {
-#ifdef OPEN_SILLICON_KERNEL
-	uint64_t flags;
-	__asm__ volatile ("pushfq; popq %0; cli" : "=r" (flags) : : "memory");
-	return flags;
-#else
-	return 0;
-#endif
+	return spinlock_lock_irqsave(&entropy_lock);
 }
 
 static void
 entropy_guard_leave(uint64_t flags)
 {
-#ifdef OPEN_SILLICON_KERNEL
-	if ((flags & (1ULL << 9)) != 0)
-		__asm__ volatile ("sti" : : : "memory");
-#else
-	(void)flags;
-#endif
+	spinlock_unlock_irqrestore(&entropy_lock, flags);
 }
 
 static bool
