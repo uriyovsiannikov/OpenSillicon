@@ -77,7 +77,8 @@ cyclone_udp_receive(void *context, const uint8_t source[4],
 	memcpy(entry->source.address, source, 4);
 	entry->source.port = source_port;
 	entry->length = length;
-	memcpy(entry->payload, payload, length);
+	if (length != 0)
+		memcpy(entry->payload, payload, length);
 	state->queue_count++;
 	state_guard_leave(flags);
 }
