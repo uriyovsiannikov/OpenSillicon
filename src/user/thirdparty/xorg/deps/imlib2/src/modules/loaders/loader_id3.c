@@ -323,7 +323,7 @@ extract_pic(struct id3_frame *frame, int dest)
     union id3_field *field;
     unsigned char const *data;
     id3_length_t    length;
-    int             done = 0;
+    size_t          done = 0;
 
     field = id3_frame_field(frame, 4);
     data = id3_field_getbinarydata(field, &length);
@@ -343,8 +343,10 @@ extract_pic(struct id3_frame *frame, int dest)
             perror("Unable to write to file");
             return 0;
         }
+        if (res == 0)
+            return 0;
         length -= res;
-        done += res;
+        done += (size_t)res;
     }
     return 1;
 }
