@@ -123,11 +123,10 @@ fd_object_get(struct fd_object *object)
 {
 	if (object == NULL || object->immortal)
 		return;
-	if (object->references == UINT32_MAX) {
+	if (__atomic_add_fetch(&object->references, 1, __ATOMIC_RELAXED) == 0) {
 		klog("OpenSillicon panic: file reference count overflow\n");
 		kernel_halt();
 	}
-	object->references++;
 }
 
 void
@@ -135,12 +134,13 @@ fd_object_put(struct fd_object *object)
 {
 	if (object == NULL || object->immortal)
 		return;
-	if (object->references == 0) {
+	uint32_t previous = __atomic_fetch_sub(&object->references, 1,
+	    __ATOMIC_ACQ_REL);
+	if (previous == 0) {
 		klog("OpenSillicon panic: file reference count underflow\n");
 		kernel_halt();
 	}
-	object->references--;
-	if (object->references != 0)
+	if (previous != 1)
 		return;
 	if (object->operations->close != NULL)
 		object->operations->close(object->context);
