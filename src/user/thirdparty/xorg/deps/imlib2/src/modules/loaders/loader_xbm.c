@@ -4,6 +4,8 @@
 #include "config.h"
 #include "Imlib2_Loader.h"
 
+#include <stdlib.h>
+
 #define DBG_PFX "LDR-xbm"
 
 static const char *const _formats[] = { "xbm" };
@@ -169,8 +171,12 @@ _load(ImlibImage *im, int load_data)
             /* Data */
             for (; *s != '\0';)
             {
+                char           *end;
+
                 nlen = -1;
-                sscanf(s, "%i%n", &val, &nlen);
+                val = (int)strtol(s, &end, 0);
+                if (end != s)
+                    nlen = (int)(end - s);
                 DL("Data '%s': %02x (%d)\n", s, val, nlen);
                 if (nlen < 0)
                     break;
@@ -202,7 +208,7 @@ _load(ImlibImage *im, int load_data)
 
   done:
     if (!header)
-        rc = LOAD_SUCCESS;
+        rc = y >= im->h ? LOAD_SUCCESS : LOAD_BADIMAGE;
 
   quit:
     return rc;
