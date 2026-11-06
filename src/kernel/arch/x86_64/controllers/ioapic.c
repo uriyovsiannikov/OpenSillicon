@@ -81,8 +81,8 @@ ioapic_init(const struct acpi_madt_info *madt)
 		for (redir = 0; redir < redir_count; redir++) {
 			uint8_t low = (uint8_t)(IOAPIC_REG_REDIR_BASE + 2 * redir);
 
-			ioapic_write(controller, (uint8_t)(low + 1), 0);
 			ioapic_write(controller, low, IOAPIC_REDIR_MASK);
+			ioapic_write(controller, (uint8_t)(low + 1), 0);
 		}
 		controller_count++;
 	}
