@@ -241,8 +241,9 @@ pid_t waitpid(pid_t pid,int *status,int options){
 }
 int execv(const char *path,char *const argv[]){
 	long argc=0;
-	while(argv!=0&&argc<17&&argv[argc]!=0)argc++;
+	while(argv!=0&&argc<16&&argv[argc]!=0)argc++;
 	if(argc==0){errno=EINVAL;return -1;}
+	if(argc==16&&argv[argc]!=0){errno=E2BIG;return -1;}
 	return (int)__libos_call(SYSCALL_EXEC_PATH_ARGV,(long)path,argc,(long)argv,0,0,0);
 }
 int execl(const char *path,const char *arg0,...){
@@ -257,7 +258,7 @@ int execl(const char *path,const char *arg0,...){
 		if(argument==0)break;
 		arguments[argc++]=argument;
 	}
-	if(argc==16){
+	if(argc==16&&arguments[argc-1]!=0){
 		char *extra=va_arg(args,char *);
 		if(extra!=0){va_end(args);errno=E2BIG;return -1;}
 	}
