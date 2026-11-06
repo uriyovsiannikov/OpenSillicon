@@ -1144,7 +1144,9 @@ find_directory_entry(struct silliconfs *filesystem,
 
 			if (record_length < SFS_DIR_HEADER ||
 			    record_length > SILLICONFS_BLOCK_SIZE - offset ||
-			    record_name_length == 0)
+			    record_length % 4 != 0 || record_name_length == 0 ||
+			    record_length < ((SFS_DIR_HEADER + record_name_length + 3U) &
+			    ~3U))
 				return -SFS_EIO;
 			if (record_name_length == name_length &&
 			    memcmp(record + SFS_DIR_HEADER, name, name_length) == 0) {
@@ -1502,10 +1504,12 @@ sfs_readdir(struct vnode *vnode, uint64_t index, struct vfs_dirent *entry)
 		for (uint32_t offset = 0; offset < SILLICONFS_BLOCK_SIZE;) {
 			const uint8_t *record = block + offset;
 			uint16_t length = get_le16(record + 4);
+			uint8_t name_length = record[6];
 
 			if (length < SFS_DIR_HEADER ||
 			    length > SILLICONFS_BLOCK_SIZE - offset ||
-			    record[6] == 0)
+			    length % 4 != 0 || name_length == 0 ||
+			    length < ((SFS_DIR_HEADER + name_length + 3U) & ~3U))
 				return -SFS_EIO;
 			if (current++ == index) {
 				struct sfs_inode target;
@@ -1520,7 +1524,7 @@ sfs_readdir(struct vnode *vnode, uint64_t index, struct vfs_dirent *entry)
 				entry->mode = target.mode & 07777U;
 				entry->type = (target.mode & SFS_MODE_TYPE) ==
 				    SFS_MODE_DIRECTORY ? VNODE_DIRECTORY : VNODE_REGULAR;
-				memcpy(entry->name, record + SFS_DIR_HEADER, record[6]);
+				memcpy(entry->name, record + SFS_DIR_HEADER, name_length);
 				return 1;
 			}
 			offset += length;
