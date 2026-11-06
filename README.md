@@ -5,7 +5,7 @@
   <img src="other/screenshot2.png" alt="OpenSillicon shell" width="620">
 </div>
 
-opensillicon is an experimental Unix-like operating system with a modular
+opensillicon is an experimental unix-like operating system with a modular
 monolithic kernel and a native userspace.
 
 ## what works
@@ -15,7 +15,6 @@ monolithic kernel and a native userspace.
 - vfs with ramfs, initramfs, devfs, procfs, and the native SilliconFS.
 - f/b terminal, ps/2 keyboard, shell, and core utilities.
 - native `libos` runtime.
-- GNU nano text editor (`nano /tmp/example.txt`).
 - tinyx session with `twm`, `xterm`, and `xeyes`.
 - network stack components for ethernet, arp, ipv4, icmp, udp, and tcp.
 
@@ -25,15 +24,15 @@ on a linux x86_64 host, install gcc, gnu binutils, gnu make, py3, qemu-x86 and `
 
 ```sh
 make
-make run       # UEFI QEMU, serial console
-make run-gui   # UEFI QEMU, graphical display
+make run       # serial console
+make run-gui   # graphical display
 ```
 
 ## source map
 
 - `src/kernel/` - kernel, architecture code, drivers, filesystems, and networking.
 - `src/user/` - init, shell, utilities, `libos`, and xorg components.
-- `src/include/` - kernel and userspace ABI headers.
+- `src/include/` - kernel and userspace abi headers.
 - `src/tests/` - host and qemu test harnesses.
 - `src/tools/` - image and filesystem build tools.
 - `src/mk/`, `src/limine/`, and `src/initramfs/` - build rules, bootloader files,
