@@ -20,6 +20,7 @@
  * OF THIS SOFTWARE.
  */
 
+#include <limits.h>
 #include "randrstr.h"
 #include "propertyst.h"
 #include "swaprep.h"
@@ -142,6 +143,8 @@ RRChangeOutputProperty(RROutputPtr output, Atom property, Atom type,
     Bool add = FALSE;
 
     sizeInBytes = format >> 3;
+    if (len > INT_MAX / sizeInBytes)
+        return BadAlloc;
     totalSize = len * sizeInBytes;
 
     /* first see if property already exists */
@@ -157,6 +160,13 @@ RRChangeOutputProperty(RROutputPtr output, Atom property, Atom type,
         prop_value = &prop->pending;
     else
         prop_value = &prop->current;
+
+    if (mode != PropModeReplace &&
+        prop_value->size > INT_MAX / sizeInBytes - len) {
+        if (add)
+            RRDestroyOutputProperty(prop);
+        return BadAlloc;
+    }
 
     /* To append or prepend to a property the request format and type
        must match those of the already defined property.  The
@@ -458,6 +468,9 @@ ProcRRChangeOutputProperty(ClientPtr client)
     if (len > ((0xffffffff - sizeof(xChangePropertyReq)) >> 2))
         return BadLength;
     sizeInBytes = format >> 3;
+    if (len > (INT_MAX - sizeof(xRRChangeOutputPropertyReq) - 3) /
+        sizeInBytes)
+        return BadLength;
     totalSize = len * sizeInBytes;
     REQUEST_FIXED_SIZE(xRRChangeOutputPropertyReq, totalSize);
 
