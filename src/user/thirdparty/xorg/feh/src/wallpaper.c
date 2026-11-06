@@ -35,7 +35,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 Window ipc_win = None;
 Window my_ipc_win = None;
 Atom ipc_atom = None;
-static unsigned char timeout = 0;
+static volatile sig_atomic_t timeout = 0;
 
 /*
  * This is a boolean indicating
@@ -821,7 +821,7 @@ char *enl_wait_for_reply(void)
 	for (; !XCheckTypedWindowEvent(disp, my_ipc_win, ClientMessage, &ev)
 	     && !timeout;);
 	alarm(0);
-	if (ev.xany.type != ClientMessage) {
+	if (timeout || ev.xany.type != ClientMessage) {
 		return(IPC_TIMEOUT);
 	}
 	for (i = 0; i < 20; i++) {
