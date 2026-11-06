@@ -250,6 +250,44 @@ allocate_command_dma(uint64_t physical[4], void *virtual_address[4],
 	return true;
 }
 
+static bool
+release_command_dma(volatile uint32_t *port, const uint64_t physical[4])
+{
+	uint32_t command;
+	uint32_t i;
+
+	command = mmio_read(port, PORT_CMD) & ~PORT_CMD_ST;
+	mmio_write(port, PORT_CMD, command);
+	for (i = 0; i < AHCI_TIMEOUT; i++)
+		if ((mmio_read(port, PORT_CMD) & PORT_CMD_CR) == 0)
+			break;
+	if (i == AHCI_TIMEOUT)
+		return false;
+	command = mmio_read(port, PORT_CMD) & ~PORT_CMD_FRE;
+	mmio_write(port, PORT_CMD, command);
+	for (i = 0; i < AHCI_TIMEOUT; i++)
+		if ((mmio_read(port, PORT_CMD) & PORT_CMD_FR) == 0)
+			break;
+	if (i == AHCI_TIMEOUT || (mmio_read(port, PORT_CI) & 1U) != 0)
+		return false;
+	mmio_write(port, PORT_CLB, 0);
+	mmio_write(port, PORT_CLB + 4, 0);
+	mmio_write(port, PORT_FB, 0);
+	mmio_write(port, PORT_FB + 4, 0);
+	for (i = 0; i < 4; i++) {
+		if (!pmm_free_page(physical[i])) {
+			klog("AHCI DMA allocation release failed\n");
+			kernel_halt();
+		}
+	}
+	state.headers = NULL;
+	state.table = NULL;
+	state.dma_buffer = NULL;
+	state.buffer_physical = 0;
+	state.port = NULL;
+	return true;
+}
+
 bool
 ahci_initialize(const struct pci_device_info *controller,
 	struct block_device *device)
@@ -383,26 +421,38 @@ ahci_initialize(const struct pci_device_info *controller,
 		mmio_write(port, PORT_CMD, mmio_read(port, PORT_CMD) | PORT_CMD_FRE);
 		mmio_write(port, PORT_CMD, mmio_read(port, PORT_CMD) | PORT_CMD_ST);
 		state.sector_size = 512;
-		if (issue_command(AHCI_CMD_IDENTIFY, 0, 0, false, true) != 0)
+		if (issue_command(AHCI_CMD_IDENTIFY, 0, 0, false, true) != 0) {
+			if (!release_command_dma(port, dma_physical))
+				return false;
 			continue;
+		}
 		memcpy(identify, state.dma_buffer, sizeof(identify));
 		state.lba48 = (identify[83] & (1U << 10)) != 0;
 		state.sector_count = state.lba48 ?
 		    ((uint64_t)identify[100] | (uint64_t)identify[101] << 16 |
 		    (uint64_t)identify[102] << 32 | (uint64_t)identify[103] << 48) :
 		    ((uint32_t)identify[60] | (uint32_t)identify[61] << 16);
-		if (state.sector_count == 0 || !state.lba48)
+		if (state.sector_count == 0 || !state.lba48) {
+			if (!release_command_dma(port, dma_physical))
+				return false;
 			continue;
+		}
 		if ((identify[106] & 0xc000U) == 0x4000U &&
 		    (identify[106] & (1U << 12)) != 0) {
 			uint32_t words = (uint32_t)identify[117] |
 			    (uint32_t)identify[118] << 16;
-			if (words > UINT32_MAX / 2)
+			if (words > UINT32_MAX / 2) {
+				if (!release_command_dma(port, dma_physical))
+					return false;
 				continue;
+			}
 			state.sector_size = words * 2;
 		}
-		if (state.sector_size != 512 && state.sector_size != 4096)
+		if (state.sector_size != 512 && state.sector_size != 4096) {
+			if (!release_command_dma(port, dma_physical))
+				return false;
 			continue;
+		}
 		state.supports_flush = (identify[82] & (1U << 12)) != 0 ||
 		    (identify[83] & (1U << 13)) != 0;
 		state.supports_flush_ext = (identify[83] & (1U << 13)) != 0;
