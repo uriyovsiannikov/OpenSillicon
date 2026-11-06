@@ -11,12 +11,12 @@ static int
 is_help(const char *text)
 {
 	static const char expected[] = "help";
+	size_t i;
 	if (text == NULL)
 		return 0;
-	for (size_t i = 0; i < sizeof(expected); i++)
-		if (text[i] != expected[i])
-			return 0;
-	return 1;
+	for (i = 0; expected[i] != '\0' && text[i] == expected[i]; i++)
+		;
+	return expected[i] == '\0' && text[i] == '\0';
 }
 
 static void
