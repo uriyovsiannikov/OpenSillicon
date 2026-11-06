@@ -39,15 +39,17 @@ _j2k_cb_err(const char *msg, void *data)
 #endif                          /*IMLIB2_DEBUG */
 
 static struct {
-    const unsigned char *data, *dptr;
+    const unsigned char *data;
     unsigned int    size;
+    unsigned int    offset;
 } mdata;
 
 static void
 mm_init(const void *src, unsigned int size)
 {
-    mdata.data = mdata.dptr = src;
+    mdata.data = src;
     mdata.size = size;
+    mdata.offset = 0;
 }
 
 static          OPJ_SIZE_T
@@ -55,13 +57,13 @@ mm_read(void *dst, OPJ_SIZE_T len, void *data)
 {
     DL("%s: len=%ld\n", __func__, (long)len);
 
-    if (mdata.dptr >= mdata.data + mdata.size)
+    if (mdata.offset >= mdata.size)
         return -1;              /* Out of data */
-    if (mdata.dptr + len > mdata.data + mdata.size)
-        len = mdata.data + mdata.size - mdata.dptr;
+    if (len > mdata.size - mdata.offset)
+        len = mdata.size - mdata.offset;
 
-    memcpy(dst, mdata.dptr, len);
-    mdata.dptr += len;
+    memcpy(dst, mdata.data + mdata.offset, len);
+    mdata.offset += (unsigned int)len;
 
     return len;
 }
@@ -71,12 +73,13 @@ mm_seek_cur(OPJ_OFF_T offs, void *data)
 {
     DL("%s: offs=%ld\n", __func__, (long)offs);
 
-    if (mdata.dptr + offs > mdata.data + mdata.size)
+    if (offs < -(OPJ_OFF_T)mdata.offset ||
+        offs > (OPJ_OFF_T)(mdata.size - mdata.offset))
         return 0;               /* Out of data */
 
-    mdata.dptr += offs;
+    mdata.offset = (unsigned int)((OPJ_OFF_T)mdata.offset + offs);
 
-    return mdata.dptr - mdata.data;
+    return mdata.offset;
 }
 
 static          OPJ_BOOL
@@ -84,10 +87,10 @@ mm_seek_set(OPJ_OFF_T offs, void *data)
 {
     DL("%s: offs=%ld\n", __func__, (long)offs);
 
-    if (offs > mdata.size)
+    if (offs < 0 || offs > mdata.size)
         return OPJ_FALSE;       /* Out of data */
 
-    mdata.dptr = mdata.data + offs;
+    mdata.offset = (unsigned int)offs;
 
     return OPJ_TRUE;
 }
