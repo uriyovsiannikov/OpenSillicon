@@ -179,6 +179,14 @@ ico_read_icon(ico_t *ico, int ino)
         goto bail;
     }
 
+    /* This decoder only handles uncompressed RGB data. In particular, the
+     * generic pixel path below reads three color bytes and is not valid for
+     * 16-bit pixels. */
+    if (ie->bih.compression != 0 ||
+        (ie->bih.bpp != 1 && ie->bih.bpp != 4 && ie->bih.bpp != 8 &&
+         ie->bih.bpp != 24 && ie->bih.bpp != 32))
+        goto bail;
+
     DL("Entry %2d: Icon: WxHxD = %dx%dx%d, colors = %d\n",
        ino, ie->w, ie->h, ie->bih.bpp, ie->bih.colors);
 
