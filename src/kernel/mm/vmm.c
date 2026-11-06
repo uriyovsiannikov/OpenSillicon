@@ -1763,6 +1763,8 @@ vmm_copy_from_user(const struct address_space *space, void *destination,
 			chunk = remaining;
 		if (!user_page_physical(space, current, &physical, false, false) ||
 		    hhdm_offset > UINT64_MAX - physical ||
+		    (current & (PAGE_SIZE - 1)) > UINTPTR_MAX -
+		    (uintptr_t)(hhdm_offset + physical) ||
 		    chunk - 1 > UINTPTR_MAX - (uintptr_t)(hhdm_offset + physical +
 		    (current & (PAGE_SIZE - 1))))
 			return false;
