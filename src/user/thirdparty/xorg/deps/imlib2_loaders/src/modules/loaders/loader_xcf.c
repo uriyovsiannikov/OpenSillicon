@@ -726,6 +726,13 @@ xcf_load_image_props(void)
              return 1;
 
           case PROP_COLORMAP:
+             if (xcf_read_int32(image->fp, &image->num_cols, 1) != 4 ||
+                 image->num_cols == 0 || image->num_cols > 256U)
+                return 0;
+             image->cp += 4;
+             image->cmap = malloc(sizeof(uint8_t) * image->num_cols * 3U);
+             if (image->cmap == NULL)
+                return 0;
              if (image->file_version == 0)
                {
                   unsigned int        i;
@@ -734,9 +741,10 @@ xcf_load_image_props(void)
                           "XCF warning: version 0 of XCF file format\n"
                           "did not save indexed colormaps correctly.\n"
                           "Substituting grayscale map.\n");
-                  image->cp += xcf_read_int32(image->fp, &image->num_cols, 1);
-                  image->cmap = malloc(sizeof(uint8_t) * image->num_cols * 3);
+                  if (image->cp > INT_MAX - (int)image->num_cols)
+                     return 0;
                   xcf_seek_pos(image->cp + image->num_cols);
+                  image->cp += (int)image->num_cols;
                   for (i = 0; i < image->num_cols; i++)
                     {
                        image->cmap[i * 3 + 0] = i;
@@ -747,11 +755,11 @@ xcf_load_image_props(void)
              else
                {
                   D("Loading colormap.\n");
-                  image->cp += xcf_read_int32(image->fp, &image->num_cols, 1);
-                  image->cmap = malloc(sizeof(uint8_t) * image->num_cols * 3);
-                  image->cp +=
-                     xcf_read_int8(image->fp, (uint8_t *) image->cmap,
-                                   image->num_cols * 3);
+                  if (xcf_read_int8(image->fp, (uint8_t *) image->cmap,
+                                    (int)(image->num_cols * 3U)) !=
+                      (int)(image->num_cols * 3U))
+                     return 0;
+                  image->cp += (int)(image->num_cols * 3U);
                }
              break;
 
