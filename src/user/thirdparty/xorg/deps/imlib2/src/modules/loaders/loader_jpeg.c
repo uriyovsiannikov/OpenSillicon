@@ -128,7 +128,8 @@ _load(ImlibImage *im, int load_data)
     jds.do_block_smoothing = FALSE;
     jpeg_start_decompress(&jds);
 
-    if ((jds.rec_outbuf_height > 16) || (jds.output_components <= 0))
+    if ((jds.rec_outbuf_height <= 0) || (jds.rec_outbuf_height > 16) ||
+        (jds.output_components <= 0))
         goto quit;
 
     jdata.data = malloc(w * 16 * jds.output_components);
@@ -143,13 +144,13 @@ _load(ImlibImage *im, int load_data)
     for (y = 0; y < jds.rec_outbuf_height; y++)
         line[y] = jdata.data + (y * w * jds.output_components);
 
-    for (l = 0; l < h; l += jds.rec_outbuf_height)
+    for (l = 0; l < h;)
     {
-        jpeg_read_scanlines(&jds, line, jds.rec_outbuf_height);
-
         scans = jds.rec_outbuf_height;
         if ((h - l) < scans)
             scans = h - l;
+        if (jpeg_read_scanlines(&jds, line, scans) != (JDIMENSION)scans)
+            goto quit;
 
         for (y = 0; y < scans; y++)
         {
@@ -228,12 +229,12 @@ _load(ImlibImage *im, int load_data)
             }
         }
 
-        if (ei.orientation != ORIENT_TOPLEFT &&
-            ei.orientation != ORIENT_TOPRIGHT)
-            continue;
-
-        if (im->lc && __imlib_LoadProgressRows(im, l, scans))
+        if ((ei.orientation == ORIENT_TOPLEFT ||
+            ei.orientation == ORIENT_TOPRIGHT) && im->lc &&
+            __imlib_LoadProgressRows(im, l, scans))
             QUIT_WITH_RC(LOAD_BREAK);
+
+        l += scans;
     }
     if (ei.orientation != ORIENT_TOPLEFT && ei.orientation != ORIENT_TOPRIGHT)
     {
@@ -241,7 +242,8 @@ _load(ImlibImage *im, int load_data)
             __imlib_LoadProgressRows(im, 0, im->h);
     }
 
-    jpeg_finish_decompress(&jds);
+    if (!jpeg_finish_decompress(&jds))
+        goto quit;
 
     rc = LOAD_SUCCESS;
 
