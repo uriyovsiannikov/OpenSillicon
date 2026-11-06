@@ -1492,6 +1492,12 @@ xcf_load_layer(void)
         layer_mask = xcf_load_channel();
         if (!layer_mask)
            goto error;
+        if (layer_mask->width != layer->width ||
+            layer_mask->height != layer->height)
+          {
+             free_layer(layer_mask);
+             goto error;
+          }
 
         /* set the offsets of the layer_mask */
         layer_mask->offset_x = layer->offset_x;
