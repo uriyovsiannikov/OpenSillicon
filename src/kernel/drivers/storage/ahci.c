@@ -70,6 +70,7 @@ struct ahci_state {
 	bool lba48;
 	bool supports_flush;
 	bool supports_flush_ext;
+	bool failed;
 	bool initialized;
 };
 
@@ -156,6 +157,10 @@ ahci_transfer(uint64_t lba, uint32_t count, void *buffer, bool write)
 	uint32_t i;
 	uint8_t *bytes = buffer;
 	uint64_t flags = spinlock_lock_irqsave(&ahci_command_lock);
+	if (state.failed) {
+		spinlock_unlock_irqrestore(&ahci_command_lock, flags);
+		return -EIO;
+	}
 
 	for (i = 0; i < count; i++) {
 		int error;
@@ -166,6 +171,9 @@ ahci_transfer(uint64_t lba, uint32_t count, void *buffer, bool write)
 		error = issue_command(write ? AHCI_CMD_WRITE_DMA_EXT :
 		    AHCI_CMD_READ_DMA_EXT, lba + i, 1, write, true);
 		if (error != 0) {
+			/* A timeout or task-file error may leave the HBA using the
+			 * shared command table and data buffer. Never reuse them. */
+			state.failed = true;
 			spinlock_unlock_irqrestore(&ahci_command_lock, flags);
 			return error;
 		}
@@ -203,8 +211,15 @@ device_flush(struct block_device *device)
 	if (!state.supports_flush)
 		return -EOPNOTSUPP;
 	flags = spinlock_lock_irqsave(&ahci_command_lock);
-	error = issue_command(state.supports_flush_ext ? AHCI_CMD_FLUSH_CACHE_EXT :
-	    AHCI_CMD_FLUSH_CACHE, 0, 0, false, false);
+	if (state.failed)
+		error = -EIO;
+	else {
+		error = issue_command(state.supports_flush_ext ?
+		    AHCI_CMD_FLUSH_CACHE_EXT : AHCI_CMD_FLUSH_CACHE,
+		    0, 0, false, false);
+		if (error != 0)
+			state.failed = true;
+	}
 	spinlock_unlock_irqrestore(&ahci_command_lock, flags);
 	return error;
 }
