@@ -493,8 +493,13 @@ void feh_event_handle_generic(winwidget winwid, unsigned int state, KeySym keysy
 			;
 			char *caption = FEH_FILE(winwid->file->data)->caption;
 			size_t cpos = strlen(caption);
-			while (--cpos && (caption[cpos] & 0x80) && !(caption[cpos] & 0x40)) {}
-			caption[cpos] = '\0';
+			if (cpos > 0) {
+				cpos--;
+				while (cpos > 0 && (caption[cpos] & 0x80) &&
+						!(caption[cpos] & 0x40))
+					cpos--;
+				caption[cpos] = '\0';
+			}
 			winwidget_render_image_cached(winwid);
 			break;
 		default:
