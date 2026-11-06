@@ -2876,9 +2876,10 @@ ProcQueryColors(register ClientPtr client)
 
         count = ((client->req_len << 2) - sizeof(xQueryColorsReq)) >> 2;
         prgbs = (xrgb *) ALLOCATE_LOCAL(count * sizeof(xrgb));
-        memset(prgbs, 0, count * sizeof(xrgb));
         if (!prgbs && count)
             return (BadAlloc);
+        if (count)
+            memset(prgbs, 0, count * sizeof(xrgb));
         if ((retval = QueryColors(pcmp, count, (Pixel *) & stuff[1], prgbs))) {
             if (prgbs)
                 DEALLOCATE_LOCAL(prgbs);
