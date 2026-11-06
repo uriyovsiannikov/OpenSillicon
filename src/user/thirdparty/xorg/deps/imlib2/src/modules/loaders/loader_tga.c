@@ -207,6 +207,8 @@ _load(ImlibImage *im, int load_data)
             goto quit;          /* only supporting 24/32bit palettes */
         int             palbytes = palcnt * palbpp;
 
+        if ((unsigned long)palbytes > datasize)
+            goto quit;
         fptr += palbytes;
         datasize -= palbytes;
     }
