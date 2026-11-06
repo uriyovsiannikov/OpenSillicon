@@ -136,11 +136,11 @@ execlp(const char *file, const char *arg, ...)
 int
 mkstemps(char *path, int suffix_length)
 {
-	static unsigned int sequence;
 	static const char digits[] = "0123456789abcdef";
 	size_t length, i;
 	unsigned int value;
-	int fd;
+	int random_fd;
+	int fd = -1;
 	if (path == NULL || suffix_length < 0) {
 		errno = EINVAL;
 		return -1;
@@ -151,17 +151,36 @@ mkstemps(char *path, int suffix_length)
 		errno = EINVAL;
 		return -1;
 	}
+	random_fd = open("/dev/urandom", O_RDONLY);
+	if (random_fd < 0)
+		return -1;
 	for (unsigned int attempt = 0; attempt < 256; attempt++) {
-		value = ++sequence ^ ((unsigned int)getpid() << 8);
+		size_t received = 0;
+		while (received < sizeof(value)) {
+			ssize_t amount = read(random_fd,
+			    (char *)&value + received, sizeof(value) - received);
+			if (amount <= 0 || (size_t)amount > sizeof(value) - received) {
+				int saved_errno = amount < 0 ? errno : EIO;
+				(void)close(random_fd);
+				errno = saved_errno;
+				return -1;
+			}
+			received += (size_t)amount;
+		}
 		for (i = 0; i < 6; i++) {
 			path[length - suffix_length - 1 - i] = digits[value & 15U];
 			value >>= 4;
 		}
 		fd = open(path, O_RDWR | O_CREAT | O_EXCL, 0600);
 		if (fd >= 0 || errno != EEXIST)
-			return fd;
+			break;
 	}
-	return -1;
+	{
+		int saved_errno = errno;
+		(void)close(random_fd);
+		errno = saved_errno;
+	}
+	return fd;
 }
 
 int mkstemp(char *path) { return mkstemps(path, 0); }
