@@ -22,15 +22,17 @@ _tiff_error(const char *module, const char *fmt, va_list ap)
 }
 
 static struct {
-    const unsigned char *data, *dptr;
+    const unsigned char *data;
     unsigned int    size;
+    unsigned int    offset;
 } mdata;
 
 static void
 mm_init(const void *src, unsigned int size)
 {
-    mdata.data = mdata.dptr = src;
+    mdata.data = src;
     mdata.size = size;
+    mdata.offset = 0;
 }
 
 static          tmsize_t
@@ -38,11 +40,11 @@ _tiff_read(thandle_t ctx, void *buf, tmsize_t len)
 {
     DD("%s: len=%ld\n", __func__, (long)len);
 
-    if (mdata.dptr + len > mdata.data + mdata.size)
+    if (len < 0 || (uintmax_t)len > mdata.size - mdata.offset)
         return 0;               /* Out of data */
 
-    memcpy(buf, mdata.dptr, len);
-    mdata.dptr += len;
+    memcpy(buf, mdata.data + mdata.offset, (size_t)len);
+    mdata.offset += (unsigned int)len;
 
     return len;
 }
@@ -58,7 +60,8 @@ _tiff_write(thandle_t ctx, void *buf, tmsize_t len)
 static          toff_t
 _tiff_seek(thandle_t ctx, toff_t offs, int whence)
 {
-    const unsigned char *dptr;
+    unsigned int    base, target;
+    toff_t          back;
 
     DD("%s: offs=%ld, whence=%d\n", __func__, (long)offs, whence);
 
@@ -67,22 +70,31 @@ _tiff_seek(thandle_t ctx, toff_t offs, int whence)
     default:
         return -1;
     case SEEK_SET:
-        dptr = mdata.data + offs;
+        base = 0;
         break;
     case SEEK_CUR:
-        dptr = mdata.data += offs;
+        base = mdata.offset;
         break;
     case SEEK_END:
-        dptr = mdata.data + mdata.size + offs;
+        base = mdata.size;
         break;
     }
 
-    if (dptr > mdata.data + mdata.size)
-        return -1;              /* Out of data */
+    if (offs <= mdata.size - base)
+        target = base + (unsigned int)offs;
+    else
+    {
+        /* TIFF uses an unsigned offset type, so negative relative seeks are
+         * represented as two's-complement values. */
+        back = (toff_t)0 - offs;
+        if (back > base)
+            return -1;
+        target = base - (unsigned int)back;
+    }
 
-    mdata.dptr = dptr;
+    mdata.offset = target;
 
-    return mdata.dptr - mdata.data;
+    return target;
 }
 
 static int
