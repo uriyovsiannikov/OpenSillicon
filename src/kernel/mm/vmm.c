@@ -1072,7 +1072,8 @@ vmm_private_protect(struct address_space *space, uint64_t base,
 		return -EOPNOTSUPP;
 	if (!vmm_private_protection_valid(protection))
 		return -EINVAL;
-	if (!initialized || !address_space_valid(space) || space == &kernel_space ||
+	if (!vmm_mutation_allowed() || !initialized ||
+	    !address_space_valid(space) || space == &kernel_space ||
 	    !vmm_private_protection_range(base, length, &rounded_length, &end) ||
 	    base < PRIVATE_MAP_USABLE_START || end > PRIVATE_MAP_USABLE_END)
 		return -EINVAL;
