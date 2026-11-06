@@ -121,7 +121,8 @@ cyclone_nic_send(NetInterface *interface, const NetBuffer *buffer,
 	(void)ancillary;
 
 	if (ethernet_device == NULL || length < offset || length - offset >
-	    NETBUF_CAPACITY || !netbuf_alloc(NETBUF_OWNER_CORE, &packet))
+	    NETBUF_CAPACITY - NETBUF_HEADROOM ||
+	    !netbuf_alloc(NETBUF_OWNER_CORE, &packet))
 		return ERROR_OUT_OF_RESOURCES;
 	length -= offset;
 	destination = netbuf_data(packet, NETBUF_OWNER_CORE);
