@@ -428,9 +428,12 @@ _load(ImlibImage *im, int load_data)
     case ORIENTATION_RIGHTTOP:
     case ORIENTATION_RIGHTBOT:
     case ORIENTATION_LEFTBOT:
-        im->w = rgba_image.rgba.height;
-        im->h = rgba_image.rgba.width;
-        break;
+        /* raster() does not transpose pixel coordinates for rotated TIFFs.
+         * Reject them instead of letting a wide image write past the buffer
+         * whose dimensions would otherwise be swapped here. */
+        goto quit;
+    default:
+        goto quit;
     }
     if (!IMAGE_DIMENSIONS_OK(im->w, im->h))
         goto quit;
