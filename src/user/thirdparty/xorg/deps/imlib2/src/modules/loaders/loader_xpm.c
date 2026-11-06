@@ -1,6 +1,7 @@
 #include "config.h"
 #include "Imlib2_Loader.h"
 
+#include <ctype.h>
 #include <stdbool.h>
 
 #define DBG_PFX "LDR-xpm"
@@ -180,10 +181,23 @@ xpm_parse_cmap_line(const char *line, int len, int cpp, cmap_t *cme)
 
     for (i = cpp; i < len;)
     {
+        int             start;
+
         s[0] = '\0';
-        nr = 0;
-        sscanf(&line[i], "%255s %n", s, &nr);
-        i += nr;
+        while (i < len && isspace((unsigned char)line[i]))
+            i++;
+        if (i >= len)
+            break;
+        start = i;
+        while (i < len && !isspace((unsigned char)line[i]))
+            i++;
+        nr = i - start;
+        if (nr >= (int)sizeof(s))
+            return -1;
+        memcpy(s, line + start, (size_t)nr);
+        s[nr] = '\0';
+        while (i < len && isspace((unsigned char)line[i]))
+            i++;
         is_tag = !strcmp(s, "c") || !strcmp(s, "m") || !strcmp(s, "s") ||
             !strcmp(s, "g4") || !strcmp(s, "g");
         is_eol = i >= len;
