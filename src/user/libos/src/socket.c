@@ -46,9 +46,10 @@ parse_ipv4(const char *text, uint8_t address[4])
 		unsigned int value = 0;
 		unsigned int digits = 0;
 		while (*cursor >= '0' && *cursor <= '9') {
-			value = value * 10U + (unsigned int)(*cursor++ - '0');
-			if (value > 255U)
+			unsigned int digit = (unsigned int)(*cursor++ - '0');
+			if (value > (255U - digit) / 10U)
 				return 0;
+			value = value * 10U + digit;
 			digits++;
 		}
 		if (digits == 0 || (part != 3 && *cursor++ != '.') ||
@@ -265,11 +266,14 @@ parse_service(const char *service, uint16_t *port)
 	if (*service == '\0')
 		return 0;
 	for (; *service != '\0'; service++) {
+		unsigned int digit;
+
 		if (*service < '0' || *service > '9')
 			return 0;
-		value = value * 10U + (unsigned int)(*service - '0');
-		if (value > 65535U)
+		digit = (unsigned int)(*service - '0');
+		if (value > (65535U - digit) / 10U)
 			return 0;
+		value = value * 10U + digit;
 	}
 	*port = (uint16_t)value;
 	return 1;
