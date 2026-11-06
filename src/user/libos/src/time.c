@@ -2,11 +2,13 @@
 #include <sys/time.h>
 #include <errno.h>
 #include <stddef.h>
+#include <stdint.h>
+#include <limits.h>
 
 #include "abi/syscall.h"
 #include "internal.h"
 
-static int leap_year(int year){return year%4==0&&(year%100!=0||year%400==0);}
+static int leap_year(int64_t year){return year%4==0&&(year%100!=0||year%400==0);}
 
 struct tm *
 gmtime(const time_t *value)
@@ -14,14 +16,23 @@ gmtime(const time_t *value)
 	static struct tm result;
 	static const int month_days[] = {31,28,31,30,31,30,31,31,30,31,30,31};
 	long seconds, days, day_seconds;
-	int year=1970, month, yday=0;
+	int64_t year = 1970;
+	int month, yday=0;
 	if(value==NULL)return NULL;
 	seconds=*value;
 	days=seconds/86400;
 	day_seconds=seconds%86400;
 	if(day_seconds<0){day_seconds+=86400;days--;}
 	if(days<0)return NULL;
+	/* Skip complete Gregorian 400-year cycles (146097 days). */
+	{
+		uint64_t cycles = (uint64_t)days / 146097U;
+		year += (int64_t)(cycles * 400U);
+		days = (long)((uint64_t)days % 146097U);
+	}
 	while(days >= (leap_year(year)?366:365)){days-=leap_year(year)?366:365;year++;}
+	if (year - 1900 > INT_MAX)
+		return NULL;
 	yday=(int)days;
 	for(month=0;month<11;month++){int span=month_days[month]+(month==1&&leap_year(year));if(days<span)break;days-=span;}
 	result.tm_sec=(int)(day_seconds%60);
