@@ -200,8 +200,10 @@ load(ImlibImage * im, ImlibProgressFunction progress,
         else
           {
              uLongf              dlen;
+             uLongf              expected;
 
-             dlen = w * h * sizeof(uint32_t);
+             expected = (uLongf)w * (uLongf)h * sizeof(uint32_t);
+             dlen = expected;
              im->data = malloc(w * h * sizeof(uint32_t));
              if (!im->data)
                {
@@ -209,8 +211,15 @@ load(ImlibImage * im, ImlibProgressFunction progress,
                   eet_close(ef);
                   return 0;
                }
-             uncompress((Bytef *) im->data, &dlen, (Bytef *) body,
-                        (uLongf) (size - 32));
+             if (uncompress((Bytef *) im->data, &dlen, (Bytef *) body,
+                            (uLongf) (size - 32)) != Z_OK || dlen != expected)
+               {
+                  free(im->data);
+                  im->data = NULL;
+                  free(ret);
+                  eet_close(ef);
+                  return 0;
+               }
 #ifdef WORDS_BIGENDIAN
              {
                 int                 x;
