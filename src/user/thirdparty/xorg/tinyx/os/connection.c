@@ -74,6 +74,7 @@ SOFTWARE.
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 #include <sys/socket.h>
 
@@ -435,6 +436,16 @@ ClientAuthorized(ClientPtr client,
 
     if (auth_id == (XID) ~0L)
     {
+	/* Without a loaded cookie file, the default local-host rule would
+	 * admit every local account. Restrict that fallback to the user who
+	 * owns this server; explicit -ac and valid cookie authentication retain
+	 * their existing behavior. */
+	if (!defeatAccessControl && LocalClient(client)) {
+	    int peer_uid;
+	    if (LocalClientCred(client, &peer_uid, NULL) == -1 ||
+		peer_uid != (int)geteuid())
+		return "Client is not authorized to connect to Server";
+	}
 	if (
 	    _XSERVTransGetPeerAddr (trans_conn,
 	        &family, &fromlen, &from) != -1)
