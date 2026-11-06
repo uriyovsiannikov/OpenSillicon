@@ -31,8 +31,6 @@ static const char *const _formats[] = { "png" };
 #define APNG_BLEND_OP_SOURCE    0
 #define APNG_BLEND_OP_OVER      1
 
-#define mm_check(p) ((const char *)(p) <= (const char *)im->fi->fdata + im->fi->fsize)
-
 typedef struct __PACKED__ {
     uint32_t        len;
     union {
@@ -98,6 +96,26 @@ typedef struct {
     const png_chunk_t *pch_fctl;        // Placed here to avoid clobber warning
     char            interlace;
 } ctx_t;
+
+/* Validate a complete PNG chunk before reading its payload or CRC. */
+static bool
+chunk_in_bounds(const ImlibImage *im, const unsigned char *ptr,
+                unsigned int *length)
+{
+    const unsigned char *data = im->fi->fdata;
+    size_t offset = (size_t)(ptr - data);
+    size_t file_size = (size_t)im->fi->fsize;
+    size_t remaining;
+
+    if (offset > file_size)
+        return false;
+    remaining = file_size - offset;
+    if (remaining < 12)
+        return false;
+
+    *length = htonl(((const png_chunk_t *)ptr)->hdr.len);
+    return (size_t)*length <= remaining - 12;
+}
 
 #if 0
 static const unsigned char png_sig[] = {
@@ -342,16 +360,13 @@ _load(ImlibImage *im, int load_data)
     int             ic = 0;
 #endif
 
-    for (;; fptr += 8 + len + 4)
+    for (;; fptr += (size_t)len + 12)
     {
+        if (!chunk_in_bounds(im, fptr, &len))
+            goto quit;
         chunk = PCAST(const png_chunk_t *, fptr);
-
-        len = htonl(chunk->hdr.len);
         DL("Scan %3d: %06lx: %6d: %.4s: ", ic++,
            (long)(fptr - (unsigned char *)im->fi->fdata), len, chunk->hdr.name);
-        if (!mm_check(fptr + len))
-            break;
-
         switch (chunk->hdr.type)
         {
         case PNG_TYPE_IDAT:
@@ -367,6 +382,8 @@ _load(ImlibImage *im, int load_data)
 #endif
 
         case PNG_TYPE_acTL:
+            if (len != sizeof(png_actl_t))
+                goto quit;
             seen_actl = true;
 #define P (&chunk->actl)
             pf = __imlib_GetFrame(im);
@@ -382,6 +399,9 @@ _load(ImlibImage *im, int load_data)
 #undef P
 
         case PNG_TYPE_fcTL:
+            /* The in-memory struct may have tail padding; fcTL is 26 bytes. */
+            if (len != 26U)
+                goto quit;
 #define P (&chunk->fctl)
             fcount++;
             DL("frame=%d(%d) x,y=%d,%d wxh=%dx%d delay=%d/%d disp=%d blend=%d\n",       //
@@ -434,16 +454,13 @@ _load(ImlibImage *im, int load_data)
     ic = 0;
 #endif
 
-    for (;; fptr += 8 + len + 4)
+    for (;; fptr += (size_t)len + 12)
     {
+        if (!chunk_in_bounds(im, fptr, &len))
+            goto quit;
         chunk = PCAST(const png_chunk_t *, fptr);
-
-        len = htonl(chunk->hdr.len);
         DL("Chunk %3d: %06lx: %6d: %.4s: ", ic++,
            (long)(fptr - (unsigned char *)im->fi->fdata), len, chunk->hdr.name);
-        if (!mm_check(fptr + len))
-            break;
-
         switch (chunk->hdr.type)
         {
         case PNG_TYPE_IHDR:
@@ -542,6 +559,8 @@ _load(ImlibImage *im, int load_data)
             DL("\n");
             if (!save_fdat)
                 continue;
+            if (len < 4)
+                QUIT_WITH_RC(LOAD_BADIMAGE);
             /* Process fake IDAT frame data */
             cbuf.hdr.len = htonl(len - 4);
             memcpy(cbuf.hdr.name, "IDAT", 4);
@@ -558,7 +577,7 @@ _load(ImlibImage *im, int load_data)
             break;
         }
 
-        png_process_data(png_ptr, info_ptr, fptr, len + 12);
+        png_process_data(png_ptr, info_ptr, fptr, (size_t)len + 12);
 
         if (chunk->hdr.type == PNG_TYPE_IEND)
             break;
