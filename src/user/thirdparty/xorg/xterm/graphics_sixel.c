@@ -588,7 +588,10 @@ parse_sixel_char(char cp)
 		    }
 		}
 	    } else {
-		s_context.col += s_accumulator;
+		if (s_accumulator > s_graphic->max_width - s_context.col)
+		    s_context.col = s_graphic->max_width;
+		else
+		    s_context.col += s_accumulator;
 	    }
 	} else {
 	    TRACE(("DATA_ERROR: sixel data string ignoring repeat operator followed by control: %c (%d)\n",
@@ -833,7 +836,8 @@ parse_sixel_char(char cp)
 		return;
 	    }
 	}
-	s_context.col++;
+	if (s_context.col < s_graphic->max_width)
+	    s_context.col++;
 	if (s_screen->incremental_graphics)
 	    parse_sixel_incremental_display();
     } else if (cp == '$') {	/* DECGCR */
@@ -852,7 +856,10 @@ parse_sixel_char(char cp)
 	    scroll_lines++;
 	}
 	s_context.col = 0;
-	s_context.row += 6;
+	if (s_context.row > s_graphic->max_height - 6)
+	    s_context.row = s_graphic->max_height;
+	else
+	    s_context.row += 6;
 	TRACE2(("new row location is %u\n", s_context.row));
 	/* If we hit the bottom margin on the graphics page (well, we just use
 	 * the text margin for now), the behavior is to either scroll or to
