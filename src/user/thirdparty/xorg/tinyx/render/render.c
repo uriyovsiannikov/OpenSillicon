@@ -1157,9 +1157,11 @@ ProcRenderAddGlyphs(ClientPtr client)
         return RenderErrBase + BadGlyphSet;
     }
 
+    remain = (client->req_len << 2) - sizeof(xRenderAddGlyphsReq);
+    if (stuff->nglyphs > (CARD32)(remain /
+        (sizeof(CARD32) + sizeof(xGlyphInfo))))
+        return BadLength;
     nglyphs = stuff->nglyphs;
-    if (nglyphs > UINT32_MAX / sizeof(GlyphNewRec))
-        return BadAlloc;
 
     if (nglyphs <= NLOCALGLYPH)
         glyphsBase = glyphsLocal;
@@ -1169,8 +1171,6 @@ ProcRenderAddGlyphs(ClientPtr client)
             return BadAlloc;
     }
 
-    remain = (client->req_len << 2) - sizeof(xRenderAddGlyphsReq);
-
     glyphs = glyphsBase;
 
     gids = (CARD32 *) (stuff + 1);
@@ -1178,6 +1178,13 @@ ProcRenderAddGlyphs(ClientPtr client)
     bits = (CARD8 *) (gi + nglyphs);
     remain -= (sizeof(CARD32) + sizeof(xGlyphInfo)) * nglyphs;
     while (remain >= 0 && nglyphs) {
+        size_t row_size = (size_t)PixmapBytePad(gi->width,
+            glyphDepths[glyphSet->fdepth]);
+        if (row_size != 0 && gi->height > (size_t)remain / row_size) {
+            err = BadLength;
+            goto bail;
+        }
+        size = (int)((size_t)gi->height * row_size);
         glyph = AllocateGlyph(gi, glyphSet->fdepth);
         if (!glyph) {
             err = BadAlloc;
@@ -1187,9 +1194,6 @@ ProcRenderAddGlyphs(ClientPtr client)
         glyphs->glyph = glyph;
         glyphs->id = *gids;
 
-        size = glyph->size - sizeof(xGlyphInfo);
-        if (remain < size)
-            break;
         memcpy((CARD8 *) (glyph + 1), bits, size);
 
         if (size & 3)

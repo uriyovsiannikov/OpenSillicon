@@ -26,6 +26,8 @@
 #include <dix-config.h>
 #endif
 
+#include <limits.h>
+
 #include "misc.h"
 #include "scrnintstr.h"
 #include "os.h"
@@ -549,18 +551,24 @@ AllocateGlyph(xGlyphInfo * gi, int fdepth)
 {
     PictureScreenPtr ps;
 
-    int size;
+    size_t row_size, size;
 
     GlyphPtr glyph;
 
     int i;
 
-    size = gi->height * PixmapBytePad(gi->width, glyphDepths[fdepth]);
+    if (fdepth < 0 || fdepth >= GlyphFormatNum)
+        return NULL;
+    row_size = (size_t)PixmapBytePad(gi->width, glyphDepths[fdepth]);
+    if (row_size != 0 && gi->height >
+        (size_t)(INT_MAX - sizeof(xGlyphInfo)) / row_size)
+        return NULL;
+    size = (size_t)gi->height * row_size;
     glyph = malloc(size + sizeof(GlyphRec));
     if (!glyph)
         return 0;
     glyph->refcnt = 0;
-    glyph->size = size + sizeof(xGlyphInfo);
+    glyph->size = (CARD32)(size + sizeof(xGlyphInfo));
     glyph->info = *gi;
 
     if (globalTotalGlyphPrivateSize) {
