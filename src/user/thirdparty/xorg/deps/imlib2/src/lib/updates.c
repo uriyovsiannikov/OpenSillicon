@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "image.h"
 #include "updates.h"
 
 enum _t_used {
@@ -32,6 +33,8 @@ __imlib_MergeUpdate(ImlibUpdate *u, int w, int h, int hgapmax)
     /* if theres no rects to process.. return NULL */
     if (!u)
         return NULL;
+    if (!IMAGE_DIMENSIONS_OK(w, h))
+        return NULL;
     tw = w >> TB;
     if (w & TM)
         tw++;
@@ -44,7 +47,23 @@ __imlib_MergeUpdate(ImlibUpdate *u, int w, int h, int hgapmax)
     /* fill in all tiles */
     for (uu = u; uu; uu = uu->next)
     {
-        CLIP(uu->x, uu->y, uu->w, uu->h, 0, 0, w, h);
+        int64_t         x1 = uu->x, y1 = uu->y;
+        int64_t         x2 = x1 + uu->w, y2 = y1 + uu->h;
+
+        if (x1 < 0)
+            x1 = 0;
+        if (y1 < 0)
+            y1 = 0;
+        if (x2 > w)
+            x2 = w;
+        if (y2 > h)
+            y2 = h;
+        if (x2 <= x1 || y2 <= y1)
+            continue;
+        uu->x = (int)x1;
+        uu->y = (int)y1;
+        uu->w = (int)(x2 - x1);
+        uu->h = (int)(y2 - y1);
         for (y = uu->y >> TB; y <= ((uu->y + uu->h - 1) >> TB); y++)
         {
             for (x = uu->x >> TB; x <= ((uu->x + uu->w - 1) >> TB); x++)
@@ -150,9 +169,12 @@ __imlib_AddUpdate(ImlibUpdate *u, int x, int y, int w, int h)
 {
     ImlibUpdate    *nu;
 
-    if ((w < 1) || (h < 1) || ((x + w) < 1) || ((y + h) < 1))
+    if ((w < 1) || (h < 1) ||
+        ((int64_t)x + w < 1) || ((int64_t)y + h < 1))
         return u;
     nu = malloc(sizeof(ImlibUpdate));
+    if (!nu)
+        return u;
     nu->x = x;
     nu->y = y;
     nu->w = w;
@@ -178,23 +200,24 @@ __imlib_FreeUpdates(ImlibUpdate *u)
 ImlibUpdate    *
 __imlib_DupUpdates(ImlibUpdate *u)
 {
-    ImlibUpdate    *uu, *cu, *pu, *ru;
+    ImlibUpdate    *head = NULL, **tail = &head;
 
-    if (!u)
-        return NULL;
-
-    uu = malloc(sizeof(ImlibUpdate));
-    memcpy(uu, u, sizeof(ImlibUpdate));
-    cu = u->next;
-    pu = u;
-    ru = uu;
-    while (cu)
+    for (; u; u = u->next)
     {
-        uu = malloc(sizeof(ImlibUpdate));
-        memcpy(uu, u, sizeof(ImlibUpdate));
-        pu->next = uu;
-        pu = cu;
-        cu = cu->next;
+        ImlibUpdate *copy = malloc(sizeof(*copy));
+
+        if (!copy)
+        {
+            __imlib_FreeUpdates(head);
+            return NULL;
+        }
+        copy->x = u->x;
+        copy->y = u->y;
+        copy->w = u->w;
+        copy->h = u->h;
+        copy->next = NULL;
+        *tail = copy;
+        tail = &copy->next;
     }
-    return ru;
+    return head;
 }
