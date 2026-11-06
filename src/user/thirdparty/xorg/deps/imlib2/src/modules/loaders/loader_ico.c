@@ -15,31 +15,36 @@
 static const char *const _formats[] = { "ico" };
 
 static struct {
-    const unsigned char *data, *dptr;
+    const unsigned char *data;
     unsigned int    size;
+    unsigned int    offset;
 } mdata;
 
 static void
 mm_init(const void *src, unsigned int size)
 {
-    mdata.data = mdata.dptr = src;
+    mdata.data = src;
     mdata.size = size;
+    mdata.offset = 0;
 }
 
-static void
+static int
 mm_seek(unsigned int offs)
 {
-    mdata.dptr = mdata.data + offs;
+    if (offs > mdata.size)
+        return 1;
+    mdata.offset = offs;
+    return 0;
 }
 
 static int
 mm_read(void *dst, unsigned int len)
 {
-    if (mdata.dptr + len > mdata.data + mdata.size)
+    if (len > mdata.size - mdata.offset)
         return 1;               /* Out of data */
 
-    memcpy(dst, mdata.dptr, len);
-    mdata.dptr += len;
+    memcpy(dst, mdata.data + mdata.offset, len);
+    mdata.offset += len;
 
     return 0;
 }
@@ -119,7 +124,8 @@ ico_read_idir(ico_t *ico, int ino)
 
     ie = &ico->ie[ino];
 
-    mm_seek(sizeof(idir_t) + ino * sizeof(ide_t));
+    if (mm_seek(sizeof(idir_t) + ino * sizeof(ide_t)))
+        return;
     if (mm_read(&ie->ide, sizeof(ie->ide)))
         return;
 
@@ -148,7 +154,8 @@ ico_read_icon(ico_t *ico, int ino)
 
     ie = &ico->ie[ino];
 
-    mm_seek(ie->ide.offs);
+    if (mm_seek(ie->ide.offs))
+        goto bail;
     if (mm_read(&ie->bih, sizeof(ie->bih)))
         goto bail;
 
