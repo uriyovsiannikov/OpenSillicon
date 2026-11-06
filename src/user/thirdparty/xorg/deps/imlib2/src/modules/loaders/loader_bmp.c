@@ -10,6 +10,8 @@
 #include "config.h"
 #include "Imlib2_Loader.h"
 
+#include <limits.h>
+
 #define DBG_PFX "LDR-bmp"
 #define DD(fmt...)
 
@@ -178,6 +180,9 @@ _load(ImlibImage *im, int load_data)
 
     rc = LOAD_FAIL;
 
+    if ((uintmax_t)im->fi->fsize > UINT_MAX)
+        return LOAD_BADIMAGE;
+
     fptr = im->fi->fdata;
     mm_init(im->fi->fdata, im->fi->fsize);
 
@@ -215,6 +220,8 @@ _load(ImlibImage *im, int load_data)
 
     comp = BI_RGB;
     amask = rmask = gmask = bmask = 0;
+    for (i = 0; i < 256; i++)
+        argbCmap[i] = 0xff000000U;
     ashift1 = rshift1 = gshift1 = bshift1 = 0;
     ashift2 = rshift2 = gshift2 = bshift2 = 1;
 
@@ -265,6 +272,23 @@ _load(ImlibImage *im, int load_data)
 
     if (!IMAGE_DIMENSIONS_OK(w, h))
         goto quit;
+
+    if ((bitcount == 1 && comp != BI_RGB) ||
+        (bitcount == 4 && comp != BI_RGB && comp != BI_RLE4) ||
+        (bitcount == 8 && comp != BI_RGB && comp != BI_RLE8) ||
+        (bitcount == 16 && comp != BI_RGB && comp != BI_BITFIELDS &&
+        comp != BI_ALPHABITFIELDS) ||
+        (bitcount == 24 && comp != BI_RGB) ||
+        (bitcount == 32 && comp != BI_RGB && comp != BI_BITFIELDS &&
+        comp != BI_ALPHABITFIELDS))
+        goto quit;
+
+    if (comp != BI_RLE4 && comp != BI_RLE8) {
+        uint64_t row_bytes = (((uint64_t)(unsigned int)w * bitcount + 31U) /
+            32U) * 4U;
+        if (row_bytes * (unsigned int)h > imgsize)
+            goto quit;
+    }
 
     switch (bitcount)
     {
@@ -400,6 +424,12 @@ _load(ImlibImage *im, int load_data)
 
     if (!__imlib_AllocateData(im))
         QUIT_WITH_RC(LOAD_OOM);
+
+    pixel = bitcount <= 8 && ncols != 0 ? argbCmap[0] : 0xff000000U;
+    for (uint64_t pixel_index = 0;
+        pixel_index < (uint64_t)(unsigned int)w * (unsigned int)h;
+        pixel_index++)
+        im->data[pixel_index] = pixel;
 
     fptr += bfh_offset;
 
