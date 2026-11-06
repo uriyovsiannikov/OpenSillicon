@@ -550,8 +550,16 @@ parse_sixel_char(char cp)
     if (isdigit(CharOf(cp))) {
 	if (s_accumulator == -1)
 	    s_accumulator = 0;
-	s_accumulator *= 10;
-	s_accumulator += cp - '0';
+	/* Parameters arrive in the terminal stream and may contain arbitrarily
+	 * many digits.  Keep the accumulator representable before multiplying;
+	 * oversized values are already rejected or capped by their consumers.
+	 */
+	if (s_accumulator <= (MaxSParm - (cp - '0')) / 10) {
+	    s_accumulator *= 10;
+	    s_accumulator += cp - '0';
+	} else {
+	    s_accumulator = MaxSParm;
+	}
 	return;
     }
 
