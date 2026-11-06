@@ -1534,6 +1534,8 @@ ProcRenderCreateCursor(ClientPtr client)
 
     CARD32 *argbbits, *argb;
 
+    size_t argb_size;
+
     unsigned char *srcbits, *srcline;
 
     unsigned char *mskbits, *mskline;
@@ -1564,7 +1566,10 @@ ProcRenderCreateCursor(ClientPtr client)
     height = pSrc->pDrawable->height;
     if (stuff->x > width || stuff->y > height)
         return (BadMatch);
-    argbbits = malloc(width * height * sizeof(CARD32));
+    if (height && (size_t) width > ((size_t) -1 / sizeof(CARD32)) / height)
+        return BadAlloc;
+    argb_size = (size_t) width * height * sizeof(CARD32);
+    argbbits = malloc(argb_size);
     if (!argbbits)
         return (BadAlloc);
 
