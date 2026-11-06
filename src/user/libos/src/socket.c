@@ -23,12 +23,32 @@ struct resolver_endpoint {
 _Static_assert(sizeof(struct resolver_endpoint) == 6,
 	"UDP endpoint syscall ABI must remain six bytes");
 
-static uint16_t dns_sequence;
-
 static uint16_t
 dns_read_u16(const uint8_t *bytes)
 {
 	return (uint16_t)(((uint16_t)bytes[0] << 8) | bytes[1]);
+}
+
+static int
+dns_random_identifier(uint16_t *identifier)
+{
+	uint8_t bytes[2];
+	size_t received = 0;
+	int descriptor = open("/dev/urandom", O_RDONLY);
+	if (descriptor < 0)
+		return 0;
+	while (received < sizeof(bytes)) {
+		ssize_t amount = read(descriptor, bytes + received,
+		    sizeof(bytes) - received);
+		if (amount <= 0 || (size_t)amount > sizeof(bytes) - received) {
+			(void)close(descriptor);
+			return 0;
+		}
+		received += (size_t)amount;
+	}
+	(void)close(descriptor);
+	*identifier = dns_read_u16(bytes);
+	return 1;
 }
 
 static void
@@ -176,13 +196,12 @@ dns_lookup_a(const char *name, uint8_t addresses[DNS_ANSWER_LIMIT][4],
 	socklen_t source_length = sizeof(source);
 	size_t query_length = 12;
 	size_t encoded_length = 0;
-	uint16_t identifier = (uint16_t)((uint32_t)getpid() * 257U +
-	    ++dns_sequence);
+	uint16_t identifier;
 	int descriptor;
 	long result;
 
 	*address_count = 0;
-	if (!resolver_ipv4(server) ||
+	if (!dns_random_identifier(&identifier) || !resolver_ipv4(server) ||
 	    !dns_encode_name(name, encoded_name, sizeof(encoded_name),
 	    &encoded_length))
 		return EAI_AGAIN;
