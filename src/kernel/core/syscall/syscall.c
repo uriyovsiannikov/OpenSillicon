@@ -821,10 +821,16 @@ syscall_interrupt(struct interrupt_frame *frame)
 		break;
 	case SYSCALL_KEYBOARD_POLL:
 		{
+			struct os_credentials credentials;
 			struct terminal_key_event event;
 			struct os_keyboard_event output;
 			struct address_space *space = vmm_active_address_space();
 
+			if (!process_current_credentials(&credentials) ||
+			    credentials.effective_uid != 0) {
+				syscall_error(frame, 1U);
+				break;
+			}
 			if (!vmm_validate_user_write(space, frame->rdi, sizeof(output))) {
 				syscall_error(frame, ERRNO_EFAULT);
 				break;
@@ -853,9 +859,15 @@ syscall_interrupt(struct interrupt_frame *frame)
 		break;
 	case SYSCALL_MOUSE_POLL:
 		{
+			struct os_credentials credentials;
 			struct os_mouse_event output;
 			struct address_space *space = vmm_active_address_space();
 
+			if (!process_current_credentials(&credentials) ||
+			    credentials.effective_uid != 0) {
+				syscall_error(frame, 1U);
+				break;
+			}
 			if (!vmm_validate_user_write(space, frame->rdi,
 			    sizeof(output))) {
 				syscall_error(frame, EFAULT);
