@@ -438,6 +438,10 @@ read_logical_block(struct silliconfs *filesystem,
 	if (logical < SFS_DIRECT) {
 		number = inode->direct[logical];
 	} else if (inode->indirect != 0) {
+		bool allocated;
+		error = block_allocated(filesystem, inode->indirect, &allocated);
+		if (error != 0 || !allocated)
+			return -SFS_EIO;
 		error = read_block(filesystem, inode->indirect, indirect);
 		if (error != 0)
 			return error;
@@ -448,6 +452,12 @@ read_logical_block(struct silliconfs *filesystem,
 	if (number == 0) {
 		memset(block, 0, SILLICONFS_BLOCK_SIZE);
 		return 0;
+	}
+	{
+		bool allocated;
+		error = block_allocated(filesystem, number, &allocated);
+		if (error != 0 || !allocated)
+			return -SFS_EIO;
 	}
 	return read_block(filesystem, number, block);
 }
@@ -555,6 +565,12 @@ map_block(struct silliconfs *filesystem, uint32_t inode_number,
 			if (error != 0)
 				return error;
 		}
+		if (block != 0) {
+			bool allocated;
+			error = block_allocated(filesystem, block, &allocated);
+			if (error != 0 || !allocated)
+				return -SFS_EIO;
+		}
 		*physical = block;
 		return 0;
 	}
@@ -570,6 +586,12 @@ map_block(struct silliconfs *filesystem, uint32_t inode_number,
 		*physical = 0;
 		return 0;
 	}
+	{
+		bool allocated;
+		error = block_allocated(filesystem, inode->indirect, &allocated);
+		if (error != 0 || !allocated)
+			return -SFS_EIO;
+	}
 	error = read_block(filesystem, inode->indirect, indirect);
 	if (error != 0)
 		return error;
@@ -582,6 +604,12 @@ map_block(struct silliconfs *filesystem, uint32_t inode_number,
 		error = write_block(filesystem, inode->indirect, indirect);
 		if (error != 0)
 			return error;
+	}
+	if (block != 0) {
+		bool allocated;
+		error = block_allocated(filesystem, block, &allocated);
+		if (error != 0 || !allocated)
+			return -SFS_EIO;
 	}
 	*physical = block;
 	return 0;
