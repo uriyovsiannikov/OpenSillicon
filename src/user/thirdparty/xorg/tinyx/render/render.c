@@ -1873,9 +1873,17 @@ ProcRenderSetPictureFilter(ClientPtr client)
 
     int nparams;
 
+    int payload_bytes;
+
+    int padded_name_bytes;
+
     char *name;
 
     REQUEST_AT_LEAST_SIZE(xRenderSetPictureFilterReq);
+    payload_bytes = (client->req_len << 2) - sizeof(xRenderSetPictureFilterReq);
+    padded_name_bytes = (stuff->nbytes + 3) & ~3;
+    if (padded_name_bytes > payload_bytes)
+        return BadLength;
     VERIFY_PICTURE(pPicture, stuff->picture, client, SecurityWriteAccess,
                    RenderErrBase + BadPicture);
     name = (char *) (stuff + 1);
