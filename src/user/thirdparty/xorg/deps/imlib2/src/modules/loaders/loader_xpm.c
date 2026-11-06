@@ -39,7 +39,8 @@ static          uint32_t
 xpm_parse_color(const char *color)
 {
     char            buf[256];
-    int             a, r, g, b;
+    int             a;
+    unsigned int    r, g, b;
 
     a = 0xff;
     r = g = b = 0;
@@ -50,7 +51,7 @@ xpm_parse_color(const char *color)
         int             len;
 
         len = strlen(color) - 1;
-        if (len < 96)
+        if (len < 96 && len % 3 == 0 && len / 3 <= 8)
         {
             int             i;
 
@@ -75,9 +76,10 @@ xpm_parse_color(const char *color)
             }
             else if (len > 2)
             {
-                r >>= (len - 2) * 4;
-                g >>= (len - 2) * 4;
-                b >>= (len - 2) * 4;
+                unsigned int shift = (unsigned int)(len - 2) * 4;
+                r >>= shift;
+                g >>= shift;
+                b >>= shift;
             }
         }
         goto done;
