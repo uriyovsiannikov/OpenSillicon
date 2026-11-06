@@ -140,7 +140,9 @@ insert_entry(struct initramfs_node *root, const char *path, size_t path_length,
 		path += 2;
 		path_length -= 2;
 	}
-	if (path_length == 1 && path[0] == '.' && type == VNODE_DIRECTORY) {
+	if (((path_length == 0) ||
+	    (path_length == 1 && path[0] == '.')) &&
+	    type == VNODE_DIRECTORY) {
 		root->vnode.mode = mode & 07777U;
 		root->vnode.uid = uid;
 		root->vnode.gid = gid;
