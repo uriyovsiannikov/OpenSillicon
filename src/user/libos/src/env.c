@@ -18,9 +18,7 @@ getenv(const char *name)
 		if (strncmp(environ[i], name, length) == 0 &&
 		    environ[i][length] == '=')
 			return environ[i] + length + 1;
-	if (name != 0 && name[0] == 'D' && name[1] == 'I' &&
-	    name[2] == 'S' && name[3] == 'P' && name[4] == 'L' &&
-	    name[5] == 'A' && name[6] == 'Y' && name[7] == '\0')
+	if (strcmp(name, "DISPLAY") == 0)
 		return default_display;
 	return 0;
 }
