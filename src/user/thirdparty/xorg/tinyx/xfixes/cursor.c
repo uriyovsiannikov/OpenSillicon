@@ -400,7 +400,7 @@ ProcXFixesSetCursorName(ClientPtr client)
     REQUEST(xXFixesSetCursorNameReq);
     Atom atom;
 
-    REQUEST_AT_LEAST_SIZE(xXFixesSetCursorNameReq);
+    REQUEST_FIXED_SIZE(xXFixesSetCursorNameReq, stuff->nbytes);
     VERIFY_CURSOR(pCursor, stuff->cursor, client, SecurityWriteAccess);
     tchar = (char *) &stuff[1];
     atom = MakeAtom(tchar, stuff->nbytes, TRUE);
