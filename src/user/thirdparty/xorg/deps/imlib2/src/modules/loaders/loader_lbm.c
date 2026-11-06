@@ -56,8 +56,6 @@ freeilbm(ILBM *ilbm)
     free(ilbm->cmap_alloc);
 }
 
-#define mm_check(p) ((const unsigned char *)(p) <= fptr + size)
-
 /*------------------------------------------------------------------------------
  * Reads the given chunks out of a file, returns 0 if the file had a problem.
  *
@@ -68,34 +66,40 @@ loadchunks(const unsigned char *fptr, unsigned int size, ILBM *ilbm, int full)
 {
     CHUNK          *c;
     int             formsize, z;
+    unsigned int    offset, end;
     int             ok;
     const unsigned char *buf;
 
     ok = 0;
 
-    buf = fptr;
-    if (!mm_check(buf + 12))
+    if (size < 12)
         return ok;
+    buf = fptr;
 
     if (memcmp(buf, "FORM", 4) != 0 || memcmp(buf + 8, "ILBM", 4) != 0)
         return ok;
 
     formsize = L2RLONG(buf + 4);
+    if (formsize < 4 || (unsigned int)formsize > size - 8)
+        return ok;
+    end = 8 + (unsigned int)formsize;
 
     D("%s: %.4s %.4s formsize=%d\n", __func__, buf, buf + 8, formsize);
 
-    buf += 12;
+    offset = 12;
 
-    while (1)
+    while (offset < end)
     {
-        if (buf >= fptr + formsize + 8)
+        if (end - offset < 8)
             break;
-        if (!mm_check(buf + 8))
-            break;              /* Error or short file. */
+        buf = fptr + offset;
 
         z = L2RLONG(buf + 4);
         if (z < 0)
             break;              /* Corrupt file. */
+        if ((unsigned int)z > end - offset - 8 ||
+            ((unsigned int)z & 1U) > end - offset - 8 - (unsigned int)z)
+            break;              /* Chunk data or its pad byte is truncated. */
 
         D("%s: %.4s %d\n", __func__, buf, z);
 
@@ -116,14 +120,10 @@ loadchunks(const unsigned char *fptr, unsigned int size, ILBM *ilbm, int full)
                 c = &(ilbm->body);
         }
 
-        buf += 8;
-
         if (c && !c->data)
         {
             c->size = z;
-            if (!mm_check(buf + c->size))
-                break;
-            c->data = buf;
+            c->data = fptr + offset + 8;
 
             if (!full)
             {                   /* Only BMHD required. */
@@ -132,7 +132,7 @@ loadchunks(const unsigned char *fptr, unsigned int size, ILBM *ilbm, int full)
             }
         }
 
-        buf += z;
+        offset += 8 + (unsigned int)z + ((unsigned int)z & 1U);
     }
 
     /* File may end strangely, especially if body size is uneven, but it's
