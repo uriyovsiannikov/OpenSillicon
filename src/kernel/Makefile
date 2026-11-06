@@ -156,7 +156,7 @@ $(BUILD_DIR)/pipe_buffer.o: src/kernel/ipc/pipe_buffer.c src/include/kernel/pipe
 $(BUILD_DIR)/unix_socket.o: src/kernel/ipc/unix_socket.c \
 		src/include/kernel/unix_socket.h src/include/kernel/fd.h \
 		src/include/kernel/process.h src/include/kernel/heap.h \
-		src/include/abi/unix_socket.h | $(BUILD_DIR)
+		src/include/kernel/spinlock.h src/include/abi/unix_socket.h | $(BUILD_DIR)
 	$(CC) $(KERNEL_CFLAGS) -Iinclude -c $< -o $@
 
 $(BUILD_DIR)/terminal.o: src/kernel/tty/terminal.c src/include/kernel/terminal.h \

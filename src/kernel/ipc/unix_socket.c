@@ -5,6 +5,7 @@
 #include "kernel/errno.h"
 #include "kernel/heap.h"
 #include "kernel/process.h"
+#include "kernel/spinlock.h"
 #include "kernel/unix_socket.h"
 #include "abi/unix_socket.h"
 
@@ -42,20 +43,18 @@ struct unix_socket_state {
 
 static struct unix_socket_state sockets[UNIX_SOCKET_LIMIT];
 static const struct fd_operations socket_operations;
+static struct spinlock socket_lock = SPINLOCK_INITIALIZER;
 
 static uint64_t
 state_guard_enter(void)
 {
-	uint64_t flags;
-	__asm__ volatile ("pushfq; popq %0; cli" : "=r" (flags) : : "memory");
-	return flags;
+	return spinlock_lock_irqsave(&socket_lock);
 }
 
 static void
 state_guard_leave(uint64_t flags)
 {
-	if ((flags & (1ULL << 9)) != 0)
-		__asm__ volatile ("sti" : : : "memory");
+	spinlock_unlock_irqrestore(&socket_lock, flags);
 }
 
 static struct unix_socket_state *
