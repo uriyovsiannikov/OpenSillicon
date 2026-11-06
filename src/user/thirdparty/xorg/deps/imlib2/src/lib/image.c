@@ -52,6 +52,8 @@ static ImlibImage *images = NULL;
 
 static int      cache_size = 4096 * 1024;
 
+static void __imlib_FileContextClose(ImlibImageFileInfo *fi);
+
 __EXPORT__ uint32_t *
 __imlib_AllocateData(ImlibImage *im)
 {
@@ -123,27 +125,34 @@ __imlib_FileContextOpen(ImlibImageFileInfo *fi, FILE *fp,
 #ifdef OPEN_SILLICON
         /* File-backed mmap is unavailable; retain the same owned file buffer. */
         if (fi->fsize <= 0 || (uintmax_t)fi->fsize > SIZE_MAX)
-            return -1;
+            goto error;
         void *buffer = malloc((size_t)fi->fsize);
         if (!buffer)
-            return -1;
+            goto error;
         if (fseek(fi->fp, 0, SEEK_SET) != 0 ||
             fread(buffer, 1, (size_t)fi->fsize, fi->fp) != (size_t)fi->fsize)
         {
             free(buffer);
-            return -1;
+            goto error;
         }
         fdata = buffer;
 #else
         fdata = mmap(NULL, fi->fsize, PROT_READ, MAP_SHARED, fileno(fi->fp), 0);
         if (fdata == MAP_FAILED)
-            return -1;
+        {
+            fdata = NULL;
+            goto error;
+        }
 #endif
     }
 
     fi->fdata = fdata;
 
     return 0;
+
+error:
+    __imlib_FileContextClose(fi);
+    return -1;
 }
 
 static void
@@ -780,14 +789,25 @@ __imlib_LoadEmbedded(ImlibLoader *l, ImlibImage *im, int load_data,
                      const char *file)
 {
     int             rc;
+    char           *name;
 
     if (!l || !im)
         return LOAD_FAIL;
 
-    __imlib_ImageFileContextPush(im, strdup(file));
+    name = strdup(file);
+    if (!name)
+        return LOAD_OOM;
+    if (__imlib_ImageFileContextPush(im, name))
+    {
+        free(name);
+        return LOAD_OOM;
+    }
     rc = __imlib_FileContextOpen(im->fi, NULL, NULL, 0);
     if (rc)
+    {
+        __imlib_ImageFileContextPop(im);
         return LOAD_FAIL;
+    }
 
     rc = __imlib_LoadImageWrapper(l, im, load_data);
 
@@ -806,10 +826,14 @@ __imlib_LoadEmbeddedMem(ImlibLoader *l, ImlibImage *im, int load_data,
     if (!l || !im)
         return LOAD_FAIL;
 
-    __imlib_ImageFileContextPush(im, NULL);
+    if (__imlib_ImageFileContextPush(im, NULL))
+        return LOAD_OOM;
     rc = __imlib_FileContextOpen(im->fi, NULL, fdata, fsize);
     if (rc)
+    {
+        __imlib_ImageFileContextPop(im);
         return LOAD_FAIL;
+    }
 
     rc = __imlib_LoadImageWrapper(l, im, load_data);
 
