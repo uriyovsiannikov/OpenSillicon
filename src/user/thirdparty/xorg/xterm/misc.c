@@ -2993,14 +2993,19 @@ ChangeAnsiColorRequest(XtermWidget xw,
     while (buf && *buf) {
 	int color;
 	char *name = strchr(buf, ';');
+	char *end;
+	long parsed;
 
 	if (name == NULL)
 	    break;
 	*name = '\0';
 	name++;
-	color = atoi(buf);
-	if (color < 0 || color >= last)
+	errno = 0;
+	parsed = strtol(buf, &end, 10);
+	if (end == buf || *end != '\0' || errno == ERANGE ||
+	    parsed < 0 || parsed >= last)
 	    break;		/* quit on any error */
+	color = (int) parsed;
 	buf = strchr(name, ';');
 	if (buf) {
 	    *buf = '\0';
