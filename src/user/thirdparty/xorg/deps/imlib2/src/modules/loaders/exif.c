@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stddef.h>
 #include <string.h>
 
 #include "exif.h"
@@ -121,6 +122,10 @@ exif_parse(const void *data, unsigned int len, ExifInfo *ei)
     unsigned int    word;
 
     D("%s: len=%x(%d)\n", __func__, len, len);
+
+    /* Six-byte EXIF preamble plus the eight-byte TIFF header. */
+    if (ptr == NULL || ei == NULL || len < 14)
+        return 1;
 
     if (memcmp(ptr, "Exif", 4) != 0)
     {
