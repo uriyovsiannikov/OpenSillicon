@@ -13,6 +13,7 @@
 static bool renderer_available;
 static bool framebuffer_output_enabled = true;
 static uint64_t framebuffer_output_owner;
+static uint64_t console_input_owner;
 static unsigned int tty_columns;
 static unsigned int tty_rows;
 
@@ -117,16 +118,50 @@ tty_console_framebuffer_set(bool enabled, uint64_t owner_pid)
 		return false;
 	framebuffer_output_enabled = true;
 	framebuffer_output_owner = 0;
+	console_input_owner = 0;
 	(void)terminal_switch(terminal_active());
 	return true;
+}
+
+bool
+tty_console_input_set(bool acquire, uint64_t owner_pid, uint64_t parent_pid)
+{
+	if (owner_pid == 0)
+		return false;
+	if (!acquire) {
+		if (console_input_owner != owner_pid)
+			return false;
+		console_input_owner = 0;
+		return true;
+	}
+	/* startx owns the console graphics session; only it or one direct
+	 * child can claim input. The claim belongs to that PID, not its UID
+	 * or descendants, so ordinary X clients cannot read global input. */
+	if (framebuffer_output_enabled || framebuffer_output_owner == 0 ||
+	    (owner_pid != framebuffer_output_owner &&
+	    parent_pid != framebuffer_output_owner) ||
+	    (console_input_owner != 0 && console_input_owner != owner_pid))
+		return false;
+	console_input_owner = owner_pid;
+	return true;
+}
+
+bool
+tty_console_input_owned(uint64_t owner_pid)
+{
+	return owner_pid != 0 && console_input_owner == owner_pid &&
+	    !framebuffer_output_enabled && framebuffer_output_owner != 0;
 }
 
 void
 tty_console_framebuffer_owner_exit(uint64_t owner_pid)
 {
+	if (owner_pid != 0 && console_input_owner == owner_pid)
+		console_input_owner = 0;
 	if (owner_pid != 0 && framebuffer_output_owner == owner_pid) {
 		framebuffer_output_enabled = true;
 		framebuffer_output_owner = 0;
+		console_input_owner = 0;
 		(void)terminal_switch(terminal_active());
 	}
 }

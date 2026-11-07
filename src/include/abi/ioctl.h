@@ -7,5 +7,7 @@
 #define OS_TCSETS 0x5402U
 /* Temporarily suppress framebuffer rendering of console output for a GUI session. */
 #define OS_TIOCSFB 0x4f530003U
+/* Claim (1) or release (0) raw input for the active console graphics session. */
+#define OS_TIOCSINPUT 0x4f530004U
 
 #endif

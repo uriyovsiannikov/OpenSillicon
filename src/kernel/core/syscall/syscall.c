@@ -827,7 +827,8 @@ syscall_interrupt(struct interrupt_frame *frame)
 			struct address_space *space = vmm_active_address_space();
 
 			if (!process_current_credentials(&credentials) ||
-			    credentials.effective_uid != 0) {
+			    (credentials.effective_uid != 0 &&
+			    !tty_console_input_owned(process_current_pid()))) {
 				syscall_error(frame, 1U);
 				break;
 			}
@@ -864,7 +865,8 @@ syscall_interrupt(struct interrupt_frame *frame)
 			struct address_space *space = vmm_active_address_space();
 
 			if (!process_current_credentials(&credentials) ||
-			    credentials.effective_uid != 0) {
+			    (credentials.effective_uid != 0 &&
+			    !tty_console_input_owned(process_current_pid()))) {
 				syscall_error(frame, 1U);
 				break;
 			}
@@ -1820,6 +1822,30 @@ syscall_interrupt(struct interrupt_frame *frame)
 				if (!vmm_copy_to_user(vmm_active_address_space(),
 				    frame->rdx, &value, sizeof(value))) {
 					syscall_error(frame, ERRNO_EFAULT);
+					break;
+				}
+				frame->rax = 0;
+				break;
+			}
+			if (frame->rsi == OS_TIOCSINPUT) {
+				int acquire;
+
+				if (!fd_object_is_console(object)) {
+					syscall_error(frame, ERRNO_ENOTTY);
+					break;
+				}
+				if (!vmm_copy_from_user(vmm_active_address_space(),
+				    &acquire, frame->rdx, sizeof(acquire))) {
+					syscall_error(frame, ERRNO_EFAULT);
+					break;
+				}
+				if (acquire != 0 && acquire != 1) {
+					syscall_error(frame, ERRNO_EINVAL);
+					break;
+				}
+				if (!tty_console_input_set(acquire != 0,
+				    process_current_pid(), process_current_ppid())) {
+					syscall_error(frame, 1U);
 					break;
 				}
 				frame->rax = 0;

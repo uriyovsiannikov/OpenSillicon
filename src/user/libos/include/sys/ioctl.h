@@ -14,6 +14,7 @@ struct winsize {
 #define TIOCSRAW 0x4f530001
 #define TIOCCANON 0x4f530002
 #define TIOCSFB 0x4f530003
+#define TIOCSINPUT 0x4f530004
 
 int ioctl(int fd, unsigned long request, ...);
 

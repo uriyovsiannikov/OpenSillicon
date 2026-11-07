@@ -3,13 +3,20 @@
 #endif
 
 #include <X11/keysym.h>
+#include <errno.h>
+#include <string.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
 
 #include "opensillicon.h"
 #include "kkeymap.h"
 #include "abi/input.h"
+#include "abi/ioctl.h"
 #include "abi/syscall.h"
 
 #define OPENSILLICON_MAX_SCAN_CODE 0x6fU
+
+static int opensilliconInputClaimed;
 
 static const KdCardFuncs opensilliconFuncs = {
 	opensilliconCardInit,
@@ -225,6 +232,9 @@ opensilliconPollEvents(void)
 
 	__asm__ volatile ("int $0x80; setc %1" : "+a" (result), "=qm" (failed) :
 	    "D" ((uintptr_t)&event), "S" (0) : "rcx", "r11", "memory");
+	if (failed)
+		FatalError("OpenSillicon: keyboard polling failed (errno %lu)\n",
+		    (unsigned long)result);
 	if (!failed && result == 1) {
 		scan = opensilliconScanCode(&event);
 		if (scan <= OPENSILLICON_MAX_SCAN_CODE) {
@@ -240,6 +250,9 @@ opensilliconPollEvents(void)
 	result = SYSCALL_MOUSE_POLL;
 	__asm__ volatile ("int $0x80; setc %1" : "+a" (result), "=qm" (failed) :
 	    "D" ((uintptr_t)&mouse_event), "S" (0) : "rcx", "r11", "memory");
+	if (failed && result != ENODEV)
+		FatalError("OpenSillicon: mouse polling failed (errno %lu)\n",
+		    (unsigned long)result);
 	if (!failed && result == 1 && kdMouseInfo != NULL) {
 		unsigned long buttons = 0;
 		if (mouse_event.buttons & 0x01U)
@@ -256,7 +269,23 @@ opensilliconPollEvents(void)
 static int
 opensilliconOsInit(void)
 {
+	int acquire = 1;
+	if (ioctl(STDIN_FILENO, OS_TIOCSINPUT, &acquire) == 0)
+		opensilliconInputClaimed = 1;
+	else if (geteuid() != 0)
+		FatalError("OpenSillicon: cannot acquire console input: %s; use startx\n",
+		    strerror(errno));
 	return 0;
+}
+
+static void
+opensilliconOsFini(void)
+{
+	if (opensilliconInputClaimed) {
+		int acquire = 0;
+		(void)ioctl(STDIN_FILENO, OS_TIOCSINPUT, &acquire);
+		opensilliconInputClaimed = 0;
+	}
 }
 
 static const KdOsFuncs opensilliconOsFuncs = {
@@ -264,7 +293,7 @@ static const KdOsFuncs opensilliconOsFuncs = {
 	0,
 	0,
 	0,
-	opensilliconKeyboardNoop,
+	opensilliconOsFini,
 	opensilliconPollEvents
 };
 
