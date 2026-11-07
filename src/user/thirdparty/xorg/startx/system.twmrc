@@ -10,6 +10,7 @@
 
 NoGrabServer
 RestartPreviousState
+RandomPlacement
 DecorateTransients
 TitleFont "-misc-gallant-medium-r-normal--22-220-75-75-c-120-iso10646-1"
 ResizeFont "-misc-gallant-medium-r-normal--22-220-75-75-c-120-iso10646-1"
@@ -85,6 +86,7 @@ menu "defops"
 "Hide Iconmgr"	f.hideiconmgr
 ""		f.nop
 "Xterm"		f.exec "exec xterm -display :0 &"
+"Dillo"		f.exec "exec dillo &"
 ""		f.nop
 "Kill"		f.destroy
 "Delete"	f.delete

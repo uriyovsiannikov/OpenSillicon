@@ -57,6 +57,8 @@ def label_for(target, source):
         "pkg-build": "HOST pkg-build", "populate_root": "HOST root image tools",
     }
     basename = Path(target).name
+    if "/dillo/" in target:
+        return "USER Dillo"
     if basename in fixed:
         return fixed[basename]
     if "/acpica/" in target:

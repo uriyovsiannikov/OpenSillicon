@@ -1,5 +1,6 @@
 #ifndef LIBOS_STDIO_H
 #define LIBOS_STDIO_H
+#include <stddef.h>
 #include <stdarg.h>
 #include <sys/types.h>
 typedef struct libos_FILE FILE;

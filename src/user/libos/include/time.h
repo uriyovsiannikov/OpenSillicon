@@ -23,6 +23,7 @@ struct tm {
 int clock_gettime(clockid_t, struct timespec *);
 int nanosleep(const struct timespec *, struct timespec *);
 time_t time(time_t *);
+time_t mktime(struct tm *);
 struct tm *gmtime(const time_t *);
 struct tm *localtime(const time_t *);
 

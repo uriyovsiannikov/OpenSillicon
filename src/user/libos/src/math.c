@@ -467,3 +467,21 @@ pow(double base, double power)
 	result = exp2_finite(exponent);
 	return base < 0.0 && odd ? -result : result;
 }
+
+/* FPREM iterates for operands with a large exponent difference. */
+double
+fmod(double x, double y)
+{
+    double result;
+    if (is_nan(x) || is_nan(y)) return x + y;
+    if (y == 0.0 || is_infinite(x)) {
+        errno = EDOM;
+        return quiet_nan();
+    }
+    if (is_infinite(y)) return x;
+    __asm__ volatile (
+        "fldl %2; fldl %1; 1: fprem; fnstsw %%ax; testw $1024, %%ax; "
+        "jnz 1b; fstpl %0; fstp %%st(0)"
+        : "=m" (result) : "m" (x), "m" (y) : "ax", "st", "memory");
+    return result;
+}

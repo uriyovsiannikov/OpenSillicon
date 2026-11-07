@@ -790,3 +790,67 @@ setsockopt(int fd, int level, int option, const void *value, socklen_t length)
 	return (int)__libos_call(SYSCALL_UNIX_SETSOCKOPT, fd, level, option,
 	    (long)value, length, 0);
 }
+
+/* Traditional IPv4 address forms: a, a.b, a.b.c, and a.b.c.d. */
+int
+inet_aton(const char *text, struct in_addr *address)
+{
+    uint32_t parts[4], value;
+    unsigned count = 0;
+    const char *p = text;
+    if (!p || !address) return 0;
+    do {
+        char *end;
+        if (*p < '0' || *p > '9' || count == 4) return 0;
+        unsigned long n = strtoul(p, &end, 0);
+        if (end == p || n > 0xffffffffUL) return 0;
+        parts[count++] = (uint32_t)n;
+        p = end;
+        if (*p != '.') break;
+        p++;
+    } while (1);
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+    if (*p || parts[count-1] > (0xffffffffU >> (8 * (count-1)))) return 0;
+    value = parts[count-1];
+    for (unsigned i = 0; i + 1 < count; i++) {
+        if (parts[i] > 255) return 0;
+        value |= parts[i] << (24 - 8*i);
+    }
+    address->s_addr = htonl(value);
+    return 1;
+}
+in_addr_t
+inet_addr(const char *text)
+{
+    struct in_addr address;
+    return inet_aton(text, &address) ? address.s_addr : (in_addr_t)-1;
+}
+char *
+inet_ntoa(struct in_addr address)
+{
+    static char buffer[16];
+    uint32_t v = ntohl(address.s_addr);
+    /* Each octet is at most three decimal digits. */
+    char *p = buffer;
+    for (unsigned i = 0; i < 4; i++) {
+        unsigned b = (v >> (24 - 8*i)) & 255;
+        if (b >= 100) *p++ = '0' + b/100;
+        if (b >= 10) *p++ = '0' + (b/10)%10;
+        *p++ = '0' + b%10;
+        *p++ = i == 3 ? 0 : '.';
+    }
+    return buffer;
+}
+
+const char *
+inet_ntop(int family, const void *source, char *destination, socklen_t size)
+{
+    struct in_addr a;
+    if (family != AF_INET) { errno=EAFNOSUPPORT; return NULL; }
+    if (!source || !destination) { errno=EFAULT; return NULL; }
+    memcpy(&a,source,sizeof(a));
+    const char *s=inet_ntoa(a);
+    if (strlen(s)+1 > size) { errno=ENOSPC; return NULL; }
+    strcpy(destination,s);
+    return destination;
+}

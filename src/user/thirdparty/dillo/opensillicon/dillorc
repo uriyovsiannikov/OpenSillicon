@@ -1,0 +1,8 @@
+# Core X11 fonts supplied by TinyX; no Xft/fontconfig dependency.
+font_serif="silliconsans"
+font_sans_serif="silliconsans"
+font_cursive="silliconsans"
+font_fantasy="silliconsans"
+font_monospace="silliconsans"
+start_page="about:splash"
+geometry=900x650+40+40

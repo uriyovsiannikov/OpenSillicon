@@ -64,3 +64,17 @@ setenv(const char *name, const char *value, int overwrite)
 	environ = entries;
 	return 0;
 }
+
+int
+unsetenv(const char *name)
+{
+    if (!name || !*name || strchr(name,'=')) { errno=EINVAL; return -1; }
+    size_t n=strlen(name), i=0;
+    while (environ && environ[i]) {
+        if (!strncmp(environ[i],name,n) && environ[i][n]=='=') {
+            size_t j=i;
+            do { environ[j]=environ[j+1]; j++; } while (environ[j]);
+        } else i++;
+    }
+    return 0;
+}

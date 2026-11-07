@@ -140,12 +140,13 @@ main(int argc, char **argv)
 	const char *xeyes_path = NULL;
 	const char *feh_path = NULL;
 	const char *nano_path = NULL;
+	const char *dillo_path = NULL;
 	const char *module_paths[32];
 	size_t module_count = 0;
 	int arg;
 
 	if (argc < 4) {
-		fprintf(stderr, "usage: %s image init-elf shell-elf [--libos elf] [--tinyx elf] [--startx elf] [--twm elf] [--xterm elf] [--xeyes elf] [--feh elf] [--nano elf] [--module file.ko] [--coreutils coreutils...]\n", argv[0]);
+		fprintf(stderr, "usage: %s image init-elf shell-elf [--libos elf] [--tinyx elf] [--startx elf] [--twm elf] [--xterm elf] [--xeyes elf] [--feh elf] [--nano elf] [--dillo elf] [--module file.ko] [--coreutils coreutils...]\n", argv[0]);
 		return 2;
 	}
 	for (arg = 4; arg < argc; arg++) {
@@ -173,6 +174,9 @@ main(int argc, char **argv)
 		} else if (strcmp(argv[arg], "--nano") == 0 && arg + 1 < argc) {
 			if (nano_path != NULL) return 2;
 			nano_path = argv[++arg];
+		} else if (strcmp(argv[arg], "--dillo") == 0 && arg + 1 < argc) {
+			if (dillo_path != NULL) return 2;
+			dillo_path = argv[++arg];
 		} else if (strcmp(argv[arg], "--module") == 0 && arg + 1 < argc) {
 			if (module_count == 32) return 2;
 			module_paths[module_count++] = argv[++arg];
@@ -271,17 +275,26 @@ main(int argc, char **argv)
 		fclose(image);
 		return 1;
 	}
-	if (xterm_path != NULL &&
-	    ((error = add_file("/bin/xterm", xterm_path, 0755)) != 0 ||
+	if ((xterm_path != NULL || dillo_path != NULL) &&
+	    ((xterm_path != NULL &&
+	    (error = add_file("/bin/xterm", xterm_path, 0755)) != 0) ||
 	    (error = add_directory("/usr", 0755)) != 0 ||
 	    (error = add_directory("/usr/share", 0755)) != 0 ||
 	    (error = add_directory("/usr/share/fonts", 0755)) != 0 ||
 	    (error = add_directory("/usr/share/fonts/misc", 0755)) != 0 ||
 	    (error = add_file("/usr/share/fonts/misc/gallant.bdf",
 	    "src/user/thirdparty/xorg/fonts/gallant.bdf", 0644)) != 0 ||
+	    (error = add_file("/usr/share/fonts/misc/silliconsans-16.bdf",
+	    "src/user/thirdparty/dillo/opensillicon/fonts/silliconsans-16.bdf", 0644)) != 0 ||
+	    (error = add_file("/usr/share/fonts/misc/silliconsans-20.bdf",
+	    "src/user/thirdparty/dillo/opensillicon/fonts/silliconsans-20.bdf", 0644)) != 0 ||
+	    (error = add_file("/usr/share/fonts/misc/silliconsans-24.bdf",
+	    "src/user/thirdparty/dillo/opensillicon/fonts/silliconsans-24.bdf", 0644)) != 0 ||
+	    (error = add_file("/usr/share/fonts/misc/SilliconSans-OFL.txt",
+	    "src/user/thirdparty/dillo/opensillicon/fonts/OFL.txt", 0644)) != 0 ||
 	    (error = add_file("/usr/share/fonts/misc/fonts.dir",
 	    "src/user/thirdparty/xorg/fonts/fonts.dir", 0644)) != 0)) {
-		fprintf(stderr, "SilliconFS xterm population failed: %d\n", error);
+		fprintf(stderr, "SilliconFS X11 font population failed: %d\n", error);
 		fclose(image);
 		return 1;
 	}
@@ -293,9 +306,9 @@ main(int argc, char **argv)
 	}
 	if (feh_path != NULL &&
 	    ((error = add_file("/bin/feh", feh_path, 0755)) != 0 ||
-	    (xterm_path == NULL &&
+	    (xterm_path == NULL && dillo_path == NULL &&
 	    (error = add_directory("/usr", 0755)) != 0) ||
-	    (xterm_path == NULL &&
+	    (xterm_path == NULL && dillo_path == NULL &&
 	    (error = add_directory("/usr/share", 0755)) != 0) ||
 	    (error = add_directory("/usr/share/feh", 0755)) != 0 ||
 	    (error = add_directory("/usr/share/feh/fonts", 0755)) != 0 ||
@@ -307,6 +320,15 @@ main(int argc, char **argv)
 	    (error = add_file("/usr/share/feh/images/feh.png",
 	    "src/user/thirdparty/xorg/feh/share/images/feh.png", 0644)) != 0)) {
 		fprintf(stderr, "SilliconFS feh population failed: %d\n", error);
+		fclose(image);
+		return 1;
+	}
+	if (dillo_path != NULL &&
+	    ((error = add_file("/bin/dillo", dillo_path, 0755)) != 0 ||
+	    (error = add_directory("/etc/dillo", 0755)) != 0 ||
+	    (error = add_file("/etc/dillo/dillorc",
+	    "src/user/thirdparty/dillo/opensillicon/dillorc", 0644)) != 0)) {
+		fprintf(stderr, "SilliconFS Dillo population failed: %d\n", error);
 		fclose(image);
 		return 1;
 	}

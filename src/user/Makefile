@@ -257,7 +257,11 @@ $(BUILD_DIR)/x11/.apps-ready: $(TINYX_BINARY) $(LIBOS_ARCHIVE) $(LIBZ_ARCHIVE) \
 		$(LIBFONTENC_ARCHIVE) $(LIBXFONT_ARCHIVE)
 	sh src/tools/build_x11_if_needed.sh
 
-$(BUILD_DIR)/root.img: $(BUILD_DIR)/x11/.apps-ready $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.elf \
+.PHONY: $(BUILD_DIR)/dillo/.ready
+$(BUILD_DIR)/dillo/.ready: $(BUILD_DIR)/x11/.apps-ready $(LIBOS_ARCHIVE) $(LIBOS_BUILD_DIR)/crt0.o
+	sh src/tools/build_dillo.sh
+
+$(BUILD_DIR)/root.img: $(BUILD_DIR)/x11/.apps-ready $(BUILD_DIR)/dillo/.ready $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.elf \
 		$(MODULE_OBJECTS) \
 		$(BUILD_DIR)/nano/nano \
 		$(BUILD_DIR)/startx.elf \
@@ -276,7 +280,7 @@ $(BUILD_DIR)/root.img: $(BUILD_DIR)/x11/.apps-ready $(BUILD_DIR)/init.elf $(BUIL
 		--startx $(BUILD_DIR)/startx.elf \
 		--twm $(BUILD_DIR)/x11/twm/src/twm --xterm $(BUILD_DIR)/x11/xterm/xterm \
 		--xeyes $(BUILD_DIR)/x11/xeyes/xeyes --feh $(BUILD_DIR)/x11/feh/src/feh \
-		--nano $(BUILD_DIR)/nano/nano \
+		--nano $(BUILD_DIR)/nano/nano --dillo $(BUILD_DIR)/dillo/target/src/dillo \
 		--module $(BUILD_DIR)/modules/e1000.ko --coreutils \
 		$(BUILD_DIR)/coreutils/ls.elf $(BUILD_DIR)/coreutils/cat.elf \
 		$(BUILD_DIR)/coreutils/echo.elf $(BUILD_DIR)/coreutils/pwd.elf \

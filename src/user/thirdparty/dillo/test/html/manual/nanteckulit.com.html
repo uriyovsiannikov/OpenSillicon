@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Percent width is being inherited</title>
+<style>
+* {
+  /* Just to see */
+  border: solid 1px green;
+  padding: 5px;
+  margin: 5px;
+}
+html {
+  font-size:100%;
+}
+body {
+  width: 50%;
+  display: block;
+  margin: auto;
+  padding-bottom: 10%;
+}
+main {
+  background-color: lightgreen;
+}
+div.a { width: 100%; }
+div.b { width: auto; }
+</style>
+</head>
+<body>
+<main>
+<p>This line should expand to the whole width of the main element, but it seems
+it is not doing it so.</p>
+</main>
+<div class=a>
+  <p>These two divs should have same width</p>
+</div>
+<div class=b>
+  <p>These two divs should have same width</p>
+</div>
+</body>
+</html>

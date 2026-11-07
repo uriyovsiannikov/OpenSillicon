@@ -12,6 +12,7 @@ double floor(double);
 double fabs(double);
 double hypot(double, double);
 double frexp(double, int *);
+double fmod(double, double);
 double modf(double, double *);
 double pow(double, double);
 double log(double);

@@ -49,6 +49,7 @@ extern int errno;
 #define EISCONN 106
 #define ENOBUFS 105
 #define EOVERFLOW 75
+#define EILSEQ 84
 #define EOPNOTSUPP 95
 #define ENETUNREACH 101
 #define EADDRNOTAVAIL 99
