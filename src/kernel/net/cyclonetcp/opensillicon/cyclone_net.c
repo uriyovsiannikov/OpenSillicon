@@ -110,7 +110,7 @@ cyclone_nic_noop(NetInterface *interface)
 }
 
 static error_t
-cyclone_nic_send(NetInterface *interface, const NetBuffer *buffer,
+cyclone_nic_transmit(NetInterface *interface, const NetBuffer *buffer,
 	size_t offset, NetTxAncillary *ancillary)
 {
 	struct netbuf_ref packet;
@@ -145,6 +145,18 @@ cyclone_nic_send(NetInterface *interface, const NetBuffer *buffer,
 	return netbuf_release(packet, NETBUF_OWNER_CORE) ? NO_ERROR : ERROR_FAILURE;
 }
 
+static error_t
+cyclone_nic_send(NetInterface *interface, const NetBuffer *buffer,
+	size_t offset, NetTxAncillary *ancillary)
+{
+	error_t error = cyclone_nic_transmit(interface, buffer, offset, ancillary);
+
+	/* nicSendPacket consumes this event before calling us. Transmission is
+	 * synchronous, so allow the next send (or retry) once this call returns. */
+	osSetEvent(&interface->nicTxEvent);
+	return error;
+}
+
 static const NicDriver cyclone_nic_driver = {
 	.type = NIC_TYPE_ETHERNET,
 	.mtu = 1500,
@@ -154,8 +166,8 @@ static const NicDriver cyclone_nic_driver = {
 	.disableIrq = cyclone_nic_noop,
 	.eventHandler = cyclone_nic_noop,
 	.sendPacket = cyclone_nic_send,
-	.autoPadding = FALSE,
-	.autoCrcCalc = FALSE,
+	.autoPadding = TRUE,
+	.autoCrcCalc = TRUE,
 	.autoCrcVerif = FALSE,
 	.autoCrcStrip = TRUE
 };

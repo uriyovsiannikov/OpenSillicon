@@ -148,6 +148,12 @@ tcp_socket_poll_op(void *context, uint32_t events)
 	uint32_t ready = 0;
 	if (state == NULL || !state->allocated || state->socket == NULL)
 		return FD_POLL_ERROR;
+	/* Cyclone's nonblocking operations replace the event mask with the
+	 * events they wait for. Refresh the complete readiness mask before
+	 * polling, including after connect has only requested CONNECTED/CLOSED. */
+	socketRegisterEvents(state->socket, NULL, SOCKET_EVENT_RX_READY |
+	    SOCKET_EVENT_RX_SHUTDOWN | SOCKET_EVENT_CLOSED |
+	    SOCKET_EVENT_TX_READY | SOCKET_EVENT_ACCEPT);
 	flags = socketGetEvents(state->socket);
 	tcp_state = tcpGetState(state->socket);
 	state_flags = state_guard_enter();
