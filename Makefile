@@ -1,4 +1,3 @@
-# Top-level build graph. Subsystem rules are defined in their owning Makefiles.
 .DEFAULT_GOAL := kernel
 OPEN_SILLICON_ROOT := $(CURDIR)
 include src/mk/common.mk
@@ -8,7 +7,6 @@ include src/user/Makefile
 include src/user/pkg/Makefile
 include src/mk/output.mk
 
-# Keep cleanup serialized with any other explicitly requested goal.
 ifneq ($(filter clean,$(MAKECMDGOALS)),)
 .NOTPARALLEL:
 endif
