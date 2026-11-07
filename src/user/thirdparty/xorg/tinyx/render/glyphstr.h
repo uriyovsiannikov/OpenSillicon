@@ -92,6 +92,7 @@ typedef struct _GlyphList {
 } GlyphListRec, *GlyphListPtr;
 
 extern GlyphHashRec globalGlyphs[GlyphFormatNum];
+extern const CARD8 glyphDepths[GlyphFormatNum];
 
 GlyphHashSetPtr FindGlyphHashSet(CARD32 filled);
 
