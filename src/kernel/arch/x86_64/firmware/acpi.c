@@ -227,27 +227,51 @@ acpi_init(uint64_t root_pointer, struct acpi_madt_info *info)
 	ACPI_STATUS status;
 	size_t count;
 
-	if (root_pointer == 0 || info == NULL || rsdp_physical != 0)
+	if (root_pointer == 0 || info == NULL || rsdp_physical != 0) {
+		klog("ACPI: invalid initialization: root ");
+		klog_u64(root_pointer);
+		klog(" previous root ");
+		klog_u64(rsdp_physical);
+		klog("\n");
 		return false;
+	}
 	rsdp_physical = root_pointer;
 	acpi_map_next = vmm_vmalloc_start() + ACPI_MAP_BASE;
 	status = AcpiInitializeSubsystem();
-	if (ACPI_FAILURE(status))
+	if (ACPI_FAILURE(status)) {
+		klog("ACPI: AcpiInitializeSubsystem failed: ");
+		klog_u64(status);
+		klog("\n");
 		return false;
+	}
 	status = AcpiInitializeTables(NULL, 16, FALSE);
-	if (ACPI_FAILURE(status))
+	if (ACPI_FAILURE(status)) {
+		klog("ACPI: AcpiInitializeTables failed: ");
+		klog_u64(status);
+		klog("\n");
 		return false;
+	}
 	status = AcpiLoadTables();
-	if (ACPI_FAILURE(status))
+	if (ACPI_FAILURE(status)) {
+		klog("ACPI: AcpiLoadTables failed: ");
+		klog_u64(status);
+		klog("\n");
 		return false;
+	}
 	status = AcpiGetTable("APIC", 1, &table);
 	if (ACPI_FAILURE(status) || table == NULL ||
-	    acpi_parse_madt(table, table->Length, &parsed) != 0)
+	    acpi_parse_madt(table, table->Length, &parsed) != 0) {
+		klog("ACPI: APIC lookup/parse failed: ");
+		klog_u64(status);
+		klog("\n");
 		return false;
+	}
 	if (AcpiGetTable("MCFG", 1, &table) == AE_OK && table != NULL) {
 		if (acpi_parse_mcfg(table, table->Length, mcfg_cache,
-		    ACPI_MCFG_MAX_REGIONS, &count) != 0)
+		    ACPI_MCFG_MAX_REGIONS, &count) != 0) {
+			klog("ACPI: invalid MCFG\n");
 			return false;
+		}
 		mcfg_count = count;
 	}
 	*info = parsed;
@@ -561,25 +585,15 @@ AcpiOsUnmapMemory(void *logical, ACPI_SIZE length)
 		}
 		mapping->active = false;
 		if (mapping->virtual_base + size == acpi_map_next) {
-			acpi_map_next = mapping->virtual_base;
-			for (;;) {
-				bool reclaimed = false;
-				for (size_t previous = 0; previous < ACPI_MAP_SLOTS;
-				    previous++) {
-					const struct acpi_mapping *candidate =
-					    &acpi_mappings[previous];
-					if (candidate->active && candidate->virtual_base <
-					    acpi_map_next && candidate->page_count <=
-					    UINT64_MAX / PAGE_SIZE &&
-					    candidate->virtual_base +
-					    candidate->page_count * PAGE_SIZE == acpi_map_next) {
-						acpi_map_next = candidate->virtual_base;
-						reclaimed = true;
-						break;
-					}
-				}
-				if (!reclaimed)
-					break;
+			/* Reclaim only space above the highest live mapping. Walking
+			 * backwards through active mappings would reuse their addresses. */
+			acpi_map_next = vmm_vmalloc_start() + ACPI_MAP_BASE;
+			for (size_t previous = 0; previous < ACPI_MAP_SLOTS; previous++) {
+				const struct acpi_mapping *candidate = &acpi_mappings[previous];
+				uint64_t end = candidate->virtual_base +
+				    candidate->page_count * PAGE_SIZE;
+				if (candidate->active && end > acpi_map_next)
+					acpi_map_next = end;
 			}
 		}
 		spinlock_unlock_irqrestore(&acpi_mapping_lock, flags);
