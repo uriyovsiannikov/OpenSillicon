@@ -132,10 +132,14 @@ optimization. Allocation alignment is at least 16 bytes. The initial QEMU
 fixture covers startup, errors, memory/string operations, allocation, static
 stdio formatting, file I/O, metadata, and directory enumeration.
 
-Build and verify in an isolated output directory:
+Build the runtime archive and CRT using their internal file rules:
 
 ```sh
-make LIBOS_BUILD_DIR=/tmp/libos-build libos-build libos-inspect
 make LIBOS_BUILD_DIR=/tmp/libos-build \
-  LIBOS_QEMU_BUILD_DIR=/tmp/libos-qemu libos-qemu-test
+  /tmp/libos-build/liblibos.a /tmp/libos-build/crt0.o
+nm -u /tmp/libos-build/liblibos.a
 ```
+
+The project exposes only `clean`, `iso`, `kernel`, `modules`, `root`, `run`
+and `run-gui` as public build goals. Runtime and test artifacts remain file
+rules used by the build graph.

@@ -2,6 +2,7 @@
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+. "$root/src/tools/build_helpers.sh"
 prefix="$root/src/build/x11/prefix"
 cc=${CC:-gcc}
 build_triplet=$(sh "$root/src/user/thirdparty/xorg/deps/libX11/config.guess")
@@ -16,28 +17,28 @@ feh_force=-B
 mkdir -p "$root/src/build/x11/libpng"
 cd "$root/src/build/x11/libpng"
 CPPFLAGS="$cppflags" CFLAGS="$cflags" LDFLAGS="-L$root/src/build/libz" \
-    "$root/src/user/thirdparty/xorg/deps/libpng/configure" --build="$build_triplet" --host=x86_64-elf \
+    build_component "LIB libpng configure" "$root/src/user/thirdparty/xorg/deps/libpng/configure" --build="$build_triplet" --host=x86_64-elf \
     --prefix="$prefix" --disable-shared --enable-static --disable-tools \
     --disable-tests --without-libpng-compat
-make -j2
-make install
+build_component "LIB libpng" make -j2
+build_component "LIB libpng install" make install
 
-cmake -S "$root/src/user/thirdparty/xorg/deps/freetype" -B "$root/src/build/x11/freetype" \
+build_component "LIB FreeType configure" cmake -S "$root/src/user/thirdparty/xorg/deps/freetype" -B "$root/src/build/x11/freetype" \
     -DCMAKE_SYSTEM_NAME=Generic -DCMAKE_SYSTEM_PROCESSOR=x86_64 -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
     -DCMAKE_C_COMPILER="$cc" -DCMAKE_C_FLAGS="$cflags $cppflags" \
     -DCMAKE_INSTALL_PREFIX="$prefix" -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_SHARED_LIBS=OFF -DFT_DISABLE_ZLIB=ON -DFT_DISABLE_BZIP2=ON \
     -DFT_DISABLE_PNG=ON -DFT_DISABLE_HARFBUZZ=ON -DFT_DISABLE_BROTLI=ON
-cmake --build "$root/src/build/x11/freetype" -j2
-cmake --install "$root/src/build/x11/freetype"
+build_component "LIB FreeType" cmake --build "$root/src/build/x11/freetype" -j2
+build_component "LIB FreeType install" cmake --install "$root/src/build/x11/freetype"
 
-cmake -S "$root/src/user/thirdparty/xorg/deps/libjpeg-turbo" -B "$root/src/build/x11/jpeg-static" \
+build_component "LIB JPEG configure" cmake -S "$root/src/user/thirdparty/xorg/deps/libjpeg-turbo" -B "$root/src/build/x11/jpeg-static" \
     -DCMAKE_SYSTEM_NAME=Generic -DCMAKE_SYSTEM_PROCESSOR=x86_64 -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
     -DCMAKE_C_COMPILER="$cc" -DCMAKE_C_FLAGS="$cflags $cppflags" \
     -DCMAKE_INSTALL_PREFIX="$prefix" -DCMAKE_BUILD_TYPE=Release \
     -DENABLE_SHARED=OFF -DENABLE_STATIC=ON -DWITH_TURBOJPEG=OFF \
     -DWITH_SIMD=OFF -DWITH_TOOLS=OFF -DWITH_TESTS=OFF -DHAVE_THREAD_LOCAL=0
-cmake --build "$root/src/build/x11/jpeg-static" --target jpeg-static -j2
+build_component "LIB JPEG" cmake --build "$root/src/build/x11/jpeg-static" --target jpeg-static -j2
 install -m644 "$root/src/build/x11/jpeg-static/libjpeg.a" "$prefix/lib/libjpeg.a"
 for header in jpeglib.h jmorecfg.h jerror.h; do
     install -m644 "$root/src/user/thirdparty/xorg/deps/libjpeg-turbo/src/$header" "$prefix/include/$header"
@@ -49,7 +50,7 @@ cd "$root/src/build/x11/imlib2"
 CPPFLAGS="$cppflags" CFLAGS="$cflags" LDFLAGS="-L$prefix/lib" \
     PNG_CFLAGS="-I$prefix/include" PNG_LIBS="-L$prefix/lib -lpng" \
     JPEG_CFLAGS="-I$prefix/include" JPEG_LIBS="-L$prefix/lib -ljpeg" \
-    "$root/src/user/thirdparty/xorg/deps/imlib2/configure" --build="$build_triplet" --host=x86_64-elf \
+    build_component "LIB Imlib2 configure" "$root/src/user/thirdparty/xorg/deps/imlib2/configure" --build="$build_triplet" --host=x86_64-elf \
     --prefix="$prefix" --disable-shared --enable-static --disable-filters \
     --disable-progs --disable-mmx --disable-amd64 --enable-text \
     --x-includes="$prefix/include" --x-libraries="$prefix/lib" \
@@ -57,8 +58,8 @@ CPPFLAGS="$cppflags" CFLAGS="$cflags" LDFLAGS="-L$prefix/lib" \
     --without-j2k --without-jxl --without-ps --without-raw --without-svg \
     --without-tiff --without-webp --without-y4m --without-bz2 \
     --without-lzma --without-zlib --without-id3
-make -j2 -C src/lib
-make -C src/lib install
+build_component "LIB Imlib2" make -j2 -C src/lib
+build_component "LIB Imlib2 install" make -C src/lib install
 # Give every built-in module its own public descriptor. The codecs otherwise
 # keep their upstream private functions and Imlib2 loader ABI.
 for codec in png jpeg pnm bmp qoi xpm xbm tga argb; do
@@ -84,7 +85,7 @@ cat > opensillicon_config.h <<'EOF'
 EOF
 fi
 cd "$root/src/build/x11/feh"
-make ${feh_force:-} -C src -j2 curl=0 xinerama=0 exif=0 magic=0 mkstemps=0 verscmp=0 \
+build_component "USER feh" make ${feh_force:-} -C src -j2 curl=0 xinerama=0 exif=0 magic=0 mkstemps=0 verscmp=0 \
     PREFIX=/usr CC="$cc" \
     CFLAGS="$cflags $cppflags -I$prefix/include/freetype2 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -include $root/src/build/x11/feh/opensillicon_config.h" \
     LDFLAGS="-nostdlib -static -no-pie -Wl,--build-id=none -Wl,-z,noexecstack -Wl,-T,$root/src/user/c_linker.ld $root/src/build/libos/crt0.o -L$prefix/lib -L$root/src/build/libz" \

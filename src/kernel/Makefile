@@ -1,22 +1,14 @@
-# Direct subsystem invocation re-enters the root graph so all source paths and
-# cross-subsystem artifact dependencies have one canonical interpretation.
-ifndef OPEN_SILLICON_ROOT
-ROOT_DIR := $(abspath $(CURDIR)/..)
-.DEFAULT_GOAL := __dispatch
-.PHONY: __dispatch $(MAKECMDGOALS)
-ifneq ($(strip $(MAKECMDGOALS)),)
-$(MAKECMDGOALS): __dispatch
-endif
-__dispatch:
-	+$(MAKE) -C $(ROOT_DIR) -f Makefile $(if $(strip $(MAKECMDGOALS)),$(MAKECMDGOALS),kernel)
-else
-all: kernel
+# Internal file rules; included from the root build graph.
 
 kernel: $(BUILD_DIR)/kernel.elf
 
-.PHONY: cyclone-config-check
-cyclone-config-check: $(BUILD_DIR)/cyclone-config-check.o \
-	$(BUILD_DIR)/cyclone-net.o
+$(BUILD_DIR)/acpi_mapping_test: src/tests/acpi_mapping_test.c \
+		src/kernel/arch/x86_64/firmware/acpi.c \
+		src/include/kernel/spinlock.h src/include/kernel/vmm.h | $(BUILD_DIR)
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		-ffunction-sections -fdata-sections -DKERNEL_SPINLOCK_HOST_TEST \
+		-DOPEN_SILLICON_KERNEL -Isrc/include -Isrc/limine \
+		-isystem $(ACPICA_ROOT)/include $< -Wl,--gc-sections -o $@
 
 CYCLONE_STACK_SOURCES := core/net.c core/net_mem.c core/net_misc.c core/nic.c \
 	core/ethernet.c core/ethernet_misc.c core/ip.c core/socket.c \
@@ -27,11 +19,6 @@ CYCLONE_STACK_SOURCES := core/net.c core/net_mem.c core/net_misc.c core/nic.c \
 	dhcp/dhcp_client_misc.c
 CYCLONE_STACK_OBJECTS := $(addprefix $(BUILD_DIR)/cyclone/,$(CYCLONE_STACK_SOURCES:.c=.o)) \
 	$(BUILD_DIR)/cyclone/common/cpu_endian.o
-
-.PHONY: cyclone-stack-objects
-cyclone-stack-objects: $(CYCLONE_STACK_OBJECTS) \
-	$(BUILD_DIR)/cyclone/cyclone_net.o
-
 
 $(BUILD_DIR)/cyclone/cyclone_net.o: src/kernel/net/cyclonetcp/opensillicon/cyclone_net.c \
 		src/include/kernel/cyclone_net.h \
@@ -406,8 +393,6 @@ $(BUILD_DIR)/acpica/%.o: $(ACPICA_ROOT)/%.c \
 	mkdir -p $(dir $@)
 	$(CC) $(ACPICA_CFLAGS) -c $< -o $@
 
-acpica-check: $(ACPICA_OBJECTS)
-
 KERNEL_OBJECTS := $(BUILD_DIR)/main.o $(BUILD_DIR)/boot.o $(BUILD_DIR)/boot_entropy.o $(BUILD_DIR)/entropy.o $(BUILD_DIR)/random.o $(BUILD_DIR)/rdseed.o $(BUILD_DIR)/pmm.o \
 	$(BUILD_DIR)/virtio_rng.o \
 	$(BUILD_DIR)/vmm.o $(BUILD_DIR)/shm.o $(BUILD_DIR)/heap.o $(BUILD_DIR)/log.o \
@@ -467,8 +452,6 @@ $(BUILD_DIR)/opensillicon.iso: $(BUILD_DIR)/kernel.elf $(BUILD_DIR)/initramfs.cp
 		--efi-boot limine/limine-uefi-cd.bin \
 		-efi-boot-part --efi-boot-image --protective-msdos-label \
 		$(ISO_ROOT) -o $@
-
-endif
 
 $(BUILD_DIR)/pty.o: src/kernel/tty/pty.c src/include/kernel/pty.h src/include/kernel/pipe.h \
 		src/include/kernel/fd.h

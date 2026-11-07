@@ -3,7 +3,6 @@ MODULE_CFLAGS := $(KERNEL_CFLAGS) -g0 -fno-asynchronous-unwind-tables -fno-unwin
 MODULE_OBJECTS := $(BUILD_DIR)/modules/e1000.ko
 OBJCOPY ?= objcopy
 
-.PHONY: modules
 modules: $(MODULE_OBJECTS)
 
 $(BUILD_DIR)/modules/%.ko: src/kernel/module/examples/%.c src/kernel/module/Makefile src/mk/common.mk

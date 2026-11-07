@@ -64,15 +64,8 @@ ACPICA_CFLAGS := $(KERNEL_CFLAGS) -Wno-unused-parameter -fno-builtin \
 	-DBUILDING_ACPICA -DOPEN_SILLICON_KERNEL \
 	-I$(ACPICA_ROOT)/include -I$(ACPICA_ROOT)/include/platform
 
-.PHONY: all kernel iso run run-gui clean acpica-check libos-build libz-build \
-	libfontenc-build \
-	libxfont-build \
-	tinyx-build \
-	libos-inspect libos-qemu-test
-
 $(BUILD_DIR):
 	mkdir -p $@
-
 
 # Shared variables are exported for nested make invocations and tool scripts.
 export CC LD XORRISO QEMU OVMF_CODE BUILD_DIR ISO_ROOT

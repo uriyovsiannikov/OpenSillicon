@@ -1,6 +1,7 @@
 #!/bin/sh
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+. "$root/src/tools/build_helpers.sh"
 cc=${CC:-gcc}
 out="$root/src/build/nano"
 src="$out/deps/ncurses-6.5"
@@ -19,14 +20,14 @@ if [ ! -f Makefile ]; then
     CPPFLAGS="$cppflags" CFLAGS="$cflags" \
     LDFLAGS="-nostdlib -static -no-pie -Wl,-T,$root/src/user/c_linker.ld $root/src/build/libos/crt0.o" \
     LIBS="$root/src/build/libos/liblibos.a -lgcc" \
-    "$src/configure" --build="$build_triplet" --host=x86_64-elf --prefix=/usr \
+    build_component "LIB ncurses configure" "$src/configure" --build="$build_triplet" --host=x86_64-elf --prefix=/usr \
         --without-progs --without-tests --without-manpages --without-cxx \
         --without-cxx-binding --without-ada --without-debug --without-shared \
         --disable-widec --disable-database --with-fallbacks=xterm,vt100,linux
 fi
 # Generator programs run on the build host, with its own libc and headers.
-make -C include
-make -C ncurses -j"${NANO_JOBS:-4}" \
+build_component "LIB ncurses headers" make -C include
+build_component "LIB ncurses" make -C ncurses -j"${NANO_JOBS:-4}" \
     BUILD_CPPFLAGS="-DHAVE_CONFIG_H -DUSE_BUILD_CC -I. -I../include -I$src/ncurses -I$src/include" \
     BUILD_LDFLAGS= BUILD_LIBS=
 cp "$root/src/user/thirdparty/nano/config.h" "$out/app/config.h"

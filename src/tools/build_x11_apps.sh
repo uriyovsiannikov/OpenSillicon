@@ -2,6 +2,7 @@
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+. "$root/src/tools/build_helpers.sh"
 prefix="$root/src/build/x11/prefix"
 meson_cross="$root/src/build/x11/opensillicon-cross.ini"
 host_cc=${CC:-gcc}
@@ -32,9 +33,9 @@ export PKG_CONFIG_PATH=$pkg_path PKG_CONFIG_LIBDIR="$prefix/lib/pkgconfig:$prefi
 if [ "${1:-full}" = relink ]; then
     rm -f "$root/src/build/x11/twm/src/twm" "$root/src/build/x11/xeyes/xeyes" \
         "$root/src/build/x11/xterm/xterm" "$root/src/build/x11/feh/src/feh"
-    meson compile -C "$root/src/build/x11/twm"
-    meson compile -C "$root/src/build/x11/xeyes"
-    make -C "$root/src/build/x11/xterm" -j2 \
+    build_component "USER twm" meson compile -C "$root/src/build/x11/twm"
+    build_component "USER xeyes" meson compile -C "$root/src/build/x11/xeyes"
+    build_component "USER xterm link" make -C "$root/src/build/x11/xterm" -j2 \
         LIBS="-Wl,--start-group $root/src/build/libos/liblibos.a $prefix/lib/libi18n.a -lXaw7 -lXmu -lXt -lSM -lICE -lXext -lX11 -lxcb -lXau -lXpm -Wl,--end-group"
     sh "$root/src/tools/build_feh.sh" relink
     exit 0
@@ -48,20 +49,20 @@ build_autotools() {
 	mkdir -p "$dir"
 	cd "$dir"
 	CPPFLAGS="$common_cpp -I$source/include" CFLAGS="$common_c" \
-		"$source/configure" --build="$build_triplet" --host=x86_64-elf --prefix="$prefix" \
+		build_component "LIB $name configure" "$source/configure" --build="$build_triplet" --host=x86_64-elf --prefix="$prefix" \
 		--disable-shared --enable-static --disable-docs --disable-specs \
 		--disable-tcp-transport "$@"
-	make -j2
-	make install
+	build_component "LIB $name" make -j2
+	build_component "LIB $name install" make install
 }
 
 mkdir -p "$prefix"
 mkdir -p "$root/src/build/x11/xcb-proto"
 cd "$root/src/build/x11/xcb-proto"
 CPPFLAGS="$common_cpp" CFLAGS="$common_c" \
-"$root/src/user/thirdparty/xorg/deps/xcb-proto/configure" --build="$build_triplet" --host=x86_64-elf --prefix="$prefix"
-make -j2
-make install
+build_component "LIB xcb-proto configure" "$root/src/user/thirdparty/xorg/deps/xcb-proto/configure" --build="$build_triplet" --host=x86_64-elf --prefix="$prefix"
+build_component "LIB xcb-proto" make -j2
+build_component "LIB xcb-proto install" make install
 
 ac_cv_func_explicit_bzero=no build_autotools libXau --disable-xthreads
 
@@ -70,28 +71,28 @@ mkdir -p "$root/src/build/x11/libxcb"
 cd "$root/src/build/x11/libxcb"
 xcb_cpp="-DOPEN_SILLICON -nostdinc -I$root/src/user/libos/include -I$root/src/user/thirdparty/xorg/deps/libxcb/include -I$root/src/user/thirdparty/xorg/deps/libxcb/src -I$root/src/user/thirdparty/xorg/deps/libXau/include -I$prefix/include -isystem $gcc_include -idirafter /usr/include"
 CPPFLAGS="$xcb_cpp" CFLAGS="$common_c" \
-	"$root/src/user/thirdparty/xorg/deps/libxcb/configure" --build="$build_triplet" --host=x86_64-elf --prefix="$prefix" \
+	build_component "LIB libxcb configure" "$root/src/user/thirdparty/xorg/deps/libxcb/configure" --build="$build_triplet" --host=x86_64-elf --prefix="$prefix" \
 	--disable-shared --enable-static --disable-devel-docs
-make -j2 ACLOCAL=true AUTOMAKE=true AUTOCONF=true AUTOHEADER=true
-make install ACLOCAL=true AUTOMAKE=true AUTOCONF=true AUTOHEADER=true
+build_component "LIB libxcb" make -j2 ACLOCAL=true AUTOMAKE=true AUTOCONF=true AUTOHEADER=true
+build_component "LIB libxcb install" make install ACLOCAL=true AUTOMAKE=true AUTOCONF=true AUTOHEADER=true
 
 mkdir -p "$root/src/build/x11/libxtrans"
 cd "$root/src/build/x11/libxtrans"
 CPPFLAGS="$common_cpp" CFLAGS="$common_c" \
-	"$root/src/user/thirdparty/xorg/deps/libxtrans/configure" --build="$build_triplet" --host=x86_64-elf --prefix="$prefix" \
+	build_component "LIB libxtrans configure" "$root/src/user/thirdparty/xorg/deps/libxtrans/configure" --build="$build_triplet" --host=x86_64-elf --prefix="$prefix" \
 	--disable-tcp-transport
-make -j2
-make install
+build_component "LIB libxtrans" make -j2
+build_component "LIB libxtrans install" make install
 
 mkdir -p "$root/src/build/x11/libX11"
 cd "$root/src/build/x11/libX11"
 x11_cpp="$common_cpp -I$root/src/user/thirdparty/xorg/deps/libX11/src -I$root/src/user/thirdparty/xorg/deps/libxcb/include -I$root/src/user/thirdparty/xorg/deps/libxcb/src"
 ac_cv_func_dlopen=no CPPFLAGS="$x11_cpp" CFLAGS="$common_c" \
-	"$root/src/user/thirdparty/xorg/deps/libX11/configure" --build="$build_triplet" --host=x86_64-elf --prefix="$prefix" \
+	build_component "LIB libX11 configure" "$root/src/user/thirdparty/xorg/deps/libX11/configure" --build="$build_triplet" --host=x86_64-elf --prefix="$prefix" \
 	--disable-shared --enable-static --disable-xthreads \
 	--disable-thread-safety-constructor --disable-xf86bigfont
-make -j2
-make install
+build_component "LIB libX11" make -j2
+build_component "LIB libX11 install" make install
 install -D -m 644 src/xlibi18n/.libs/libi18n.a "$prefix/lib/libi18n.a"
 
 build_autotools libXext
@@ -107,10 +108,10 @@ mkdir -p "$root/src/build/x11/libXpm"
 cd "$root/src/build/x11/libXpm"
 CPPFLAGS="$common_cpp -I$root/src/user/thirdparty/xorg/deps/libXpm/include" CFLAGS="$common_c" \
 	ac_cv_func_closefrom=no ac_cv_func_close_range=no \
-	"$root/src/user/thirdparty/xorg/deps/libXpm/configure" --build="$build_triplet" --host=x86_64-elf --prefix="$prefix" \
+	build_component "LIB libXpm configure" "$root/src/user/thirdparty/xorg/deps/libXpm/configure" --build="$build_triplet" --host=x86_64-elf --prefix="$prefix" \
 	--disable-shared --enable-static --disable-docs --disable-specs
-make -j2 -C src
-make -C src install
+build_component "LIB libXpm" make -j2 -C src
+build_component "LIB libXpm install" make -C src install
 install -D -m 644 xpm.pc "$prefix/lib/pkgconfig/xpm.pc"
 install -D -m 644 "$root/src/user/thirdparty/xorg/deps/libXpm/include/X11/xpm.h" "$prefix/include/X11/xpm.h"
 
@@ -119,13 +120,13 @@ ln -sf libXaw7.a "$prefix/lib/libXaw.a"
 
 # twm's Meson port links the same static libraries and the freestanding CRT.
 if [ -f "$root/src/build/x11/twm/build.ninja" ]; then
-	meson setup --reconfigure "$root/src/build/x11/twm" "$root/src/user/thirdparty/xorg/twm" \
+	build_component "USER twm configure" meson setup --reconfigure "$root/src/build/x11/twm" "$root/src/user/thirdparty/xorg/twm" \
 		--prefix="$prefix" --buildtype=release
 else
-	meson setup "$root/src/build/x11/twm" "$root/src/user/thirdparty/xorg/twm" \
+	build_component "USER twm configure" meson setup "$root/src/build/x11/twm" "$root/src/user/thirdparty/xorg/twm" \
 		--prefix="$prefix" --buildtype=release
 fi
-meson compile -C "$root/src/build/x11/twm"
+build_component "USER twm" meson compile -C "$root/src/build/x11/twm"
 
 # xterm keeps its POSIX termios/openpty path; networking and termcap selection
 # are limited to the implemented local xterm subset.
@@ -136,13 +137,13 @@ xterm_ld="-nostdlib -static -no-pie -L$prefix/lib -Wl,--build-id=none -Wl,-z,noe
 CPPFLAGS="$xterm_cpp" CFLAGS="$common_c" LDFLAGS="$xterm_ld" \
 	LIBS="-lXaw -lXmu -lXt -lSM -lICE -lXext -lX11 -lxcb -lXau -lXpm" \
 	ac_cv_header_curses_h=no ac_cv_header_ncurses_h=no ac_cv_header_termcap_h=no \
-	"$root/src/user/thirdparty/xorg/xterm/configure" --build="$build_triplet" --host=x86_64-elf --prefix="$prefix" \
+	build_component "USER xterm configure" "$root/src/user/thirdparty/xorg/xterm/configure" --build="$build_triplet" --host=x86_64-elf --prefix="$prefix" \
 	--disable-imake --disable-man-pages --disable-setuid --disable-luit \
 	--disable-tek4014 --disable-wide-chars --disable-openpty --disable-regex \
 	--disable-tcap-query --disable-tcap-fkeys --disable-pty-handshake \
 	--with-app-defaults=/etc/X11/app-defaults
 rm -f xterm
-make -j2 LIBS="-Wl,--start-group $root/src/build/libos/liblibos.a $prefix/lib/libi18n.a -lXaw7 -lXmu -lXt -lSM -lICE -lXext -lX11 -lxcb -lXau -lXpm -Wl,--end-group"
+build_component "USER xterm" make -j2 LIBS="-Wl,--start-group $root/src/build/libos/liblibos.a $prefix/lib/libi18n.a -lXaw7 -lXmu -lXt -lSM -lICE -lXext -lX11 -lxcb -lXau -lXpm -Wl,--end-group"
 
 # xeyes uses Xt and the X Input extension library. Keep optional Xrender and
 # Present paths disabled because this server does not implement them.
@@ -151,14 +152,14 @@ cd "$root/src/build/x11/xeyes"
 export CFLAGS="$common_c -DOPEN_SILLICON -nostdinc -I$gcc_include -I$root/src/user/libos/include -I$prefix/include -I$root/src/user/thirdparty/xorg/deps/libX11/include -I$root/src/build/x11/libX11/include -I$root/src/user/thirdparty/xorg/deps/libxtrans -idirafter /usr/include"
 export LDFLAGS="-L$prefix/lib -nostdlib -static -no-pie -Wl,--build-id=none -Wl,-z,noexecstack -Wl,-T,$root/src/user/c_linker.ld $root/src/build/libos/crt0.o $root/src/build/libos/liblibos.a $prefix/lib/libi18n.a"
 if [ -f build.ninja ]; then
-	meson setup --reconfigure . "$root/src/user/thirdparty/xorg/xeyes" \
+	build_component "USER xeyes configure" meson setup --reconfigure . "$root/src/user/thirdparty/xorg/xeyes" \
 		--cross-file "$meson_cross" \
 		--prefix="$prefix" --buildtype=release -Dxrender=disabled -Dpresent=disabled
 else
-	meson setup . "$root/src/user/thirdparty/xorg/xeyes" \
+	build_component "USER xeyes configure" meson setup . "$root/src/user/thirdparty/xorg/xeyes" \
 		--cross-file "$meson_cross" --prefix="$prefix" \
 		--buildtype=release -Dxrender=disabled -Dpresent=disabled
 fi
-meson compile -C .
+build_component "USER xeyes" meson compile -C .
 
 sh "$root/src/tools/build_feh.sh"

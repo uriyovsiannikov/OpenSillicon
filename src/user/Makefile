@@ -1,15 +1,4 @@
-# Direct subsystem invocation re-enters the root graph so all source paths and
-# cross-subsystem artifact dependencies have one canonical interpretation.
-ifndef OPEN_SILLICON_ROOT
-ROOT_DIR := $(abspath $(CURDIR)/..)
-.DEFAULT_GOAL := __dispatch
-.PHONY: __dispatch $(MAKECMDGOALS)
-ifneq ($(strip $(MAKECMDGOALS)),)
-$(MAKECMDGOALS): __dispatch
-endif
-__dispatch:
-	+$(MAKE) -C $(ROOT_DIR) -f Makefile $(if $(strip $(MAKECMDGOALS)),$(MAKECMDGOALS),libos-build)
-else
+# Internal file rules; included from the root build graph.
 $(BUILD_DIR)/user_start.o: src/user/start.S src/user/include/os.h | $(BUILD_DIR)
 	$(CC) $(USER_ASFLAGS) -c $< -o $@
 
@@ -148,8 +137,6 @@ $(LIBZ_BUILD_DIR)/%.o: src/user/thirdparty/xorg/deps/libz/%.c $(wildcard src/use
 $(LIBZ_ARCHIVE): $(LIBZ_OBJECTS)
 	ar rcs $@ $^
 
-libz-build: $(LIBZ_ARCHIVE)
-
 LIBFONTENC_CPPFLAGS := -nostdinc -I$(abspath src/user/libos/include) \
 	-I$(abspath src/user/thirdparty/xorg/tinyx/include) -I$(abspath src/user/thirdparty/xorg/deps/libfontenc/include) \
 	-isystem $(shell $(CC) -print-file-name=include) -idirafter /usr/include \
@@ -168,8 +155,6 @@ $(LIBFONTENC_BUILD_DIR)/%.o: src/user/thirdparty/xorg/deps/libfontenc/src/%.c \
 
 $(LIBFONTENC_ARCHIVE): $(LIBFONTENC_OBJECTS)
 	ar rcs $@ $^
-
-libfontenc-build: $(LIBFONTENC_ARCHIVE)
 
 LIBXFONT_CPPFLAGS := -nostdinc -I$(abspath src/user/libos/include) \
 	-I$(abspath src/user/thirdparty/xorg/deps/libz) -I$(abspath src/user/thirdparty/xorg/tinyx/include) \
@@ -200,8 +185,6 @@ $(LIBXFONT_ARCHIVE): $(LIBZ_ARCHIVE) $(LIBFONTENC_ARCHIVE) \
 		AUTOCONF=true AUTOHEADER=true
 	cp $(LIBXFONT_BUILD_DIR)/src/.libs/libXfont.a $@
 
-libxfont-build: $(LIBXFONT_ARCHIVE) $(LIBFONTENC_ARCHIVE)
-
 TINYX_CPPFLAGS := -nostdinc -I$(abspath src/include) \
 	-I$(abspath src/user/libos/include) -I$(abspath src/user/thirdparty/xorg/deps/libz) \
 	-I$(abspath src/user/thirdparty/xorg/deps/libfontenc/include) -I$(abspath src/user/thirdparty/xorg/deps/libxfont/include) \
@@ -216,9 +199,6 @@ TINYX_FONT_LIBS := -Wl,--start-group $(abspath $(LIBXFONT_ARCHIVE)) \
 	$(abspath $(LIBFONTENC_ARCHIVE)) $(abspath $(LIBZ_ARCHIVE)) \
 	$(abspath $(LIBOS_ARCHIVE)) -Wl,--end-group
 TINYX_SOURCES := $(shell find src/user/thirdparty/xorg/tinyx -type f ! -path '*/.git/*' -print)
-
-.PHONY: tinyx-build
-tinyx-build: $(TINYX_BINARY)
 
 # Configure only when sources or the build configuration change. Runtime
 # archives are link inputs; changing libc must not regenerate the source tree.
@@ -258,12 +238,6 @@ $(TINYX_BINARY): | $(BUILD_DIR)
 $(LIBOS_ARCHIVE): $(LIBOS_OBJECTS) $(LIBOS_BUILD_DIR)/syscall_abi.o $(LIBOS_BUILD_DIR)/setjmp.o
 	ar rcs $@ $^
 
-libos-build: $(LIBOS_ARCHIVE) $(LIBOS_BUILD_DIR)/crt0.o
-
-libos-inspect: libos-build
-	ar t $(LIBOS_ARCHIVE)
-	nm -g --defined-only $(LIBOS_ARCHIVE)
-
 $(BUILD_DIR)/startx.o: src/user/thirdparty/xorg/startx/startx.c | $(BUILD_DIR)
 	$(CC) $(LIBOS_CFLAGS) -c $< -o $@
 
@@ -272,20 +246,18 @@ $(BUILD_DIR)/startx.elf: $(BUILD_DIR)/startx.o $(LIBOS_BUILD_DIR)/crt0.o $(LIBOS
 		-Wl,-T,src/user/c_linker.ld $(LIBOS_BUILD_DIR)/crt0.o \
 		$(BUILD_DIR)/startx.o $(LIBOS_ARCHIVE) -o $@
 
-.PHONY: x11-apps-ready
-.PHONY: nano-build
 NANO_SOURCES := $(shell find src/user/thirdparty/nano/src -type f ! -path '*/.git/*'; find src/user/thirdparty/nano -maxdepth 1 -type f ! -path '*/.git/*')
-nano-build: $(BUILD_DIR)/nano/nano
 
 $(BUILD_DIR)/nano/nano: $(NANO_SOURCES) src/tools/build_nano.sh $(LIBOS_ARCHIVE) \
 		$(LIBOS_BUILD_DIR)/crt0.o src/user/c_linker.ld
 	sh src/tools/build_nano.sh
 
-x11-apps-ready: $(TINYX_BINARY) $(LIBOS_ARCHIVE) $(LIBZ_ARCHIVE) \
+.PHONY: $(BUILD_DIR)/x11/.apps-ready
+$(BUILD_DIR)/x11/.apps-ready: $(TINYX_BINARY) $(LIBOS_ARCHIVE) $(LIBZ_ARCHIVE) \
 		$(LIBFONTENC_ARCHIVE) $(LIBXFONT_ARCHIVE)
 	sh src/tools/build_x11_if_needed.sh
 
-$(BUILD_DIR)/root.img: x11-apps-ready $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.elf \
+$(BUILD_DIR)/root.img: $(BUILD_DIR)/x11/.apps-ready $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.elf \
 		$(MODULE_OBJECTS) \
 		$(BUILD_DIR)/nano/nano \
 		$(BUILD_DIR)/startx.elf \
@@ -322,5 +294,3 @@ $(BUILD_DIR)/root.img: x11-apps-ready $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.e
 		$(BUILD_DIR)/coreutils/kldstat.elf $(BUILD_DIR)/coreutils/kldload.elf \
 		$(BUILD_DIR)/coreutils/kldunload.elf $(BUILD_DIR)/coreutils/pkg.elf; \
 	mv -f "$$image_tmp" '$@'
-
-endif

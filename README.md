@@ -24,9 +24,39 @@ on a linux x86_64 host, install gcc, gnu binutils, gnu make, py3, qemu-x86 and `
 
 ```sh
 make
+make root      # build the root filesystem image
 make run       # serial console
 make run-gui   # graphical display
 ```
+
+## build output and targets
+
+The public goals are `clean`, `iso`, `kernel`, `modules`, `root`, `run`, and
+`run-gui`. Plain `make` builds the kernel. File rules handle component
+and tool dependencies internally.
+
+Builds show a short status for each kernel, userspace and library component:
+
+```text
+[building] building USER pkg/pkg /
+[done] USER pkg/pkg (0.2s)
+```
+
+On a terminal, the active line rotates through `\ | / -`; parallel jobs
+share that line and completed steps get their own status. Redirected output
+has plain status lines without terminal escapes. Full commands, warnings and
+nested build output are kept under `src/build/logs/<session>/`. A failed step
+prints its exit status, the log path and the last diagnostic lines.
+
+```sh
+make -j8 root iso          # compact output with a spinner
+make V=1 root             # original commands and full build output
+make BUILD_SPINNER=0 root  # compact output without animation
+```
+
+`BUILD_LOG_DIR=/path/to/logs` changes the log directory. `make clean` removes
+the default logs along with the generated build tree. VM output remains live.
+Build-output checks can be run with `python3 src/tests/build_output_test.py`.
 
 ## source map
 
