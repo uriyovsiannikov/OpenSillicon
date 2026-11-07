@@ -4,6 +4,7 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 prefix="$root/src/build/x11/prefix"
 cc=${CC:-gcc}
+build_triplet=$(sh "$root/src/user/thirdparty/xorg/deps/libX11/config.guess")
 gcc_include=$($cc -print-file-name=include)
 cflags="-std=c11 -O2 -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie -m64 -mno-red-zone"
 cppflags="-DOPEN_SILLICON -nostdinc -isystem $gcc_include -I$root/src/user/libos/include -I$root/src/user/libos/include/sys -I$prefix/include -I$root/src/user/thirdparty/xorg/deps/libz -idirafter /usr/include"
@@ -15,7 +16,7 @@ feh_force=-B
 mkdir -p "$root/src/build/x11/libpng"
 cd "$root/src/build/x11/libpng"
 CPPFLAGS="$cppflags" CFLAGS="$cflags" LDFLAGS="-L$root/src/build/libz" \
-    "$root/src/user/thirdparty/xorg/deps/libpng/configure" --host=x86_64-elf \
+    "$root/src/user/thirdparty/xorg/deps/libpng/configure" --build="$build_triplet" --host=x86_64-elf \
     --prefix="$prefix" --disable-shared --enable-static --disable-tools \
     --disable-tests --without-libpng-compat
 make -j2
@@ -48,7 +49,7 @@ cd "$root/src/build/x11/imlib2"
 CPPFLAGS="$cppflags" CFLAGS="$cflags" LDFLAGS="-L$prefix/lib" \
     PNG_CFLAGS="-I$prefix/include" PNG_LIBS="-L$prefix/lib -lpng" \
     JPEG_CFLAGS="-I$prefix/include" JPEG_LIBS="-L$prefix/lib -ljpeg" \
-    "$root/src/user/thirdparty/xorg/deps/imlib2/configure" --host=x86_64-elf \
+    "$root/src/user/thirdparty/xorg/deps/imlib2/configure" --build="$build_triplet" --host=x86_64-elf \
     --prefix="$prefix" --disable-shared --enable-static --disable-filters \
     --disable-progs --disable-mmx --disable-amd64 --enable-text \
     --x-includes="$prefix/include" --x-libraries="$prefix/lib" \

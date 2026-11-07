@@ -5,6 +5,7 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 prefix="$root/src/build/x11/prefix"
 meson_cross="$root/src/build/x11/opensillicon-cross.ini"
 host_cc=${CC:-gcc}
+build_triplet=$(sh "$root/src/user/thirdparty/xorg/deps/libX11/config.guess")
 gcc_include=$($host_cc -print-file-name=include)
 mkdir -p "$(dirname -- "$meson_cross")"
 cat > "$meson_cross" <<'EOF'
@@ -47,7 +48,7 @@ build_autotools() {
 	mkdir -p "$dir"
 	cd "$dir"
 	CPPFLAGS="$common_cpp -I$source/include" CFLAGS="$common_c" \
-		"$source/configure" --host=x86_64-elf --prefix="$prefix" \
+		"$source/configure" --build="$build_triplet" --host=x86_64-elf --prefix="$prefix" \
 		--disable-shared --enable-static --disable-docs --disable-specs \
 		--disable-tcp-transport "$@"
 	make -j2
@@ -58,7 +59,7 @@ mkdir -p "$prefix"
 mkdir -p "$root/src/build/x11/xcb-proto"
 cd "$root/src/build/x11/xcb-proto"
 CPPFLAGS="$common_cpp" CFLAGS="$common_c" \
-"$root/src/user/thirdparty/xorg/deps/xcb-proto/configure" --host=x86_64-elf --prefix="$prefix"
+"$root/src/user/thirdparty/xorg/deps/xcb-proto/configure" --build="$build_triplet" --host=x86_64-elf --prefix="$prefix"
 make -j2
 make install
 
@@ -69,7 +70,7 @@ mkdir -p "$root/src/build/x11/libxcb"
 cd "$root/src/build/x11/libxcb"
 xcb_cpp="-DOPEN_SILLICON -nostdinc -I$root/src/user/libos/include -I$root/src/user/thirdparty/xorg/deps/libxcb/include -I$root/src/user/thirdparty/xorg/deps/libxcb/src -I$root/src/user/thirdparty/xorg/deps/libXau/include -I$prefix/include -isystem $gcc_include -idirafter /usr/include"
 CPPFLAGS="$xcb_cpp" CFLAGS="$common_c" \
-	"$root/src/user/thirdparty/xorg/deps/libxcb/configure" --host=x86_64-elf --prefix="$prefix" \
+	"$root/src/user/thirdparty/xorg/deps/libxcb/configure" --build="$build_triplet" --host=x86_64-elf --prefix="$prefix" \
 	--disable-shared --enable-static --disable-devel-docs
 make -j2 ACLOCAL=true AUTOMAKE=true AUTOCONF=true AUTOHEADER=true
 make install ACLOCAL=true AUTOMAKE=true AUTOCONF=true AUTOHEADER=true
@@ -77,7 +78,7 @@ make install ACLOCAL=true AUTOMAKE=true AUTOCONF=true AUTOHEADER=true
 mkdir -p "$root/src/build/x11/libxtrans"
 cd "$root/src/build/x11/libxtrans"
 CPPFLAGS="$common_cpp" CFLAGS="$common_c" \
-	"$root/src/user/thirdparty/xorg/deps/libxtrans/configure" --host=x86_64-elf --prefix="$prefix" \
+	"$root/src/user/thirdparty/xorg/deps/libxtrans/configure" --build="$build_triplet" --host=x86_64-elf --prefix="$prefix" \
 	--disable-tcp-transport
 make -j2
 make install
@@ -86,7 +87,7 @@ mkdir -p "$root/src/build/x11/libX11"
 cd "$root/src/build/x11/libX11"
 x11_cpp="$common_cpp -I$root/src/user/thirdparty/xorg/deps/libX11/src -I$root/src/user/thirdparty/xorg/deps/libxcb/include -I$root/src/user/thirdparty/xorg/deps/libxcb/src"
 ac_cv_func_dlopen=no CPPFLAGS="$x11_cpp" CFLAGS="$common_c" \
-	"$root/src/user/thirdparty/xorg/deps/libX11/configure" --host=x86_64-elf --prefix="$prefix" \
+	"$root/src/user/thirdparty/xorg/deps/libX11/configure" --build="$build_triplet" --host=x86_64-elf --prefix="$prefix" \
 	--disable-shared --enable-static --disable-xthreads \
 	--disable-thread-safety-constructor --disable-xf86bigfont
 make -j2
@@ -106,7 +107,7 @@ mkdir -p "$root/src/build/x11/libXpm"
 cd "$root/src/build/x11/libXpm"
 CPPFLAGS="$common_cpp -I$root/src/user/thirdparty/xorg/deps/libXpm/include" CFLAGS="$common_c" \
 	ac_cv_func_closefrom=no ac_cv_func_close_range=no \
-	"$root/src/user/thirdparty/xorg/deps/libXpm/configure" --host=x86_64-elf --prefix="$prefix" \
+	"$root/src/user/thirdparty/xorg/deps/libXpm/configure" --build="$build_triplet" --host=x86_64-elf --prefix="$prefix" \
 	--disable-shared --enable-static --disable-docs --disable-specs
 make -j2 -C src
 make -C src install
@@ -135,7 +136,7 @@ xterm_ld="-nostdlib -static -no-pie -L$prefix/lib -Wl,--build-id=none -Wl,-z,noe
 CPPFLAGS="$xterm_cpp" CFLAGS="$common_c" LDFLAGS="$xterm_ld" \
 	LIBS="-lXaw -lXmu -lXt -lSM -lICE -lXext -lX11 -lxcb -lXau -lXpm" \
 	ac_cv_header_curses_h=no ac_cv_header_ncurses_h=no ac_cv_header_termcap_h=no \
-	"$root/src/user/thirdparty/xorg/xterm/configure" --host=x86_64-elf --prefix="$prefix" \
+	"$root/src/user/thirdparty/xorg/xterm/configure" --build="$build_triplet" --host=x86_64-elf --prefix="$prefix" \
 	--disable-imake --disable-man-pages --disable-setuid --disable-luit \
 	--disable-tek4014 --disable-wide-chars --disable-openpty --disable-regex \
 	--disable-tcap-query --disable-tcap-fkeys --disable-pty-handshake \

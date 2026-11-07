@@ -8,6 +8,10 @@ link_stamp="$stamp.link"
 link_tmp="$link_stamp.tmp.$$"
 trap 'rm -f "$tmp" "$link_tmp"' EXIT HUP INT TERM
 mkdir -p "$root/src/build/x11"
+# Separate make processes share the same Autoconf work directories and stamps.
+# Hold the lock through both fingerprinting and publication of the build.
+exec 9>"$root/src/build/x11/.build.lock"
+flock 9
 
 {
 	find \
