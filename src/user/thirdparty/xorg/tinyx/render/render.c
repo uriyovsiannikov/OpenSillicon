@@ -2358,23 +2358,29 @@ SProcRenderAddGlyphs(ClientPtr client)
 
     CARD32 *gids;
 
-    void *end;
+    CARD8 *end;
+
+    CARD8 *payload;
+
+    size_t remaining;
 
     xGlyphInfo *gi;
 
     REQUEST(xRenderAddGlyphsReq);
     swaps(&stuff->length);
+    REQUEST_AT_LEAST_SIZE(xRenderAddGlyphsReq);
     swapl(&stuff->glyphset);
     swapl(&stuff->nglyphs);
     if (stuff->nglyphs & 0xe0000000)
         return BadLength;
     end = (CARD8 *) stuff + (client->req_len << 2);
+    payload = (CARD8 *) (stuff + 1);
+    remaining = end - payload;
+    if (stuff->nglyphs > remaining /
+        (sizeof(CARD32) + sizeof(xGlyphInfo)))
+        return BadLength;
     gids = (CARD32 *) (stuff + 1);
     gi = (xGlyphInfo *) (gids + stuff->nglyphs);
-    if ((char *) end - (char *) (gids + stuff->nglyphs) < 0)
-        return BadLength;
-    if ((char *) end - (char *) (gi + stuff->nglyphs) < 0)
-        return BadLength;
     for (i = 0; i < stuff->nglyphs; i++) {
         swapl(&gids[i]);
         swaps(&gi[i].width);
