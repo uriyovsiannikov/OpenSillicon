@@ -1,0 +1,2 @@
+# Built packages are produced by the package recipe or pkg-build.
+*.spkg

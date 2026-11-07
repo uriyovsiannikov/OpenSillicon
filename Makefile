@@ -5,6 +5,7 @@ include src/mk/common.mk
 include src/kernel/Makefile
 include src/kernel/module/Makefile
 include src/user/Makefile
+include src/user/pkg/Makefile
 
 # Keep cleanup serialized with any other explicitly requested goal.
 ifneq ($(filter clean,$(MAKECMDGOALS)),)
