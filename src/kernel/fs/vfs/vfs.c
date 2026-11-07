@@ -704,7 +704,7 @@ int
 vfs_open_as(const char *path, uint32_t flags, uint32_t mode,
 	uint32_t uid, uint32_t gid, struct fd_object **result)
 {
-	const uint32_t allowed = VFS_O_ACCMODE | VFS_O_CREAT | VFS_O_TRUNC |
+	const uint32_t allowed = VFS_O_ACCMODE | VFS_O_CREAT | VFS_O_EXCL | VFS_O_TRUNC |
 	    VFS_O_DIRECTORY | VFS_O_NONBLOCK;
 	struct vfs_file_context *context;
 	struct vnode *node = NULL;
@@ -725,6 +725,11 @@ vfs_open_as(const char *path, uint32_t flags, uint32_t mode,
 	if (error != 0)
 		return error;
 	error = vfs_lookup_as(canonical, uid, gid, &node);
+	if (error == 0 && (flags & (VFS_O_CREAT | VFS_O_EXCL)) ==
+	    (VFS_O_CREAT | VFS_O_EXCL)) {
+		vnode_put(node);
+		return -VFS_EEXIST;
+	}
 	if (error == -VFS_ENOENT && (flags & VFS_O_CREAT) != 0) {
 		error = vfs_create_path_as(path, VNODE_REGULAR, mode, uid, gid,
 		    &node);

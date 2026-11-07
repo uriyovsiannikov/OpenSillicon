@@ -13,6 +13,7 @@
 #define VFS_O_RDWR 2U
 #define VFS_O_ACCMODE 3U
 #define VFS_O_CREAT 0x40U
+#define VFS_O_EXCL 0x80U
 #define VFS_O_TRUNC 0x200U
 #define VFS_O_DIRECTORY 0x10000U
 #define VFS_O_NONBLOCK 0x800U
