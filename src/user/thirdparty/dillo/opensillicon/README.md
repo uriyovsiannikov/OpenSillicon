@@ -13,7 +13,7 @@ static linking exception. See ../COPYING and ../deps/fltk/COPYING.
 ## Build and launch
 
 Run `make root` from the repository root. The internal builder
-`src/tools/build_dillo.sh` builds FLTK and Dillo against the native static
+`src/tools/builders/build_dillo.sh` builds FLTK and Dillo against the native static
 libos, X11, PNG, JPEG and zlib libraries. Generated files stay under
 `src/build/dillo/`; input fingerprints and a lock protect incremental builds.
 

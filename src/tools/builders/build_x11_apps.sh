@@ -2,7 +2,7 @@
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-. "$root/src/tools/build_helpers.sh"
+. "$root/src/tools/builders/build_helpers.sh"
 prefix="$root/src/build/x11/prefix"
 meson_cross="$root/src/build/x11/opensillicon-cross.ini"
 host_cc=${CC:-gcc}
@@ -37,7 +37,7 @@ if [ "${1:-full}" = relink ]; then
     build_component "USER xeyes" meson compile -C "$root/src/build/x11/xeyes"
     build_component "USER xterm link" make -C "$root/src/build/x11/xterm" -j2 \
         LIBS="-Wl,--start-group $root/src/build/libos/liblibos.a $prefix/lib/libi18n.a -lXaw7 -lXmu -lXt -lSM -lICE -lXext -lX11 -lxcb -lXau -lXpm -Wl,--end-group"
-    sh "$root/src/tools/build_feh.sh" relink
+    sh "$root/src/tools/builders/build_feh.sh" relink
     exit 0
 fi
 
@@ -162,4 +162,4 @@ else
 fi
 build_component "USER xeyes" meson compile -C .
 
-sh "$root/src/tools/build_feh.sh"
+sh "$root/src/tools/builders/build_feh.sh"

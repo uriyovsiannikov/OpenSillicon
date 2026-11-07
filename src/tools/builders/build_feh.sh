@@ -2,7 +2,7 @@
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-. "$root/src/tools/build_helpers.sh"
+. "$root/src/tools/builders/build_helpers.sh"
 prefix="$root/src/build/x11/prefix"
 cc=${CC:-gcc}
 build_triplet=$(sh "$root/src/user/thirdparty/xorg/deps/libX11/config.guess")

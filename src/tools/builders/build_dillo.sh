@@ -2,7 +2,7 @@
 set -eu
 r=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 root=$r
-. "$root/src/tools/build_helpers.sh"
+. "$root/src/tools/builders/build_helpers.sh"
 cc=${CC:-gcc}
 cxx_compiler=${CXX:-g++}
 p=$r/src/build/x11/prefix

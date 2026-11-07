@@ -436,8 +436,8 @@ iso: $(BUILD_DIR)/opensillicon.iso
 
 INITRAMFS_INPUTS := $(shell find src/initramfs -print)
 
-$(BUILD_DIR)/initramfs.cpio: src/tools/mkinitramfs.py $(INITRAMFS_INPUTS) | $(BUILD_DIR)
-	python3 src/tools/mkinitramfs.py src/initramfs $@
+$(BUILD_DIR)/initramfs.cpio: src/tools/packers/mkinitramfs.py $(INITRAMFS_INPUTS) | $(BUILD_DIR)
+	python3 src/tools/packers/mkinitramfs.py src/initramfs $@
 
 $(BUILD_DIR)/opensillicon.iso: $(BUILD_DIR)/kernel.elf $(BUILD_DIR)/initramfs.cpio \
 		src/limine/BOOTX64.EFI src/limine/limine-uefi-cd.bin src/kernel/Makefile

@@ -40,9 +40,9 @@ flock 9
 		"$root/src/user/thirdparty/xorg/feh" \
 		"$root/src/user/libos/include" \
 		"$root/src/include/abi" \
-		"$root/src/tools/build_x11_if_needed.sh" \
-		"$root/src/tools/build_x11_apps.sh" \
-		"$root/src/tools/build_feh.sh" \
+		"$root/src/tools/builders/build_x11_if_needed.sh" \
+		"$root/src/tools/builders/build_x11_apps.sh" \
+		"$root/src/tools/builders/build_feh.sh" \
 		"$root/src/user/c_linker.ld" \
 		-type d \( -name .git -o -name __pycache__ \) -prune -o -type f ! -name '*.pyc' -print0 2>/dev/null | sort -z | xargs -0 sha256sum
 } | sha256sum | cut -d ' ' -f 1 > "$tmp"
@@ -67,7 +67,7 @@ if [ -f "$stamp" ] && cmp -s "$tmp" "$stamp" &&
 fi
 
 echo "X11: $mode build"
-if sh "$root/src/tools/build_x11_apps.sh" "$mode"; then
+if sh "$root/src/tools/builders/build_x11_apps.sh" "$mode"; then
 	mv "$tmp" "$stamp"
 	mv "$link_tmp" "$link_stamp"
 else

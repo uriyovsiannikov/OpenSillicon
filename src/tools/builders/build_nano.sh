@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-. "$root/src/tools/build_helpers.sh"
+. "$root/src/tools/builders/build_helpers.sh"
 cc=${CC:-gcc}
 out="$root/src/build/nano"
 src="$out/deps/ncurses-6.5"

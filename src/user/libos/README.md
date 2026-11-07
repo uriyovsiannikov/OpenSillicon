@@ -120,7 +120,7 @@ xterm. The slave descriptor must be inherited or duplicated. `/dev/pts`,
 signals, flow control, and the rest of POSIX termios are not implemented.
 Unsupported features are not emulated as successful operations.
 
-The static X client set is assembled by `tools/build_x11_apps.sh` when building
+The static X client set is assembled by `tools/builders/build_x11_apps.sh` when building
 `build/root.img`. It installs twm and xterm in `/bin`; xterm uses the anonymous
 PTY slave inherited across fork/exec and connects to TinyX through the local
 Unix socket. The X port keeps networking, auth-file locking, regex selection,

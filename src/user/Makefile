@@ -248,18 +248,18 @@ $(BUILD_DIR)/startx.elf: $(BUILD_DIR)/startx.o $(LIBOS_BUILD_DIR)/crt0.o $(LIBOS
 
 NANO_SOURCES := $(shell find src/user/thirdparty/nano/src -type f ! -path '*/.git/*'; find src/user/thirdparty/nano -maxdepth 1 -type f ! -path '*/.git/*')
 
-$(BUILD_DIR)/nano/nano: $(NANO_SOURCES) src/tools/build_nano.sh $(LIBOS_ARCHIVE) \
+$(BUILD_DIR)/nano/nano: $(NANO_SOURCES) src/tools/builders/build_nano.sh $(LIBOS_ARCHIVE) \
 		$(LIBOS_BUILD_DIR)/crt0.o src/user/c_linker.ld
-	sh src/tools/build_nano.sh
+	sh src/tools/builders/build_nano.sh
 
 .PHONY: $(BUILD_DIR)/x11/.apps-ready
 $(BUILD_DIR)/x11/.apps-ready: $(TINYX_BINARY) $(LIBOS_ARCHIVE) $(LIBZ_ARCHIVE) \
 		$(LIBFONTENC_ARCHIVE) $(LIBXFONT_ARCHIVE)
-	sh src/tools/build_x11_if_needed.sh
+	sh src/tools/builders/build_x11_if_needed.sh
 
 .PHONY: $(BUILD_DIR)/dillo/.ready
 $(BUILD_DIR)/dillo/.ready: $(BUILD_DIR)/x11/.apps-ready $(LIBOS_ARCHIVE) $(LIBOS_BUILD_DIR)/crt0.o
-	sh src/tools/build_dillo.sh
+	sh src/tools/builders/build_dillo.sh
 
 $(BUILD_DIR)/root.img: $(BUILD_DIR)/x11/.apps-ready $(BUILD_DIR)/dillo/.ready $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.elf \
 		$(MODULE_OBJECTS) \
@@ -271,10 +271,10 @@ $(BUILD_DIR)/root.img: $(BUILD_DIR)/x11/.apps-ready $(BUILD_DIR)/dillo/.ready $(
 		src/user/thirdparty/xorg/startx/system.twmrc \
 		$(TINYX_BINARY) \
 		$(COREUTILS_ELFS) \
-		src/tools/mksilliconfs.py | $(BUILD_DIR)
+		src/tools/packers/mksilliconfs.py | $(BUILD_DIR)
 	@set -eu; image_tmp=$$(mktemp '$@.tmp.XXXXXX'); \
 	trap 'rm -f "$$image_tmp"' EXIT HUP INT TERM; \
-	python3 src/tools/mksilliconfs.py "$$image_tmp" --blocks 32768 --inodes 1024; \
+	python3 src/tools/packers/mksilliconfs.py "$$image_tmp" --blocks 32768 --inodes 1024; \
 	$(BUILD_DIR)/populate_root "$$image_tmp" $(BUILD_DIR)/init.elf \
 		$(BUILD_DIR)/shell.elf --tinyx $(TINYX_BINARY) \
 		--startx $(BUILD_DIR)/startx.elf \
