@@ -36,6 +36,13 @@ tty_init(const struct limine_framebuffer *framebuffer)
 	return true;
 }
 
+void
+tty_boot_splash_end(void)
+{
+	framebuffer_boot_splash_end();
+	(void)terminal_switch(terminal_active());
+}
+
 bool
 tty_framebuffer_available(void)
 {

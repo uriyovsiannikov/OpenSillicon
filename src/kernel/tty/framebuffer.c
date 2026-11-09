@@ -12,6 +12,7 @@
 static const struct limine_framebuffer *active_framebuffer;
 static unsigned int framebuffer_columns;
 static unsigned int framebuffer_rows;
+static bool boot_splash_active;
 static const uint32_t palette[16] = {
 	0x000000, 0xaa0000, 0x00aa00, 0xaa5500,
 	0x0000aa, 0xaa00aa, 0x00aaaa, 0xaaaaaa,
@@ -72,6 +73,76 @@ fill(uint32_t color)
 	}
 }
 
+static void
+boot_draw_text(uint64_t x, uint64_t y, const char *text, uint32_t color)
+{
+	for (; *text != '\0'; text++, x += FONT_WIDTH) {
+		unsigned int character = (unsigned char)*text;
+		unsigned int glyph = character < 0x80U ? character : 224U;
+		for (unsigned int row = 0; row < FONT_HEIGHT; row++) {
+			uint16_t bits = gallant12x22[glyph][row];
+			for (unsigned int column = 0; column < FONT_WIDTH; column++) {
+				if ((bits & (0x800U >> column)) != 0 &&
+				    x + column < active_framebuffer->width &&
+				    y + row < active_framebuffer->height)
+					put_pixel(x + column, y + row, color);
+			}
+		}
+	}
+}
+
+static void
+boot_fill_rectangle(uint64_t x, uint64_t y, uint64_t width, uint64_t height,
+	uint32_t color)
+{
+	uint64_t row;
+	uint64_t column;
+
+	for (row = y; row < active_framebuffer->height && row - y < height; row++)
+		for (column = x; column < active_framebuffer->width &&
+		    column - x < width; column++)
+			put_pixel(column, row, color);
+}
+
+void
+framebuffer_boot_splash(const struct limine_framebuffer *framebuffer,
+	unsigned int progress, const char *label)
+{
+	char bar[] = "[ . . . . . ]";
+	uint64_t bar_width = (sizeof(bar) - 1) * FONT_WIDTH;
+	uint64_t label_width = 0;
+	uint64_t panel_width;
+	uint64_t x;
+	uint64_t y;
+	uint64_t i;
+
+	if (framebuffer == NULL || framebuffer->address == NULL || label == NULL ||
+	    progress > 5 || active_framebuffer != framebuffer)
+		return;
+	for (i = 0; label[i] != '\0'; i++)
+		label_width += FONT_WIDTH;
+	panel_width = label_width > bar_width ? label_width : bar_width;
+	x = framebuffer->width > panel_width ?
+	    (framebuffer->width - panel_width) / 2 : 0;
+	y = framebuffer->height / 2 - FONT_HEIGHT;
+	/* Clear the whole centered text band so a shorter new status cannot leave
+	 * glyphs behind from the previous, longer status. */
+	boot_fill_rectangle(0, y, framebuffer->width, FONT_HEIGHT * 2 + 4, 0);
+	x = framebuffer->width > bar_width ? (framebuffer->width - bar_width) / 2 : 0;
+	boot_draw_text(x, y, bar, 0xaaaaaa);
+	for (i = 0; i < progress; i++)
+		boot_draw_text(x + (2 + i * 2) * FONT_WIDTH, y, ".", 0xffffff);
+	x = framebuffer->width > label_width ? (framebuffer->width - label_width) / 2 : 0;
+	boot_draw_text(x, y + FONT_HEIGHT + 4, label, 0xffffff);
+	boot_splash_active = true;
+}
+
+void
+framebuffer_boot_splash_end(void)
+{
+	boot_splash_active = false;
+}
+
 bool
 framebuffer_text_init(const struct limine_framebuffer *framebuffer,
 	unsigned int *columns, unsigned int *rows)
@@ -123,6 +194,7 @@ framebuffer_text_init(const struct limine_framebuffer *framebuffer,
 	    (green_mask & blue_mask) != 0)
 		return false;
 	active_framebuffer = framebuffer;
+	boot_splash_active = false;
 	max_columns = framebuffer->width / FONT_WIDTH;
 	max_rows = framebuffer->height / FONT_HEIGHT;
 	if (max_columns > TERMINAL_MAX_COLUMNS)
@@ -150,7 +222,8 @@ framebuffer_text_draw(void *context, unsigned int terminal,
 	unsigned int glyph;
 
 	(void)context;
-	if (active_framebuffer == NULL || terminal != terminal_active() ||
+	if (active_framebuffer == NULL || boot_splash_active ||
+	    terminal != terminal_active() ||
 	    column >= framebuffer_columns || row >= framebuffer_rows)
 		return;
 	foreground = palette[cell.foreground & 15U];

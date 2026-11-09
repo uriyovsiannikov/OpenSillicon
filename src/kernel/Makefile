@@ -50,6 +50,7 @@ $(BUILD_DIR)/cyclone-net.o: $(CYCLONE_TCP_ROOT)/core/net.c \
 	$(CC) $(CYCLONE_CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/main.o: src/kernel/main.c src/include/kernel/boot.h src/include/kernel/log.h \
+		src/include/kernel/framebuffer.h \
 		src/include/kernel/pmm.h src/include/kernel/vmm.h src/include/kernel/heap.h \
 		src/include/kernel/errno.h \
 		src/include/kernel/timer.h src/include/kernel/scheduler.h src/include/kernel/smp.h \

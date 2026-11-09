@@ -32,6 +32,7 @@
 #include "kernel/block_silliconfs.h"
 #include "kernel/silliconfs.h"
 #include "kernel/tty.h"
+#include "kernel/framebuffer.h"
 #include "kernel/framebuffer_device.h"
 #include "arch/x86_64/ahci.h"
 #include "arch/x86_64/fpu.h"
@@ -339,6 +340,8 @@ _start(void)
 	uint64_t loaded_base_revision;
 	bool revision_five_honored;
 	struct dma_boot_contract validated_dma_contract;
+	unsigned int boot_columns;
+	unsigned int boot_rows;
 
 	serial_init();
 	loaded_base_revision = LIMINE_LOADED_BASE_REVISION(limine_base_revision);
@@ -382,6 +385,8 @@ _start(void)
 		klog("\n");
 		kernel_halt();
 	}
+	if (framebuffer_text_init(info.framebuffer, &boot_columns, &boot_rows))
+		framebuffer_boot_splash(info.framebuffer, 0, "Booting kernel");
 	entropy_result = boot_entropy_inspect(
 	    (const struct limine_entropy_response *)(uintptr_t)
 	    entropy_request.response, info.hhdm_offset, info.memmap,
@@ -437,11 +442,13 @@ _start(void)
 		kernel_halt();
 	}
 	klog_status("PMM", true, NULL);
+	framebuffer_boot_splash(info.framebuffer, 1, "Booting VMM");
 	if (!vmm_init(&info)) {
 		klog_status("VMM", false, "virtual memory initialization failed");
 		kernel_halt();
 	}
 	klog_status("VMM", true, NULL);
+	framebuffer_boot_splash(info.framebuffer, 2, "Starting kernel services");
 	if (!dma_init(&validated_dma_contract)) {
 		klog_status("DMA subsystem", false,
 		    "initialization failed");
@@ -471,6 +478,7 @@ _start(void)
 		kernel_halt();
 	}
 	klog_status("heap", true, NULL);
+	framebuffer_boot_splash(info.framebuffer, 3, "Starting console");
 	if (!kernel_driver_api_export()) {
 		klog_status("kernel module exports", false, "export registration failed");
 		kernel_halt();
@@ -480,6 +488,7 @@ _start(void)
 		klog_status("console", false, "terminal initialization failed");
 		kernel_halt();
 	}
+	framebuffer_boot_splash(info.framebuffer, 3, "Starting hardware");
 	if (!framebuffer_device_init(info.framebuffer))
 		klog("OpenSillicon: userspace framebuffer API unavailable\n");
 	klog_status("console", true, NULL);
@@ -553,6 +562,7 @@ virtio_rng_probe_done:
 	    "runtime probing disabled outside the explicit QEMU profile");
 #endif
 	klog_status("PCI", true, "device enumeration complete");
+	framebuffer_boot_splash(info.framebuffer, 4, "Mounting system");
 	if (!ahci_controller_found)
 		klog_status("AHCI", false, "no supported controller found");
 	if (!ahci_controller_found)
@@ -595,6 +605,8 @@ virtio_rng_probe_done:
 			kernel_halt();
 		}
 	}
+	framebuffer_boot_splash(info.framebuffer, 5, "Starting init");
+	tty_boot_splash_end();
 	klog("OpenSillicon: launching /sbin/init from SilliconFS\n");
 	klog_flush_boot_log();
 	fd_console_framebuffer_enable(true);
