@@ -287,7 +287,10 @@ $(BUILD_DIR)/root.img: $(BUILD_DIR)/x11/.apps-ready $(BUILD_DIR)/dillo/.ready $(
 		$(BUILD_DIR)/coreutils/true.elf $(BUILD_DIR)/coreutils/false.elf \
 		$(BUILD_DIR)/coreutils/clear.elf $(BUILD_DIR)/coreutils/uname.elf \
 		$(BUILD_DIR)/coreutils/fetch.elf $(BUILD_DIR)/coreutils/head.elf \
-		$(BUILD_DIR)/coreutils/wc.elf $(BUILD_DIR)/coreutils/stat.elf \
+		$(BUILD_DIR)/coreutils/tail.elf $(BUILD_DIR)/coreutils/wc.elf \
+		$(BUILD_DIR)/coreutils/seq.elf $(BUILD_DIR)/coreutils/stat.elf \
+		$(BUILD_DIR)/coreutils/mkdir.elf $(BUILD_DIR)/coreutils/rm.elf \
+		$(BUILD_DIR)/coreutils/touch.elf \
 		$(BUILD_DIR)/coreutils/basename.elf \
 		$(BUILD_DIR)/coreutils/dirname.elf $(BUILD_DIR)/coreutils/kill.elf \
 		$(BUILD_DIR)/coreutils/sleep.elf $(BUILD_DIR)/coreutils/which.elf \
