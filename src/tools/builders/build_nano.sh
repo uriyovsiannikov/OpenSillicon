@@ -1,6 +1,6 @@
 #!/bin/sh
 set -eu
-root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+root=$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)
 . "$root/src/tools/builders/build_helpers.sh"
 cc=${CC:-gcc}
 out="$root/src/build/nano"

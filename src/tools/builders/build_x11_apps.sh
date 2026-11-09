@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+root=$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)
 . "$root/src/tools/builders/build_helpers.sh"
 prefix="$root/src/build/x11/prefix"
 meson_cross="$root/src/build/x11/opensillicon-cross.ini"

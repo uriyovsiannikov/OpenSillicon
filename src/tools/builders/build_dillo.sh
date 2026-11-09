@@ -1,6 +1,6 @@
 #!/bin/sh
 set -eu
-r=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+r=$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)
 root=$r
 . "$root/src/tools/builders/build_helpers.sh"
 cc=${CC:-gcc}
