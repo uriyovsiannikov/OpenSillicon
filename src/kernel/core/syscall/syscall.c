@@ -1163,6 +1163,27 @@ syscall_interrupt(struct interrupt_frame *frame)
 				frame->rax = 0;
 		}
 		break;
+	case SYSCALL_UNLINK:
+		{
+			char path[VFS_PATH_MAX], canonical[VFS_PATH_MAX];
+			struct os_credentials credentials;
+			int result;
+			if (frame->rsi > 1U) {
+				syscall_error(frame, ERRNO_EINVAL);
+				break;
+			}
+			result = copy_user_string(frame->rdi, path, sizeof(path));
+			if (result == 0) result = process_resolve_path(path, canonical,
+			    sizeof(canonical));
+			if (result == 0 && !process_current_credentials(&credentials))
+				result = -ERRNO_ESRCH;
+			if (result == 0) result = vfs_remove_path_as(canonical,
+			    frame->rsi != 0, credentials.effective_uid,
+			    credentials.effective_gid);
+			if (result != 0) syscall_error(frame, errno_from_kernel(result));
+			else frame->rax = 0;
+		}
+		break;
 	case SYSCALL_ACCESS:
 		{
 			char path[VFS_PATH_MAX], canonical[VFS_PATH_MAX];

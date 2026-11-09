@@ -53,6 +53,8 @@ struct vnode_operations {
 	    size_t name_length, enum vnode_type type, uint32_t mode,
 	    uint32_t uid, uint32_t gid,
 	    struct vnode **result);
+	int (*remove)(struct vnode *directory, const char *name,
+	    size_t name_length, bool directory_entry);
 	int (*read)(struct vnode *node, uint64_t offset, void *buffer,
 	    size_t length, size_t *read_length);
 	int (*write)(struct vnode *node, uint64_t offset, const void *buffer,
@@ -96,6 +98,8 @@ int vfs_create_path(const char *path, enum vnode_type type, uint32_t mode,
 	struct vnode **result);
 int vfs_create_path_as(const char *path, enum vnode_type type, uint32_t mode,
 	uint32_t uid, uint32_t gid, struct vnode **result);
+int vfs_remove_path_as(const char *path, bool directory, uint32_t uid,
+	uint32_t gid);
 int vfs_stat_path(const char *path, struct vfs_stat *status);
 int vfs_stat_path_as(const char *path, uint32_t uid, uint32_t gid,
 	struct vfs_stat *status);

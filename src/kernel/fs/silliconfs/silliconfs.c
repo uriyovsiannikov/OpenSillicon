@@ -13,6 +13,9 @@
 #define SFS_ENOMEM 12
 #define SFS_ENOSPC 28
 #define SFS_ENOTDIR 20
+#define SFS_ENOTEMPTY 39
+#define SFS_EISDIR 21
+#define SFS_EBUSY 16
 #define SFS_EOVERFLOW 75
 #define SFS_DIRECT 12U
 #define SFS_INDIRECT_COUNT 1024U
@@ -48,6 +51,8 @@ struct silliconfs {
 	struct silliconfs_device device;
 	struct sfs_superblock super;
 	uint32_t references;
+	uint32_t *inode_vnode_refs;
+	uint8_t *inode_unlinked;
 };
 
 struct sfs_node {
@@ -64,6 +69,7 @@ struct sfs_name_slot {
 static int sfs_lookup(struct vnode *, const char *, size_t, struct vnode **);
 static int sfs_create(struct vnode *, const char *, size_t, enum vnode_type,
 	uint32_t, uint32_t, uint32_t, struct vnode **);
+static int sfs_remove(struct vnode *, const char *, size_t, bool);
 static int sfs_read(struct vnode *, uint64_t, void *, size_t, size_t *);
 static int sfs_write(struct vnode *, uint64_t, const void *, size_t, size_t *);
 static int sfs_truncate(struct vnode *, uint64_t);
@@ -72,10 +78,12 @@ static void sfs_destroy(struct vnode *);
 static int sfs_chmod(struct vnode *, uint32_t);
 static int sfs_chown(struct vnode *, uint32_t, uint32_t);
 static void sync_vnode(struct sfs_node *, const struct sfs_inode *);
+static int release_inode_storage(struct silliconfs *, uint32_t);
 
 static const struct vnode_operations sfs_operations = {
 	.lookup = sfs_lookup,
 	.create = sfs_create,
+	.remove = sfs_remove,
 	.read = sfs_read,
 	.write = sfs_write,
 	.truncate = sfs_truncate,
@@ -545,6 +553,30 @@ free_inode(struct silliconfs *filesystem, uint32_t number)
 }
 
 static int
+release_inode_storage(struct silliconfs *filesystem, uint32_t number)
+{
+	struct sfs_inode inode;
+	int error = read_inode(filesystem, number, &inode);
+	if (error != 0) return error;
+	for (unsigned int i = 0; i < SFS_DIRECT; i++)
+		if (inode.direct[i] != 0 &&
+		    (error = free_block(filesystem, inode.direct[i])) != 0)
+			return error;
+	if (inode.indirect != 0) {
+		uint8_t indirect[SILLICONFS_BLOCK_SIZE];
+		error = read_block(filesystem, inode.indirect, indirect);
+		if (error != 0) return error;
+		for (unsigned int i = 0; i < SFS_INDIRECT_COUNT; i++) {
+			uint32_t block = get_le32(indirect + i * 4);
+			if (block != 0 && (error = free_block(filesystem, block)) != 0)
+				return error;
+		}
+		if ((error = free_block(filesystem, inode.indirect)) != 0) return error;
+	}
+	return free_inode(filesystem, number);
+}
+
+static int
 map_block(struct silliconfs *filesystem, uint32_t inode_number,
 	struct sfs_inode *inode, uint32_t logical, bool create, uint32_t *physical)
 {
@@ -793,6 +825,17 @@ validate_directory(struct silliconfs *filesystem, uint32_t number,
 		record_length = get_le16(record + 4);
 		name_length = record[6];
 		type = record[7];
+		if (target == 0 && name_length == 0 && type == 0) {
+			if (record_length < SFS_DIR_HEADER || record_length % 4 != 0 ||
+			    record_length > block_end - position ||
+			    !zero_bytes(record + SFS_DIR_HEADER,
+			    record_length - SFS_DIR_HEADER)) {
+				error = -SFS_EIO;
+				goto done;
+			}
+			position += record_length;
+			continue;
+		}
 		if (target == 0 || target > filesystem->super.inode_count ||
 		    name_length == 0 ||
 		    record_length < ((SFS_DIR_HEADER + name_length + 3U) & ~3U) ||
@@ -1124,7 +1167,12 @@ make_node(struct silliconfs *filesystem, uint32_t number,
 		(void)kheap_free(node);
 		return -SFS_EOVERFLOW;
 	}
+	if (filesystem->inode_vnode_refs[number] == UINT32_MAX) {
+		(void)kheap_free(node);
+		return -SFS_EOVERFLOW;
+	}
 	filesystem->references++;
+	filesystem->inode_vnode_refs[number]++;
 	node->filesystem = filesystem;
 	node->inode_number = number;
 	node->vnode = (struct vnode){
@@ -1143,10 +1191,22 @@ sfs_destroy(struct vnode *vnode)
 {
 	struct sfs_node *node = node_from_vnode(vnode);
 	struct silliconfs *filesystem = node->filesystem;
+	uint32_t number = node->inode_number;
 
 	(void)kheap_free(node);
+	if (filesystem->inode_vnode_refs[number] != 0)
+		filesystem->inode_vnode_refs[number]--;
+	if (filesystem->inode_vnode_refs[number] == 0 &&
+	    filesystem->inode_unlinked[number]) {
+		(void)release_inode_storage(filesystem, number);
+		filesystem->inode_unlinked[number] = 0;
+	}
 	if (--filesystem->references == 0)
+	{
+		(void)kheap_free(filesystem->inode_vnode_refs);
+		(void)kheap_free(filesystem->inode_unlinked);
 		(void)kheap_free(filesystem);
+	}
 }
 
 static int
@@ -1172,11 +1232,12 @@ find_directory_entry(struct silliconfs *filesystem,
 
 			if (record_length < SFS_DIR_HEADER ||
 			    record_length > SILLICONFS_BLOCK_SIZE - offset ||
-			    record_length % 4 != 0 || record_name_length == 0 ||
-			    record_length < ((SFS_DIR_HEADER + record_name_length + 3U) &
-			    ~3U))
+			    record_length % 4 != 0 ||
+			    (record_name_length == 0 && get_le32(record) != 0) ||
+			    (record_name_length != 0 && record_length < ((SFS_DIR_HEADER + record_name_length + 3U) &
+			    ~3U)))
 				return -SFS_EIO;
-			if (record_name_length == name_length &&
+			if (record_name_length != 0 && record_name_length == name_length &&
 			    memcmp(record + SFS_DIR_HEADER, name, name_length) == 0) {
 				*number = get_le32(record);
 				*type = record[7];
@@ -1187,6 +1248,94 @@ find_directory_entry(struct silliconfs *filesystem,
 		position += SILLICONFS_BLOCK_SIZE;
 	}
 	return -SFS_ENOENT;
+}
+
+static int
+sfs_remove(struct vnode *directory_node, const char *name, size_t name_length,
+	bool remove_directory)
+{
+	struct sfs_node *parent_node = node_from_vnode(directory_node);
+	struct silliconfs *fs = parent_node->filesystem;
+	struct sfs_inode parent, child;
+	uint8_t block[SILLICONFS_BLOCK_SIZE];
+	uint64_t position = 0;
+	uint32_t child_number = 0;
+	uint8_t child_type = 0;
+	uint32_t entry_physical = 0, entry_offset = 0;
+	int error;
+	if (directory_node->type != VNODE_DIRECTORY) return -SFS_ENOTDIR;
+	if (name == NULL || name_length == 0 || name_length > VFS_NAME_MAX ||
+	    name_is((const uint8_t *)name, (uint8_t)name_length, ".") ||
+	    name_is((const uint8_t *)name, (uint8_t)name_length, ".."))
+		return -SFS_EINVAL;
+	error = read_inode(fs, parent_node->inode_number, &parent);
+	if (error != 0) return error;
+	while (position < parent.size) {
+		uint32_t physical;
+		error = read_logical_block(fs, &parent,
+		    (uint32_t)(position / SILLICONFS_BLOCK_SIZE), block, &physical);
+		if (error != 0 || physical == 0) return -SFS_EIO;
+		for (uint32_t offset = 0; offset < SILLICONFS_BLOCK_SIZE;) {
+			uint8_t *record = block + offset;
+			uint16_t length = get_le16(record + 4);
+			uint8_t n = record[6];
+			if (length < SFS_DIR_HEADER || length > SILLICONFS_BLOCK_SIZE-offset)
+				return -SFS_EIO;
+			if (n == name_length && get_le32(record) != 0 &&
+			    memcmp(record + SFS_DIR_HEADER, name, name_length) == 0) {
+				child_number = get_le32(record);
+				child_type = record[7];
+				entry_physical = physical;
+				entry_offset = offset;
+				break;
+			}
+			offset += length;
+		}
+		if (child_number != 0) break;
+		position += SILLICONFS_BLOCK_SIZE;
+	}
+	if (child_number == 0) return -SFS_ENOENT;
+	if ((child_type == VNODE_DIRECTORY) != remove_directory)
+		return remove_directory ? -SFS_ENOTDIR : -SFS_EISDIR;
+	error = read_inode(fs, child_number, &child);
+	if (error != 0) return error;
+	if (remove_directory) {
+		uint64_t pos = 0;
+		unsigned int entries = 0;
+		uint8_t scan[SILLICONFS_BLOCK_SIZE];
+		while (pos < child.size) {
+			uint32_t physical;
+			error = read_logical_block(fs, &child,
+			    (uint32_t)(pos / SILLICONFS_BLOCK_SIZE), scan, &physical);
+			if (error != 0 || physical == 0) return -SFS_EIO;
+			for (uint32_t off = 0; off < SILLICONFS_BLOCK_SIZE;) {
+				uint16_t len = get_le16(scan + off + 4);
+				if (len < SFS_DIR_HEADER || len > SILLICONFS_BLOCK_SIZE-off)
+					return -SFS_EIO;
+				if (get_le32(scan + off) != 0) entries++;
+				off += len;
+			}
+			pos += SILLICONFS_BLOCK_SIZE;
+		}
+		if (entries > 2) return -SFS_ENOTEMPTY;
+	}
+	/* A zero inode marks a reusable directory record while preserving layout. */
+	error = read_block(fs, entry_physical, block);
+	if (error != 0) return error;
+	{
+		uint8_t *record = block + entry_offset;
+		uint16_t length = get_le16(record + 4);
+		memset(record, 0, length);
+		put_le16(record + 4, length);
+		error = write_block(fs, entry_physical, block);
+	}
+	if (error != 0) return error;
+	fs->inode_unlinked[child_number] = 1;
+	if (fs->inode_vnode_refs[child_number] == 0) {
+		fs->inode_unlinked[child_number] = 0;
+		return release_inode_storage(fs, child_number);
+	}
+	return 0;
 }
 
 static int
@@ -1536,10 +1685,12 @@ sfs_readdir(struct vnode *vnode, uint64_t index, struct vfs_dirent *entry)
 
 			if (length < SFS_DIR_HEADER ||
 			    length > SILLICONFS_BLOCK_SIZE - offset ||
-			    length % 4 != 0 || name_length == 0 ||
-			    length < ((SFS_DIR_HEADER + name_length + 3U) & ~3U))
+			    length % 4 != 0 ||
+			    (name_length == 0 && get_le32(record) != 0) ||
+			    (name_length != 0 && length <
+			    ((SFS_DIR_HEADER + name_length + 3U) & ~3U)))
 				return -SFS_EIO;
-			if (current++ == index) {
+			if (get_le32(record) != 0 && current++ == index) {
 				struct sfs_inode target;
 				uint32_t number = get_le32(record);
 
@@ -1579,14 +1730,32 @@ silliconfs_mount(const struct silliconfs_device *device, struct vnode **root)
 	filesystem->device = *device;
 	filesystem->super.total_blocks = device->block_count;
 	error = load_superblock(filesystem);
+	if (error == 0) {
+		size_t refs_size = ((size_t)filesystem->super.inode_count + 1U) *
+		    sizeof(*filesystem->inode_vnode_refs);
+		size_t unlinked_size = (size_t)filesystem->super.inode_count + 1U;
+		filesystem->inode_vnode_refs = kheap_alloc(refs_size);
+		filesystem->inode_unlinked = kheap_alloc(unlinked_size);
+		if (filesystem->inode_vnode_refs == NULL ||
+		    filesystem->inode_unlinked == NULL)
+			error = -SFS_ENOMEM;
+		else {
+			memset(filesystem->inode_vnode_refs, 0, refs_size);
+			memset(filesystem->inode_unlinked, 0, unlinked_size);
+		}
+	}
 	if (error == 0)
 		error = validate_filesystem(filesystem);
 	if (error != 0) {
+		(void)kheap_free(filesystem->inode_vnode_refs);
+		(void)kheap_free(filesystem->inode_unlinked);
 		(void)kheap_free(filesystem);
 		return error;
 	}
 	error = make_node(filesystem, SFS_ROOT_INODE, &root_node);
 	if (error != 0) {
+		(void)kheap_free(filesystem->inode_vnode_refs);
+		(void)kheap_free(filesystem->inode_unlinked);
 		(void)kheap_free(filesystem);
 		return error;
 	}

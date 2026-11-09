@@ -5,6 +5,8 @@
 #include "kernel/vfs.h"
 
 #define RAMFS_EEXIST 17
+#define RAMFS_EBUSY 16
+#define RAMFS_ENOTEMPTY 39
 #define RAMFS_EINVAL 22
 #define RAMFS_EISDIR 21
 #define RAMFS_ENAMETOOLONG 36
@@ -26,6 +28,7 @@ struct ramfs_node {
 static int ramfs_lookup(struct vnode *, const char *, size_t, struct vnode **);
 static int ramfs_create(struct vnode *, const char *, size_t, enum vnode_type,
 	uint32_t, uint32_t, uint32_t, struct vnode **);
+static int ramfs_remove(struct vnode *, const char *, size_t, bool);
 static int ramfs_read(struct vnode *, uint64_t, void *, size_t, size_t *);
 static int ramfs_write(struct vnode *, uint64_t, const void *, size_t, size_t *);
 static int ramfs_truncate(struct vnode *, uint64_t);
@@ -37,6 +40,7 @@ static int ramfs_chown(struct vnode *, uint32_t, uint32_t);
 static const struct vnode_operations ramfs_operations = {
 	.lookup = ramfs_lookup,
 	.create = ramfs_create,
+	.remove = ramfs_remove,
 	.read = ramfs_read,
 	.write = ramfs_write,
 	.truncate = ramfs_truncate,
@@ -51,6 +55,35 @@ ramfs_from_vnode(struct vnode *node)
 {
 	return (struct ramfs_node *)((uintptr_t)node -
 	    offsetof(struct ramfs_node, vnode));
+}
+
+static int
+ramfs_remove(struct vnode *directory, const char *name, size_t length,
+	bool remove_directory)
+{
+	struct ramfs_node *parent, *node, *previous = NULL;
+	if (directory->type != VNODE_DIRECTORY)
+		return -RAMFS_ENOTDIR;
+	if (name == NULL || length == 0 || length > VFS_NAME_MAX ||
+	    (length == 1 && name[0] == '.') ||
+	    (length == 2 && name[0] == '.' && name[1] == '.'))
+		return -RAMFS_EINVAL;
+	parent = ramfs_from_vnode(directory);
+	for (node = parent->children; node != NULL; previous = node, node = node->next)
+		if (strlen(node->name) == length && memcmp(node->name, name, length) == 0)
+			break;
+	if (node == NULL)
+		return -RAMFS_ENOENT;
+	if ((node->vnode.type == VNODE_DIRECTORY) != remove_directory)
+		return remove_directory ? -RAMFS_ENOTDIR : -RAMFS_EISDIR;
+	if (node->children != NULL)
+		return -RAMFS_ENOTEMPTY;
+	if (previous == NULL) parent->children = node->next;
+	else previous->next = node->next;
+	if (parent->last_child == node) parent->last_child = previous;
+	node->next = NULL;
+	vnode_put(&node->vnode);
+	return 0;
 }
 
 static int

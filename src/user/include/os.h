@@ -14,6 +14,10 @@
 
 #define U_O_RDONLY 0U
 #define U_O_WRONLY 1U
+#define U_O_RDWR 2U
+#define U_O_CREAT 0x40U
+#define U_O_EXCL 0x80U
+#define U_O_TRUNC 0x200U
 #define U_O_DIRECTORY 0x10000U
 #define U_SIGINT 2U
 #define U_SIGKILL 9U
@@ -106,6 +110,9 @@ _Static_assert(sizeof(struct u_icmp_echo_request) == 56,
 long u_write(uint64_t fd, const void *buffer, size_t length);
 long u_read(uint64_t fd, void *buffer, size_t length);
 long u_open(const char *path, uint64_t flags);
+long u_open_mode(const char *path, uint64_t flags, uint32_t mode);
+long u_mkdir(const char *path, uint32_t mode);
+long u_unlink(const char *path, int directory);
 long u_close(uint64_t fd);
 long u_stat_path(const char *path, struct u_stat *status);
 long u_readdir(uint64_t fd, struct u_dirent *entry);

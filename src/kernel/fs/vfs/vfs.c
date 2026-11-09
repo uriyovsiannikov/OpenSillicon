@@ -431,6 +431,44 @@ vfs_create_path(const char *path, enum vnode_type type, uint32_t mode,
 }
 
 int
+vfs_remove_path_as(const char *path, bool directory, uint32_t uid,
+	uint32_t gid)
+{
+	char canonical[VFS_PATH_MAX], parent_path[VFS_PATH_MAX];
+	struct vnode *parent = NULL;
+	struct vfs_mount *mount;
+	char *slash;
+	const char *name;
+	int error;
+	if (!initialized || path == NULL)
+		return -VFS_EINVAL;
+	error = canonicalize_path(path, canonical);
+	if (error != 0) return error;
+	if (strcmp(canonical, "/") == 0) return -VFS_EBUSY;
+	for (mount = mounts; mount != NULL; mount = mount->next)
+		if (strcmp(mount->path, canonical) == 0) return -VFS_EBUSY;
+	slash = strrchr(canonical, '/');
+	name = slash + 1;
+	if (slash == canonical) {
+		parent_path[0] = '/'; parent_path[1] = '\0';
+	} else {
+		size_t n = (size_t)(slash - canonical);
+		memcpy(parent_path, canonical, n); parent_path[n] = '\0';
+	}
+	error = vfs_lookup_as(parent_path, uid, gid, &parent);
+	if (error != 0) return error;
+	if (parent->type != VNODE_DIRECTORY || parent->operations->remove == NULL)
+		error = parent->type == VNODE_DIRECTORY ? -VFS_EROFS : -VFS_ENOTDIR;
+	else if (!vfs_access(parent, uid, gid,
+	    VFS_ACCESS_WRITE | VFS_ACCESS_EXEC))
+		error = -VFS_EACCES;
+	else
+		error = parent->operations->remove(parent, name, strlen(name), directory);
+	vnode_put(parent);
+	return error;
+}
+
+int
 vfs_stat_path_as(const char *path, uint32_t uid, uint32_t gid,
 	struct vfs_stat *status)
 {

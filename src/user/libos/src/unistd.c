@@ -40,7 +40,7 @@ int mkdir(const char *path, unsigned int mode)
 	if (path == NULL) { errno = EFAULT; return -1; }
 	return (int)__libos_call(SYSCALL_MKDIR, (long)path, mode, 0, 0, 0, 0);
 }
-int rmdir(const char *path){(void)path;errno=ENOSYS;return -1;}
+int rmdir(const char *path){if(!path){errno=EFAULT;return -1;}return (int)__libos_call(SYSCALL_UNLINK,(long)path,1,0,0,0,0);}
 
 int dup(int fd){return (int)__libos_call(SYSCALL_DUP,fd,0,0,0,0,0);}
 pid_t wait(int *status){return waitpid(-1,status,0);}
@@ -226,7 +226,7 @@ ssize_t read(int f,void*b,size_t n){return __libos_read(f,b,n);}
 ssize_t write(int f,const void*b,size_t n){return __libos_write(f,b,n);}
 off_t lseek(int f,off_t o,int w){return __libos_lseek(f,o,w);}
 pid_t getpid(void){return (pid_t)__libos_getpid();}
-int unlink(const char *path){(void)path;errno=EOPNOTSUPP;return -1;}
+int unlink(const char *path){if(!path){errno=EFAULT;return -1;}return (int)__libos_call(SYSCALL_UNLINK,(long)path,0,0,0,0,0);}
 pid_t getppid(void){return (pid_t)__libos_call(SYSCALL_GETPPID,0,0,0,0,0,0);}
 long sysconf(int name){switch(name){case _SC_OPEN_MAX:return 32;case _SC_PAGESIZE:return 4096;case _SC_IOV_MAX:return 16;default:errno=EINVAL;return -1;}}
 static int

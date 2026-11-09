@@ -37,6 +37,12 @@ long u_read(uint64_t fd, void *buffer, size_t length)
 { return syscall3(SYSCALL_READ, fd, (uintptr_t)buffer, length); }
 long u_open(const char *path, uint64_t flags)
 { return syscall3(SYSCALL_OPEN, (uintptr_t)path, flags, 0); }
+long u_open_mode(const char *path, uint64_t flags, uint32_t mode)
+{ return syscall3(SYSCALL_OPEN, (uintptr_t)path, flags, mode); }
+long u_mkdir(const char *path, uint32_t mode)
+{ return syscall3(SYSCALL_MKDIR, (uintptr_t)path, mode, 0); }
+long u_unlink(const char *path, int directory)
+{ return syscall3(SYSCALL_UNLINK, (uintptr_t)path, (uint64_t)(directory != 0), 0); }
 long u_close(uint64_t fd) { return syscall3(SYSCALL_CLOSE, fd, 0, 0); }
 long u_stat_path(const char *path, struct u_stat *status)
 { return syscall3(SYSCALL_STAT, (uintptr_t)path, (uintptr_t)status, 0); }
