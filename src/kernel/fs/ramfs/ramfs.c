@@ -20,6 +20,8 @@ struct ramfs_node {
 	struct ramfs_node *children;
 	struct ramfs_node *last_child;
 	struct ramfs_node *next;
+	struct ramfs_node *parent;
+	bool parent_held;
 	size_t capacity;
 	uint8_t *data;
 	char name[VFS_NAME_MAX + 1];
@@ -78,6 +80,13 @@ ramfs_remove(struct vnode *directory, const char *name, size_t length,
 		return remove_directory ? -RAMFS_ENOTDIR : -RAMFS_EISDIR;
 	if (node->children != NULL)
 		return -RAMFS_ENOTEMPTY;
+	if (node->vnode.type == VNODE_DIRECTORY) {
+		/* Once detached from the tree, an open directory must keep '..'
+		 * alive even if the parent is subsequently removed as well. */
+		if (!vnode_get(directory))
+			return -RAMFS_EINVAL;
+		node->parent_held = true;
+	}
 	if (previous == NULL) parent->children = node->next;
 	else previous->next = node->next;
 	if (parent->last_child == node) parent->last_child = previous;
@@ -153,6 +162,15 @@ ramfs_lookup(struct vnode *directory, const char *name, size_t name_length,
 	    result == NULL)
 		return -RAMFS_EINVAL;
 	parent = ramfs_from_vnode(directory);
+	if ((name_length == 1 && name[0] == '.') ||
+	    (name_length == 2 && name[0] == '.' && name[1] == '.')) {
+		struct vnode *target = name_length == 1 || parent->parent == NULL ?
+		    directory : &parent->parent->vnode;
+		if (!vnode_get(target))
+			return -RAMFS_EINVAL;
+		*result = target;
+		return 0;
+	}
 	for (child = parent->children; child != NULL; child = child->next) {
 		if (strlen(child->name) == name_length &&
 		    memcmp(child->name, name, name_length) == 0) {
@@ -195,6 +213,7 @@ ramfs_create(struct vnode *directory, const char *name, size_t name_length,
 		return -RAMFS_ENOMEM;
 	child->vnode.uid = uid;
 	child->vnode.gid = gid;
+	child->parent = parent;
 	child->next = NULL;
 	if (parent->last_child == NULL)
 		parent->children = child;
@@ -349,10 +368,14 @@ ramfs_destroy(struct vnode *node)
 		struct ramfs_node *next = child->next;
 
 		child->next = NULL;
+		/* Root replacement can leave external references to these nodes. */
+		child->parent = NULL;
 		vnode_put(&child->vnode);
 		child = next;
 	}
 	if (ramnode->data != NULL)
 		(void)kheap_free(ramnode->data);
+	if (ramnode->parent_held)
+		vnode_put(&ramnode->parent->vnode);
 	(void)kheap_free(ramnode);
 }

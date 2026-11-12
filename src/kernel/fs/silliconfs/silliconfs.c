@@ -74,6 +74,7 @@ struct sfs_node {
 	struct vnode vnode;
 	struct silliconfs *filesystem;
 	uint32_t inode_number;
+	struct vnode *unlinked_parent;
 };
 
 struct sfs_name_slot {
@@ -1198,6 +1199,7 @@ make_node(struct silliconfs *filesystem, uint32_t number,
 	filesystem->inode_vnodes[number] = node;
 	node->filesystem = filesystem;
 	node->inode_number = number;
+	node->unlinked_parent = NULL;
 	node->vnode = (struct vnode){
 		.operations = &sfs_operations,
 		.inode = number,
@@ -1215,6 +1217,7 @@ sfs_destroy(struct vnode *vnode)
 	struct sfs_node *node = node_from_vnode(vnode);
 	struct silliconfs *filesystem = node->filesystem;
 	uint32_t number = node->inode_number;
+	struct vnode *parent = node->unlinked_parent;
 
 	filesystem->inode_vnodes[number] = NULL;
 	(void)kheap_free(node);
@@ -1228,6 +1231,7 @@ sfs_destroy(struct vnode *vnode)
 		(void)kheap_free(filesystem->inode_unlinked);
 		(void)kheap_free(filesystem);
 	}
+	vnode_put(parent);
 }
 
 static int
@@ -1343,6 +1347,11 @@ sfs_remove(struct vnode *directory_node, const char *name, size_t name_length,
 	/* A zero inode marks a reusable directory record while preserving layout. */
 	error = read_block(fs, entry_physical, block);
 	if (error != 0) return error;
+	/* Retain the actual parent, so '..' cannot resolve a recycled inode. */
+	struct sfs_node *held_child = remove_directory ?
+	    fs->inode_vnodes[child_number] : NULL;
+	if (held_child != NULL && !vnode_get(directory_node))
+		return -SFS_EOVERFLOW;
 	{
 		uint8_t *record = block + entry_offset;
 		uint16_t length = get_le16(record + 4);
@@ -1350,7 +1359,13 @@ sfs_remove(struct vnode *directory_node, const char *name, size_t name_length,
 		put_le16(record + 4, length);
 		error = write_block(fs, entry_physical, block);
 	}
-	if (error != 0) return error;
+	if (error != 0) {
+		if (held_child != NULL)
+			vnode_put(directory_node);
+		return error;
+	}
+	if (held_child != NULL)
+		held_child->unlinked_parent = directory_node;
 	fs->inode_unlinked[child_number] = 1;
 	if (fs->inode_vnodes[child_number] == NULL) {
 		fs->inode_unlinked[child_number] = 0;
@@ -1374,6 +1389,13 @@ sfs_lookup(struct vnode *directory_node, const char *name, size_t name_length,
 	if (name == NULL || name_length == 0 || name_length > VFS_NAME_MAX ||
 	    result == NULL)
 		return -SFS_EINVAL;
+	if (node->unlinked_parent != NULL && name_length == 2 &&
+	    name[0] == '.' && name[1] == '.') {
+		if (!vnode_get(node->unlinked_parent))
+			return -SFS_EOVERFLOW;
+		*result = node->unlinked_parent;
+		return 0;
+	}
 	error = read_inode(node->filesystem, node->inode_number, &directory);
 	if (error != 0)
 		return error;

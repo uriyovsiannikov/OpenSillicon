@@ -7,8 +7,22 @@
 #include "kernel/fd.h"
 #include "kernel/vfs.h"
 
-void *kheap_alloc(size_t size) { return malloc(size); }
-bool kheap_free(void *allocation) { free(allocation); return true; }
+static size_t live_allocations;
+void *kheap_alloc(size_t size)
+{
+	void *allocation = malloc(size);
+	if (allocation != NULL) live_allocations++;
+	return allocation;
+}
+bool kheap_free(void *allocation)
+{
+	if (allocation != NULL) {
+		assert(live_allocations > 0);
+		live_allocations--;
+	}
+	free(allocation);
+	return true;
+}
 void klog(const char *message) { fputs(message, stderr); abort(); }
 _Noreturn void kernel_halt(void) { abort(); }
 
@@ -44,6 +58,49 @@ sticky_removal(void)
 	create("/locked", VNODE_DIRECTORY, 01755, 100);
 	create("/locked/file", VNODE_REGULAR, 0666, 200);
 	assert(vfs_remove_path_as("/locked/file", false, 200, 200) == -13);
+}
+
+static void
+directory_anchors(void)
+{
+	size_t before = live_allocations;
+	struct vnode *node = NULL;
+	struct fd_object *anchor = NULL;
+	uint64_t parent_inode, child_inode;
+	create("/anchor-parent", VNODE_DIRECTORY, 0700, 0);
+	create("/anchor-parent/child", VNODE_DIRECTORY, 0777, 0);
+	create("/anchor-parent/child/file", VNODE_REGULAR, 0644, 0);
+	assert(vfs_lookup("/anchor-parent", &node) == 0);
+	parent_inode = node->inode;
+	vnode_put(node);
+	assert(vfs_open("/anchor-parent/child", VFS_O_RDONLY, 0, &anchor) == 0);
+	/* The descriptor starts at child; its ancestors need not be searchable. */
+	assert(fd_object_lookup_at_as(anchor, "file", 100, 100, &node) == 0);
+	vnode_put(node);
+	assert(fd_object_lookup_at_as(anchor, "file/", 100, 100, &node) == -20);
+	assert(fd_object_lookup_at_as(anchor, ".", 100, 100, &node) == 0);
+	child_inode = node->inode;
+	vnode_put(node);
+	assert(vfs_chmod_as("/anchor-parent/child", 0700, 0, 0) == 0);
+	assert(fd_object_lookup_at_as(anchor, ".", 100, 100, &node) == -13);
+	assert(vfs_chmod_as("/anchor-parent/child", 0777, 0, 0) == 0);
+	assert(vfs_remove_path_as("/anchor-parent/child/file", false, 0, 0) == 0);
+	assert(vfs_remove_path_as("/anchor-parent/child", true, 0, 0) == 0);
+	assert(vfs_remove_path_as("/anchor-parent", true, 0, 0) == 0);
+	create("/anchor-parent", VNODE_DIRECTORY, 0755, 0);
+	create("/anchor-parent/child", VNODE_DIRECTORY, 0755, 0);
+	assert(fd_object_lookup_at_as(anchor, ".", 100, 100, &node) == 0);
+	assert(node->inode == child_inode);
+	vnode_put(node);
+	assert(fd_object_lookup_at_as(anchor, "..", 100, 100, &node) == 0);
+	assert(node->inode == parent_inode);
+	vnode_put(node);
+	assert(fd_object_lookup_at_as(anchor, "../.", 100, 100, &node) == -13);
+	assert(fd_object_lookup_at_as(anchor, "file", 100, 100, &node) == -2);
+	fd_object_put(anchor);
+	assert(vfs_remove_path_as("/anchor-parent/child", true, 0, 0) == 0);
+	assert(vfs_remove_path_as("/anchor-parent", true, 0, 0) == 0);
+	assert(live_allocations == before);
 }
 
 static void
@@ -192,6 +249,15 @@ mount_ancestors(void)
 	assert(vfs_chmod_as("/private", 0755, 100, 100) == 0);
 	assert(vfs_lookup_as("/private/mnt/file", 200, 200, &node) == 0);
 	vnode_put(node);
+	struct fd_object *anchor;
+	assert(vfs_open("/private", VFS_O_RDONLY, 0, &anchor) == 0);
+	assert(fd_object_lookup_at_as(anchor, "mnt/../mnt/file", 200, 200, &node) == 0);
+	vnode_put(node);
+	fd_object_put(anchor);
+	assert(vfs_open("/private/mnt", VFS_O_RDONLY, 0, &anchor) == 0);
+	assert(fd_object_lookup_at_as(anchor, "../../private/mnt/file", 200, 200, &node) == 0);
+	vnode_put(node);
+	fd_object_put(anchor);
 }
 
 int main(void)
@@ -203,6 +269,7 @@ int main(void)
 	assert(vfs_mount("/", root) == 0);
 	vnode_put(root);
 	sticky_removal();
+	directory_anchors();
 	setid_writes();
 	dot_removal();
 	trailing_slashes();

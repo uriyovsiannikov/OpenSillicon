@@ -30,6 +30,8 @@ struct vfs_mount {
 	char path[VFS_PATH_MAX];
 	size_t path_length;
 	struct vnode *root;
+	/* NULL for mounts directly below the replaceable namespace root. */
+	struct vnode *parent;
 	struct vfs_mount *next;
 };
 
@@ -281,6 +283,18 @@ vfs_mount(const char *path, struct vnode *root)
 	memcpy(mount->path, canonical, strlen(canonical) + 1);
 	mount->path_length = strlen(canonical);
 	mount->root = root;
+	mount->parent = NULL;
+	char *slash = strrchr(canonical, '/');
+	if (slash != canonical) {
+		*slash = '\0';
+		error = vfs_lookup(canonical, &mount->parent);
+		if (error != 0) {
+			vnode_put(root);
+			vnode_put(mountpoint);
+			(void)kheap_free(mount);
+			return error;
+		}
+	}
 	mount->next = mounts;
 	mounts = mount;
 	vnode_put(mountpoint);
@@ -434,6 +448,107 @@ vfs_lookup_at_as(const char *base_path, const char *path,
 	if (error != 0)
 		return error;
 	return vfs_lookup_as(canonical, uid, gid, result);
+}
+
+/* Resolve from the referenced object, without re-resolving a cached pathname
+ * or checking ancestors above the supplied directory capability. */
+int
+vfs_lookup_from_as(struct vnode *directory, const char *path,
+	uint32_t uid, uint32_t gid, struct vnode **result)
+{
+	struct vnode *current;
+	struct vfs_mount *root_mount;
+	size_t position = 0;
+	int error;
+
+	if (path == NULL || result == NULL)
+		return -VFS_EINVAL;
+	*result = NULL;
+	if (path[0] == '/')
+		return vfs_lookup_as(path, uid, gid, result);
+	if (path[0] == '\0')
+		return -VFS_ENOENT;
+	if (strlen(path) >= VFS_PATH_MAX)
+		return -VFS_ENAMETOOLONG;
+	if (directory == NULL || directory->type != VNODE_DIRECTORY)
+		return -VFS_ENOTDIR;
+	root_mount = find_mount("/");
+	if (root_mount == NULL || !vnode_get(directory))
+		return -VFS_EINVAL;
+	current = directory;
+	while (path[position] != '\0') {
+		size_t begin = position, length;
+		struct vnode *next = NULL;
+		while (path[position] != '\0' && path[position] != '/')
+			position++;
+		length = position - begin;
+		while (path[position] == '/')
+			position++;
+		if (current->type != VNODE_DIRECTORY) {
+			error = -VFS_ENOTDIR;
+			goto fail;
+		}
+		if (!vfs_access(current, uid, gid, VFS_ACCESS_EXEC)) {
+			error = -VFS_EACCES;
+			goto fail;
+		}
+		if (length == 1 && path[begin] == '.') {
+			if (!vnode_get(current)) {
+				error = -VFS_EOVERFLOW;
+				goto fail;
+			}
+			next = current;
+		} else {
+			bool parent = length == 2 && path[begin] == '.' &&
+			    path[begin + 1] == '.';
+			for (struct vfs_mount *mount = mounts; mount != NULL;
+			    mount = mount->next) {
+				struct vnode *target = NULL;
+				struct vnode *mount_parent = mount->parent == NULL ?
+				    root_mount->root : mount->parent;
+				const char *name = strrchr(mount->path, '/') + 1;
+				if (parent && current == mount->root)
+					target = mount->path_length == 1 ? current : mount_parent;
+				else if (!parent && mount->path_length > 1 &&
+				    current == mount_parent && strlen(name) == length &&
+				    memcmp(name, path + begin, length) == 0)
+					target = mount->root;
+				if (target == NULL)
+					continue;
+				if (!vnode_get(target)) {
+					error = -VFS_EOVERFLOW;
+					goto fail;
+				}
+				next = target;
+				break;
+			}
+			if (next == NULL) {
+				if (current->operations->lookup == NULL) {
+					error = -VFS_ENOTDIR;
+					goto fail;
+				}
+				error = current->operations->lookup(current, path + begin,
+				    length, &next);
+				if (error != 0)
+					goto fail;
+				if (next == NULL) {
+					error = -VFS_EIO;
+					goto fail;
+				}
+			}
+		}
+		vnode_put(current);
+		current = next;
+	}
+	if (path[position - 1] == '/' && current->type != VNODE_DIRECTORY) {
+		error = -VFS_ENOTDIR;
+		goto fail;
+	}
+	*result = current;
+	return 0;
+fail:
+	vnode_put(current);
+	return error;
 }
 
 int
@@ -851,6 +966,14 @@ file_chown(void *context, uint32_t uid, uint32_t gid)
 }
 
 static int
+file_lookup_at(void *context, const char *path, uint32_t uid, uint32_t gid,
+	struct vnode **result)
+{
+	struct vfs_file_context *file = context;
+	return vfs_lookup_from_as(file->node, path, uid, gid, result);
+}
+
+static int
 file_get_path(void *context, char *path, size_t capacity)
 {
 	struct vfs_file_context *file = context;
@@ -884,6 +1007,7 @@ static const struct fd_operations vfs_file_operations = {
 	.chmod = file_chmod,
 	.chown = file_chown,
 	.get_path = file_get_path,
+	.lookup_at = file_lookup_at,
 	.close = file_close
 };
 

@@ -27,6 +27,79 @@ check(int success, unsigned int line)
 static uint64_t reowned_fd;
 static uint8_t exec_image[256 * 1024];
 
+static long
+stat_at(uint64_t fd, const char *path, uint64_t *inode)
+{
+	uint8_t status[144];
+	uint64_t number = path == 0 ? SYSCALL_FSTAT : SYSCALL_FSTATAT;
+	unsigned char failed;
+	register uint64_t flags __asm__("r10") = 0;
+	uint64_t second = path == 0 ? (uintptr_t)status : (uintptr_t)path;
+	__asm__ volatile ("int $128; setc %1" : "+a" (number), "=qm" (failed) :
+	    "D" (fd), "S" (second), "d" ((uintptr_t)status), "r" (flags) :
+	    "rcx", "r11", "memory");
+	if (failed) return -(long)number;
+	__builtin_memcpy(inode, status + 8, sizeof(*inode));
+	return 0;
+}
+
+static void
+directory_fd_checks(void)
+{
+	uint64_t original = 0, found = 0;
+	CHECK(u_mkdir("/tmp/anchor", 0755) == 0);
+	long fd = u_open("/tmp/anchor", U_O_RDONLY | U_O_DIRECTORY);
+	CHECK(fd >= 0);
+	CHECK(stat_at((uint64_t)fd, 0, &original) == 0);
+	CHECK(u_unlink("/tmp/anchor", 1) == 0);
+	CHECK(u_mkdir("/tmp/anchor", 0755) == 0);
+	CHECK(stat_at((uint64_t)fd, ".", &found) == 0 && found == original);
+	CHECK(u_close((uint64_t)fd) == 0);
+	CHECK(u_unlink("/tmp/anchor", 1) == 0);
+	CHECK(u_mkdir("/tmp/anchor-private", 0700) == 0);
+	CHECK(u_mkdir("/tmp/anchor-private/child", 0777) == 0);
+	CHECK(call(SYSCALL_CHMOD, (uintptr_t)"/tmp/anchor-private/child", 0777, 0) == 0);
+	long file = u_open_mode("/tmp/anchor-private/child/file", U_O_CREAT | U_O_WRONLY, 0644);
+	CHECK(file >= 0 && u_close((uint64_t)file) == 0);
+	fd = u_open("/tmp/anchor-private/child", U_O_RDONLY | U_O_DIRECTORY);
+	CHECK(fd >= 0);
+	for (unsigned int revoked = 0; revoked < 2; revoked++) {
+		CHECK(call(SYSCALL_CHMOD, (uintptr_t)"/tmp/anchor-private/child",
+		    revoked ? 0700 : 0777, 0) == 0);
+		long child = u_fork();
+		CHECK(child >= 0);
+		if (child == 0) {
+			CHECK(u_setgid(300) == 0 && u_setuid(300) == 0);
+			CHECK(stat_at((uint64_t)fd, ".", &found) == (revoked ? -13 : 0));
+			if (!revoked) {
+				CHECK(stat_at((uint64_t)fd, "file", &found) == 0);
+				CHECK(stat_at((uint64_t)fd, "../.", &found) == -13);
+			}
+			u_exit(0);
+		}
+		uint8_t status = 255;
+		CHECK(u_waitpid((uint64_t)child, &status) == child && status == 0);
+	}
+	CHECK(call(SYSCALL_CHMOD, (uintptr_t)"/tmp/anchor-private/child", 0777, 0) == 0);
+	CHECK(stat_at((uint64_t)fd, 0, &original) == 0);
+	uint64_t parent_inode = 0;
+	CHECK(stat_at((uint64_t)-100, "/tmp/anchor-private", &parent_inode) == 0);
+	CHECK(u_unlink("/tmp/anchor-private/child/file", 0) == 0);
+	CHECK(u_unlink("/tmp/anchor-private/child", 1) == 0);
+	CHECK(u_unlink("/tmp/anchor-private", 1) == 0);
+	CHECK(u_mkdir("/tmp/anchor-private", 0755) == 0);
+	CHECK(u_mkdir("/tmp/anchor-private/child", 0755) == 0);
+	CHECK(stat_at((uint64_t)fd, ".", &found) == 0 && found == original);
+	CHECK(stat_at((uint64_t)fd, "..", &found) == 0 && found == parent_inode);
+	CHECK(u_close((uint64_t)fd) == 0);
+	fd = u_open("/", U_O_RDONLY | U_O_DIRECTORY);
+	CHECK(fd >= 0 && stat_at((uint64_t)fd, 0, &original) == 0);
+	CHECK(stat_at((uint64_t)fd, "dev/..", &found) == 0 && found == original);
+	CHECK(stat_at((uint64_t)fd, "init/..", &found) == 0 && found == original);
+	CHECK(stat_at((uint64_t)fd, "dev/../proc/self", &found) == 0);
+	CHECK(u_close((uint64_t)fd) == 0);
+}
+
 static void
 setid_write_checks(void)
 {
@@ -377,6 +450,7 @@ user_main(uint64_t argc, char **argv, const uint64_t *startup_stack)
 		u_exit(0);
 	}
 	reserved_id_checks();
+	directory_fd_checks();
 	setid_write_checks();
 	dot_removal_checks();
 	trailing_slash_checks();

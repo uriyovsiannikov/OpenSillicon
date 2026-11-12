@@ -2742,7 +2742,7 @@ syscall_interrupt(struct interrupt_frame *frame)
 		{
 			char path[VFS_PATH_MAX];
 			char base_path[VFS_PATH_MAX];
-			struct fd_object *directory;
+			struct fd_object *directory = NULL;
 			struct vnode *node = NULL;
 			struct fd_metadata metadata;
 			struct native_kstat value;
@@ -2776,12 +2776,6 @@ syscall_interrupt(struct interrupt_frame *frame)
 					syscall_error(frame, EBADF);
 					break;
 				}
-				result = fd_object_get_path(directory, base_path,
-				    sizeof(base_path));
-				if (result != 0) {
-					syscall_error(frame, errno_from_kernel(result));
-					break;
-				}
 			} else if (path[0] != '/') {
 				result = process_getcwd(base_path, sizeof(base_path));
 				if (result < 0) {
@@ -2793,8 +2787,12 @@ syscall_interrupt(struct interrupt_frame *frame)
 				syscall_error(frame, ERRNO_ESRCH);
 				break;
 			}
-			result = vfs_lookup_at_as(base_path, path,
-			    credentials.effective_uid, credentials.effective_gid, &node);
+			if (directory != NULL)
+				result = fd_object_lookup_at_as(directory, path,
+				    credentials.effective_uid, credentials.effective_gid, &node);
+			else
+				result = vfs_lookup_at_as(base_path, path,
+				    credentials.effective_uid, credentials.effective_gid, &node);
 			if (result != 0) {
 				syscall_error(frame, errno_from_kernel(result));
 				break;

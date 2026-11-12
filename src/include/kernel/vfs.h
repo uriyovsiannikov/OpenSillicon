@@ -97,6 +97,8 @@ int vfs_lookup_at(const char *base_path, const char *path,
 	struct vnode **result);
 int vfs_lookup_at_as(const char *base_path, const char *path,
 	uint32_t uid, uint32_t gid, struct vnode **result);
+int vfs_lookup_from_as(struct vnode *directory, const char *path,
+	uint32_t uid, uint32_t gid, struct vnode **result);
 int vfs_create_path(const char *path, enum vnode_type type, uint32_t mode,
 	struct vnode **result);
 int vfs_create_path_as(const char *path, enum vnode_type type, uint32_t mode,

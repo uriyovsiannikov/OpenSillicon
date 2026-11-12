@@ -13,6 +13,7 @@
 #define FD_DESCRIPTOR_CLOEXEC 0x00000001U
 
 struct vfs_dirent;
+struct vnode;
 
 struct fd_metadata {
 	uint64_t size;
@@ -36,6 +37,8 @@ struct fd_operations {
 	int (*chmod)(void *context, uint32_t mode);
 	int (*chown)(void *context, uint32_t uid, uint32_t gid);
 	int (*get_path)(void *context, char *path, size_t capacity);
+	int (*lookup_at)(void *context, const char *path, uint32_t uid,
+	    uint32_t gid, struct vnode **result);
 	bool (*is_terminal)(void *context);
 	uint32_t (*poll)(void *context, uint32_t events);
 	void (*close)(void *context);
@@ -107,6 +110,8 @@ int fd_object_stat(struct fd_object *object, struct fd_metadata *metadata);
 int fd_object_chmod(struct fd_object *object, uint32_t mode);
 int fd_object_chown(struct fd_object *object, uint32_t uid, uint32_t gid);
 int fd_object_get_path(struct fd_object *object, char *path, size_t capacity);
+int fd_object_lookup_at_as(struct fd_object *object, const char *path,
+	uint32_t uid, uint32_t gid, struct vnode **result);
 uint64_t fd_get_offset(const struct fd_table *table, uint64_t descriptor);
 bool fd_set_offset(struct fd_table *table, uint64_t descriptor,
 	uint64_t offset);

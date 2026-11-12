@@ -571,6 +571,20 @@ fd_object_chown(struct fd_object *object, uint32_t uid, uint32_t gid)
 }
 
 int
+fd_object_lookup_at_as(struct fd_object *object, const char *path,
+	uint32_t uid, uint32_t gid, struct vnode **result)
+{
+	if (result == NULL)
+		return -FD_ERROR_EINVAL;
+	*result = NULL;
+	if (object == NULL)
+		return -FD_ERROR_EBADF;
+	if (object->operations->lookup_at == NULL)
+		return -FD_ERROR_ENOTDIR;
+	return object->operations->lookup_at(object->context, path, uid, gid, result);
+}
+
+int
 fd_object_get_path(struct fd_object *object, char *path, size_t capacity)
 {
 	if (object == NULL)
