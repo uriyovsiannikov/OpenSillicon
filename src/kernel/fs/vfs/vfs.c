@@ -429,6 +429,7 @@ vfs_create_path_as(const char *path, enum vnode_type type, uint32_t mode,
 	bool parent_is_directory;
 	const char *name;
 	char *slash;
+	uint32_t caller_gid = gid;
 	int error;
 
 	if (!initialized || result == NULL ||
@@ -468,6 +469,10 @@ vfs_create_path_as(const char *path, enum vnode_type type, uint32_t mode,
 		if (type == VNODE_DIRECTORY)
 			mode |= 02000U;
 	}
+	/* Inheriting a directory's group does not grant the caller the right
+	 * to create a setgid executable for that group. */
+	if (uid != 0 && type == VNODE_REGULAR && gid != caller_gid)
+		mode &= ~02000U;
 	error = parent->operations->create(parent, name, strlen(name), type, mode,
 	    uid, gid, result);
 	vnode_put(parent);

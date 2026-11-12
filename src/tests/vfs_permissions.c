@@ -44,6 +44,33 @@ sticky_removal(void)
 }
 
 static void
+setgid_creation(void)
+{
+	struct vnode *parent = NULL, *node = NULL;
+	assert(vfs_create_path("/group", VNODE_DIRECTORY, 02777, &parent) == 0);
+	assert(parent->operations->chown(parent, 100, 500) == 0);
+	assert(parent->operations->chmod(parent, 02777) == 0);
+	vnode_put(parent);
+	assert(vfs_create_path_as("/group/nonmember", VNODE_REGULAR, 02755,
+	    200, 200, &node) == 0);
+	assert(node->gid == 500);
+	assert(node->mode == 0755);
+	vnode_put(node);
+	assert(vfs_create_path_as("/group/member", VNODE_REGULAR, 02755,
+	    200, 500, &node) == 0);
+	assert(node->gid == 500 && node->mode == 02755);
+	vnode_put(node);
+	assert(vfs_create_path_as("/group/root", VNODE_REGULAR, 02755,
+	    0, 0, &node) == 0);
+	assert(node->gid == 500 && node->mode == 02755);
+	vnode_put(node);
+	assert(vfs_create_path_as("/group/subdir", VNODE_DIRECTORY, 0755,
+	    200, 200, &node) == 0);
+	assert(node->gid == 500 && node->mode == 02755);
+	vnode_put(node);
+}
+
+static void
 dot_components(void)
 {
 	struct vnode *node = NULL;
@@ -103,6 +130,7 @@ int main(void)
 	assert(vfs_mount("/", root) == 0);
 	vnode_put(root);
 	sticky_removal();
+	setgid_creation();
 	dot_components();
 	mount_ancestors();
 	puts("VFS permission tests passed");
