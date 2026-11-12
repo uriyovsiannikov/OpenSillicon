@@ -237,10 +237,11 @@ get_credentials(struct os_credentials *credentials)
 	return result < 0 ? -1 : 0;
 }
 
-uid_t getuid(void){struct os_credentials c;return get_credentials(&c)==0?c.real_uid:0;}
-uid_t geteuid(void){struct os_credentials c;return get_credentials(&c)==0?c.effective_uid:0;}
-gid_t getgid(void){struct os_credentials c;return get_credentials(&c)==0?c.real_gid:0;}
-gid_t getegid(void){struct os_credentials c;return get_credentials(&c)==0?c.effective_gid:0;}
+/* A failed credential query must not synthesize root identity. */
+uid_t getuid(void){struct os_credentials c;return get_credentials(&c)==0?c.real_uid:(uid_t)-1;}
+uid_t geteuid(void){struct os_credentials c;return get_credentials(&c)==0?c.effective_uid:(uid_t)-1;}
+gid_t getgid(void){struct os_credentials c;return get_credentials(&c)==0?c.real_gid:(gid_t)-1;}
+gid_t getegid(void){struct os_credentials c;return get_credentials(&c)==0?c.effective_gid:(gid_t)-1;}
 int getresuid(uid_t *real,uid_t *effective,uid_t *saved){struct os_credentials c;if(!real||!effective||!saved){errno=EFAULT;return -1;}if(get_credentials(&c)<0)return -1;*real=c.real_uid;*effective=c.effective_uid;*saved=c.saved_uid;return 0;}
 int getresgid(gid_t *real,gid_t *effective,gid_t *saved){struct os_credentials c;if(!real||!effective||!saved){errno=EFAULT;return -1;}if(get_credentials(&c)<0)return -1;*real=c.real_gid;*effective=c.effective_gid;*saved=c.saved_gid;return 0;}
 int setuid(uid_t id){return (int)__libos_call(SYSCALL_SETUID,id,0,0,0,0,0);}
