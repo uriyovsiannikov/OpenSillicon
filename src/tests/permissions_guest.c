@@ -40,6 +40,23 @@ unix_accept_limit_checks(void)
 	CHECK(call(SYSCALL_UNIX_LISTEN, (uint64_t)server, 1, 0) == 0);
 	CHECK(call(SYSCALL_UNIX_CONNECT, (uint64_t)client, (uintptr_t)&address, 8) == 0);
 	CHECK(u_write((uint64_t)client, "A", 1) == 1);
+	uint32_t capacity = 2;
+	uint16_t family = 0xa5a5;
+	static const uint32_t readonly_capacity = 2;
+	static const uint16_t readonly_family = 0;
+	CHECK(call(SYSCALL_UNIX_ACCEPT, (uint64_t)server, 1, (uintptr_t)&capacity) == -14);
+	CHECK(u_write((uint64_t)client, "E", 1) == 1);
+	CHECK(call(SYSCALL_UNIX_ACCEPT, (uint64_t)server, (uintptr_t)&family, 0) == -14);
+	CHECK(call(SYSCALL_UNIX_ACCEPT, (uint64_t)server, (uintptr_t)&family, 1) == -14);
+	CHECK(call(SYSCALL_UNIX_ACCEPT, (uint64_t)server, (uintptr_t)&family,
+	    (uintptr_t)&readonly_capacity) == -14);
+	CHECK(call(SYSCALL_UNIX_ACCEPT, (uint64_t)server, (uintptr_t)&readonly_family,
+	    (uintptr_t)&capacity) == -14);
+	capacity = 1;
+	CHECK(call(SYSCALL_UNIX_ACCEPT, (uint64_t)server, (uintptr_t)&family,
+	    (uintptr_t)&capacity) == -14);
+	CHECK(family == 0xa5a5 && capacity == 1);
+	capacity = 2;
 	long fd;
 	while ((fd = call(SYSCALL_DUP, (uint64_t)server, 0, 0)) >= 0) {
 		CHECK(count < sizeof(held) / sizeof(held[0]));
@@ -49,11 +66,13 @@ unix_accept_limit_checks(void)
 	CHECK(call(SYSCALL_UNIX_ACCEPT, (uint64_t)server, 0, 0) == -24);
 	CHECK(u_write((uint64_t)client, "B", 1) == 1);
 	CHECK(u_close(held[--count]) == 0);
-	long accepted = call(SYSCALL_UNIX_ACCEPT, (uint64_t)server, 0, 0);
+	long accepted = call(SYSCALL_UNIX_ACCEPT, (uint64_t)server, (uintptr_t)&family,
+	    (uintptr_t)&capacity);
 	CHECK(accepted >= 0);
-	char bytes[2];
-	CHECK(u_read((uint64_t)accepted, bytes, sizeof(bytes)) == 2);
-	CHECK(bytes[0] == 'A' && bytes[1] == 'B');
+	CHECK(family == 1 && capacity == 2);
+	char bytes[3];
+	CHECK(u_read((uint64_t)accepted, bytes, sizeof(bytes)) == 3);
+	CHECK(bytes[0] == 'A' && bytes[1] == 'E' && bytes[2] == 'B');
 	CHECK(u_close((uint64_t)accepted) == 0);
 	while (count > 0)
 		CHECK(u_close(held[--count]) == 0);

@@ -955,11 +955,28 @@ syscall_interrupt(struct interrupt_frame *frame)
 		break;
 	case SYSCALL_UNIX_ACCEPT:
 		{
+			struct address_space *space = vmm_active_address_space();
 			struct fd_object *object = fd_object_for_descriptor(
 			    current_fd_table(), frame->rdi);
+			uint32_t capacity;
+			uint32_t actual = sizeof(uint16_t);
+			uint16_t family = UNIX_SOCKET_AF_UNIX;
 			int result;
 			if (object == NULL) {
 				syscall_error(frame, EBADF);
+				break;
+			}
+			if (!unix_socket_is_object(object)) {
+				syscall_error(frame, ENOTSOCK);
+				break;
+			}
+			/* Validate all output memory before consuming a pending peer. */
+			if (frame->rsi != 0 && (frame->rdx == 0 ||
+			    !vmm_copy_from_user(space, &capacity, frame->rdx, sizeof(capacity)) ||
+			    capacity < sizeof(family) ||
+			    !vmm_validate_user_write(space, frame->rsi, sizeof(family)) ||
+			    !vmm_validate_user_write(space, frame->rdx, sizeof(actual)))) {
+				syscall_error(frame, EFAULT);
 				break;
 			}
 			result = unix_socket_accept(current_fd_table(), object);
@@ -974,16 +991,8 @@ syscall_interrupt(struct interrupt_frame *frame)
 			if (result < 0)
 				syscall_error(frame, errno_from_kernel(result));
 			else if (frame->rsi != 0) {
-				uint32_t capacity;
-				uint32_t actual = sizeof(uint16_t);
-				uint16_t family = UNIX_SOCKET_AF_UNIX;
-				if (frame->rdx == 0 || !vmm_copy_from_user(
-				    vmm_active_address_space(), &capacity, frame->rdx,
-				    sizeof(capacity)) || capacity < sizeof(family) ||
-				    !vmm_copy_to_user(vmm_active_address_space(), frame->rsi,
-				    &family, sizeof(family)) || !vmm_copy_to_user(
-				    vmm_active_address_space(), frame->rdx, &actual,
-				    sizeof(actual))) {
+				if (!vmm_copy_to_user(space, frame->rsi, &family, sizeof(family)) ||
+				    !vmm_copy_to_user(space, frame->rdx, &actual, sizeof(actual))) {
 					(void)fd_close(current_fd_table(), (uint64_t)result);
 					syscall_error(frame, EFAULT);
 				} else {
