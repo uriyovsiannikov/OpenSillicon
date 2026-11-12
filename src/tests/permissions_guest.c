@@ -28,6 +28,39 @@ static uint64_t reowned_fd;
 static uint8_t exec_image[256 * 1024];
 
 static void
+unix_accept_limit_checks(void)
+{
+	struct unix_socket_address address = {.family = 1, .path = {0, 'l', 'i', 'm', 'i', 't'}};
+	uint64_t held[32];
+	unsigned int count = 0;
+	long server = call(SYSCALL_UNIX_SOCKET, 1, 1, 0);
+	long client = call(SYSCALL_UNIX_SOCKET, 1, 1, 0);
+	CHECK(server >= 0 && client >= 0);
+	CHECK(call(SYSCALL_UNIX_BIND, (uint64_t)server, (uintptr_t)&address, 8) == 0);
+	CHECK(call(SYSCALL_UNIX_LISTEN, (uint64_t)server, 1, 0) == 0);
+	CHECK(call(SYSCALL_UNIX_CONNECT, (uint64_t)client, (uintptr_t)&address, 8) == 0);
+	CHECK(u_write((uint64_t)client, "A", 1) == 1);
+	long fd;
+	while ((fd = call(SYSCALL_DUP, (uint64_t)server, 0, 0)) >= 0) {
+		CHECK(count < sizeof(held) / sizeof(held[0]));
+		held[count++] = (uint64_t)fd;
+	}
+	CHECK(fd == -24 && count > 0);
+	CHECK(call(SYSCALL_UNIX_ACCEPT, (uint64_t)server, 0, 0) == -24);
+	CHECK(u_write((uint64_t)client, "B", 1) == 1);
+	CHECK(u_close(held[--count]) == 0);
+	long accepted = call(SYSCALL_UNIX_ACCEPT, (uint64_t)server, 0, 0);
+	CHECK(accepted >= 0);
+	char bytes[2];
+	CHECK(u_read((uint64_t)accepted, bytes, sizeof(bytes)) == 2);
+	CHECK(bytes[0] == 'A' && bytes[1] == 'B');
+	CHECK(u_close((uint64_t)accepted) == 0);
+	while (count > 0)
+		CHECK(u_close(held[--count]) == 0);
+	CHECK(u_close((uint64_t)server) == 0 && u_close((uint64_t)client) == 0);
+}
+
+static void
 descriptor_limit_checks(void)
 {
 	uint64_t held[32];
@@ -676,6 +709,7 @@ user_main(uint64_t argc, char **argv, const uint64_t *startup_stack)
 		u_exit(0);
 	}
 	reserved_id_checks();
+	unix_accept_limit_checks();
 	descriptor_limit_checks();
 	directory_open_checks();
 	cloexec_checks();

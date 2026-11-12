@@ -241,6 +241,9 @@ static void
 socket_close(void *context)
 {
 	struct unix_socket_state *state = context;
+	/* An accept wrapper owns its queued socket only after FD installation. */
+	if (state == NULL)
+		return;
 	uint64_t flags = state_guard_enter();
 	state->closed = true;
 	state->bound = false;
@@ -507,21 +510,31 @@ unix_socket_accept(struct fd_table *table, struct fd_object *object)
 	}
 	struct unix_socket_state *state = listener->pending[
 	    listener->pending_head];
+	int descriptor = fd_find_free_descriptor(table);
+	if (descriptor < 0) {
+		state_guard_leave(flags);
+		return descriptor;
+	}
+	struct fd_object *accepted = fd_object_create(&socket_operations, NULL);
+	if (accepted == NULL) {
+		state_guard_leave(flags);
+		return -ENOMEM;
+	}
+	accepted->status_flags = 2;
+	descriptor = fd_install(table, accepted);
+	if (descriptor < 0) {
+		state_guard_leave(flags);
+		fd_object_put(accepted);
+		return descriptor;
+	}
+	/* Nothing after this ownership transfer can fail. */
+	accepted->context = state;
 	listener->pending[listener->pending_head] = NULL;
 	listener->pending_head = (listener->pending_head + 1) %
 	    UNIX_SOCKET_BACKLOG;
 	listener->pending_count--;
 	fd_readiness_wake();
 	state_guard_leave(flags);
-	struct fd_object *accepted = fd_object_create(&socket_operations, state);
-	if (accepted == NULL) {
-		socket_close(state);
-		return -ENOMEM;
-	}
-	accepted->status_flags = 2;
-	int descriptor = fd_install(table, accepted);
-	if (descriptor < 0)
-		fd_object_put(accepted);
 	return descriptor;
 }
 

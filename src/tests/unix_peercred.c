@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "abi/unix_socket.h"
 #include "kernel/heap.h"
@@ -11,9 +12,22 @@
 static uint64_t current_pid;
 static struct os_credentials current_credentials;
 static bool credentials_available = true;
+static bool fail_next_allocation;
+static size_t live_allocations;
 
-void *kheap_alloc(size_t size) { return malloc(size); }
-bool kheap_free(void *allocation) { free(allocation); return true; }
+void *kheap_alloc(size_t size)
+{
+	if (fail_next_allocation) { fail_next_allocation = false; return NULL; }
+	void *allocation = malloc(size);
+	if (allocation != NULL) live_allocations++;
+	return allocation;
+}
+bool kheap_free(void *allocation)
+{
+	if (allocation != NULL) { assert(live_allocations > 0); live_allocations--; }
+	free(allocation);
+	return true;
+}
 void process_wake_channel(void *channel) { (void)channel; }
 uint64_t process_current_pid(void) { return current_pid; }
 bool process_current_credentials(struct os_credentials *credentials)
@@ -87,6 +101,54 @@ check_peer(struct fd_object *object, int32_t pid, uint32_t uid, uint32_t gid)
 	assert(credentials.gid == gid);
 }
 
+static void
+accept_failures(void)
+{
+	struct fd_table table = {0};
+	struct unix_socket_address address = {.family = 1, .path = {0, 'q'}};
+	size_t before = live_allocations, amount;
+	char bytes[3];
+	identity(10, 0, 0);
+	int server = unix_socket_create(&table, 1, 1, 0);
+	assert(server >= 0);
+	assert(unix_socket_bind(table.entries[server], &address, 4) == 0);
+	assert(unix_socket_listen(table.entries[server], 2) == 0);
+	identity(20, 100, 101);
+	int first = unix_socket_create(&table, 1, 1, 0);
+	assert(first >= 0);
+	assert(unix_socket_connect(table.entries[first], &address, 4) == 0);
+	identity(30, 200, 201);
+	int second = unix_socket_create(&table, 1, 1, 0);
+	assert(second >= 0);
+	assert(unix_socket_connect(table.entries[second], &address, 4) == 0);
+	assert(fd_object_write(table.entries[first], "A", 1, &amount) == 0 && amount == 1);
+	assert(fd_object_write(table.entries[second], "C", 1, &amount) == 0 && amount == 1);
+	int duplicate;
+	while ((duplicate = fd_dup(&table, (uint64_t)server)) >= 0) { }
+	assert(duplicate == -24);
+	assert(unix_socket_accept(&table, table.entries[server]) == -24);
+	assert(fd_object_write(table.entries[first], "B", 1, &amount) == 0 && amount == 1);
+	assert(fd_close(&table, 31) == 0);
+	fail_next_allocation = true;
+	assert(unix_socket_accept(&table, table.entries[server]) == -12);
+	assert(!fail_next_allocation);
+	assert(fd_object_write(table.entries[first], "D", 1, &amount) == 0 && amount == 1);
+	int accepted = unix_socket_accept(&table, table.entries[server]);
+	assert(accepted == 31);
+	check_peer(table.entries[accepted], 20, 100, 101);
+	assert(fd_object_read(table.entries[accepted], bytes, 3, &amount) == 0);
+	assert(amount == 3 && memcmp(bytes, "ABD", 3) == 0);
+	assert(fd_close(&table, 31) == 0);
+	accepted = unix_socket_accept(&table, table.entries[server]);
+	assert(accepted == 31);
+	check_peer(table.entries[accepted], 30, 200, 201);
+	assert(fd_object_read(table.entries[accepted], bytes, 1, &amount) == 0);
+	assert(amount == 1 && bytes[0] == 'C');
+	assert(fd_close(&table, 31) == 0);
+	fd_table_destroy(&table);
+	assert(live_allocations == before);
+}
+
 int main(void)
 {
 	struct fd_table table = {0};
@@ -119,6 +181,7 @@ int main(void)
 	check_peer(client, 20, 100, 200);
 	check_peer(table.entries[accepted_fd], 30, 300, 400);
 	fd_table_destroy(&table);
+	accept_failures();
 	ramfs_paths();
 	puts("Unix socket peer credential tests passed");
 	return 0;
