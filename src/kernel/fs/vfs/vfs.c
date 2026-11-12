@@ -114,8 +114,24 @@ canonicalize_path(const char *path, char output[VFS_PATH_MAX],
 		for (size_t i = 0; i < length; i++)
 			output[position++] = path[begin + i];
 	}
+	/* Keep the last slash until the operation can enforce directory type. */
+	if (position > 1 && path[input - 1] == '/') {
+		if (position + 1 >= VFS_PATH_MAX)
+			return -VFS_ENAMETOOLONG;
+		output[position++] = '/';
+	}
 	output[position] = '\0';
 	return 0;
+}
+
+static bool
+strip_final_slash(char *path)
+{
+	size_t length = strlen(path);
+	if (length <= 1 || path[length - 1] != '/')
+		return false;
+	path[length - 1] = '\0';
+	return true;
 }
 
 int
@@ -235,6 +251,7 @@ vfs_mount(const char *path, struct vnode *root)
 	error = canonicalize_path(path, canonical, 0, 0);
 	if (error != 0)
 		return error;
+	(void)strip_final_slash(canonical);
 	for (existing = mounts; existing != NULL; existing = existing->next) {
 		if (existing->path_length == strlen(canonical) &&
 		    memcmp(existing->path, canonical, existing->path_length) == 0)
@@ -367,6 +384,11 @@ vfs_lookup_as(const char *path, uint32_t uid, uint32_t gid,
 			return -VFS_EIO;
 		current = next;
 	}
+	if (canonical[strlen(canonical) - 1] == '/' &&
+	    current->type != VNODE_DIRECTORY) {
+		vnode_put(current);
+		return -VFS_ENOTDIR;
+	}
 	*result = current;
 	return 0;
 }
@@ -441,6 +463,8 @@ vfs_create_path_as(const char *path, enum vnode_type type, uint32_t mode,
 	error = canonicalize_path(path, canonical, uid, gid);
 	if (error != 0)
 		return error;
+	if (strip_final_slash(canonical) && type != VNODE_DIRECTORY)
+		return -VFS_ENOTDIR;
 	if (strcmp(canonical, "/") == 0)
 		return -VFS_EEXIST;
 	slash = strrchr(canonical, '/');
@@ -503,6 +527,14 @@ vfs_remove_path_as(const char *path, bool directory, uint32_t uid,
 	error = canonicalize_path(path, canonical, uid, gid);
 	if (error != 0) return error;
 	if (strcmp(canonical, "/") == 0) return -VFS_EBUSY;
+	if (canonical[strlen(canonical) - 1] == '/') {
+		struct vnode *target = NULL;
+		error = vfs_lookup_as(canonical, uid, gid, &target);
+		if (error != 0)
+			return error;
+		vnode_put(target);
+		(void)strip_final_slash(canonical);
+	}
 	for (mount = mounts; mount != NULL; mount = mount->next)
 		if (strcmp(mount->path, canonical) == 0) return -VFS_EBUSY;
 	slash = strrchr(canonical, '/');

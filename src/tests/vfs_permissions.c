@@ -44,6 +44,32 @@ sticky_removal(void)
 }
 
 static void
+trailing_slashes(void)
+{
+	struct vnode *node = NULL;
+	char resolved[VFS_PATH_MAX];
+	create("/slash-file", VNODE_REGULAR, 0644, 100);
+	assert(vfs_lookup_as("/slash-file/", 100, 100, &node) == -20);
+	assert(node == NULL);
+	assert(vfs_chmod_as("/slash-file//", 0777, 100, 100) == -20);
+	assert(vfs_remove_path_as("/slash-file/", false, 0, 0) == -20);
+	assert(vfs_lookup("/slash-file", &node) == 0);
+	assert(node->mode == 0644);
+	vnode_put(node);
+	assert(vfs_create_path("/slash-new/", VNODE_REGULAR, 0600, &node) == -20);
+	assert(vfs_lookup("/slash-new", &node) == -2);
+	assert(vfs_create_path("/slash-dir/", VNODE_DIRECTORY, 0755, &node) == 0);
+	vnode_put(node);
+	assert(vfs_lookup("/slash-dir//", &node) == 0);
+	vnode_put(node);
+	assert(vfs_remove_path_as("/slash-dir/", true, 0, 0) == 0);
+	assert(vfs_resolve_path("/", "slash-file/", resolved, sizeof(resolved)) == 0);
+	assert(strcmp(resolved, "/slash-file/") == 0);
+	assert(vfs_lookup("/", &node) == 0);
+	vnode_put(node);
+}
+
+static void
 setgid_creation(void)
 {
 	struct vnode *parent = NULL, *node = NULL;
@@ -130,6 +156,7 @@ int main(void)
 	assert(vfs_mount("/", root) == 0);
 	vnode_put(root);
 	sticky_removal();
+	trailing_slashes();
 	setgid_creation();
 	dot_components();
 	mount_ancestors();

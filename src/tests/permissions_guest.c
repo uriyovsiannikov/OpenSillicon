@@ -28,6 +28,27 @@ static uint64_t reowned_fd;
 static uint8_t exec_image[256 * 1024];
 
 static void
+trailing_slash_checks(void)
+{
+	struct u_stat status;
+	char cwd[64];
+	long fd = u_open_mode("/tmp/slash-file", U_O_CREAT | U_O_EXCL | U_O_WRONLY, 0644);
+	CHECK(fd >= 0 && u_close((uint64_t)fd) == 0);
+	CHECK(call(SYSCALL_CHMOD, (uintptr_t)"/tmp/slash-file/", 0777, 0) == -20);
+	CHECK(u_unlink("/tmp/slash-file/", 0) == -20);
+	CHECK(u_stat_path("/tmp/slash-file", &status) == 0 && status.mode == 0644);
+	CHECK(u_open_mode("/tmp/slash-missing/", U_O_CREAT | U_O_WRONLY, 0600) == -20);
+	CHECK(u_stat_path("/tmp/slash-missing", &status) == -2);
+	CHECK(u_mkdir("/tmp/slash-dir/", 0755) == 0);
+	CHECK(u_chdir("/tmp/slash-dir/") == 0);
+	CHECK(u_getcwd(cwd, sizeof(cwd)) > 0 && u_streq(cwd, "/tmp/slash-dir"));
+	CHECK(u_chdir("/") == 0);
+	CHECK(u_unlink("/tmp/slash-dir/", 1) == 0);
+	CHECK(u_unlink("/dev/", 1) == -16);
+	CHECK(u_unlink("/tmp/slash-file", 0) == 0);
+}
+
+static void
 console_input_checks(void)
 {
 	int enabled = 0, acquire = 1;
@@ -298,6 +319,7 @@ user_main(uint64_t argc, char **argv, const uint64_t *startup_stack)
 		u_exit(0);
 	}
 	reserved_id_checks();
+	trailing_slash_checks();
 	console_input_checks();
 	exec_saved_id_checks();
 	inet_bind_checks(1);

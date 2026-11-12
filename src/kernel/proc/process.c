@@ -854,6 +854,11 @@ process_chdir(const char *path)
 		return -PROCESS_ERROR_EACCES;
 	}
 	vnode_put(directory);
+	size_t length = 0;
+	while (canonical[length] != '\0')
+		length++;
+	if (length > 1 && canonical[length - 1] == '/')
+		canonical[length - 1] = '\0';
 	for (size_t i = 0; i < sizeof(current_process->current_directory); i++) {
 		current_process->current_directory[i] = canonical[i];
 		if (canonical[i] == '\0')
