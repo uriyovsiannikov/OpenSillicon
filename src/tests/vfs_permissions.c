@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "kernel/heap.h"
 #include "kernel/vfs.h"
@@ -43,6 +44,34 @@ sticky_removal(void)
 }
 
 static void
+dot_components(void)
+{
+	struct vnode *node = NULL;
+	char resolved[VFS_PATH_MAX];
+	create("/closed", VNODE_DIRECTORY, 0700, 100);
+	create("/public", VNODE_REGULAR, 0644, 0);
+	assert(vfs_lookup_as("/closed/../public", 200, 200, &node) == -13);
+	assert(node == NULL);
+	assert(vfs_lookup_as("/closed/.", 200, 200, &node) == -13);
+	assert(vfs_lookup_as("/absent/../public", 200, 200, &node) == -2);
+	assert(vfs_lookup_as("/public/../public", 200, 200, &node) == -20);
+	assert(vfs_lookup_as("/public/.", 200, 200, &node) == -20);
+	assert(vfs_lookup_at_as("/closed", "../public", 200, 200, &node) == -13);
+	assert(vfs_lookup_as("/closed/../public", 100, 100, &node) == 0);
+	vnode_put(node);
+	assert(vfs_lookup_as("/../../public", 200, 200, &node) == 0);
+	vnode_put(node);
+	assert(vfs_resolve_path_as("/closed", "../public", resolved,
+	    sizeof(resolved), 200, 200) == -13);
+	assert(vfs_resolve_path_as("/closed", "../public", resolved,
+	    sizeof(resolved), 100, 100) == 0);
+	assert(strcmp(resolved, "/public") == 0);
+	assert(vfs_remove_path_as("/closed/../public", false, 200, 200) == -13);
+	assert(vfs_create_path_as("/closed/../new", VNODE_REGULAR, 0600,
+	    200, 200, &node) == -13);
+}
+
+static void
 mount_ancestors(void)
 {
 	struct vnode *mounted = ramfs_create_root();
@@ -74,6 +103,7 @@ int main(void)
 	assert(vfs_mount("/", root) == 0);
 	vnode_put(root);
 	sticky_removal();
+	dot_components();
 	mount_ancestors();
 	puts("VFS permission tests passed");
 	return 0;

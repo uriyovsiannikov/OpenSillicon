@@ -55,7 +55,8 @@ path_has_prefix(const char *path, const char *prefix, size_t length)
 }
 
 static int
-canonicalize_path(const char *path, char output[VFS_PATH_MAX])
+canonicalize_path(const char *path, char output[VFS_PATH_MAX],
+	uint32_t uid, uint32_t gid)
 {
 	size_t input = 1;
 	size_t position = 1;
@@ -75,8 +76,28 @@ canonicalize_path(const char *path, char output[VFS_PATH_MAX])
 		while (path[input] != '\0' && path[input] != '/')
 			input++;
 		length = input - begin;
-		if (length == 1 && path[begin] == '.')
-			continue;
+		if ((length == 1 && path[begin] == '.') ||
+		    (length == 2 && path[begin] == '.' && path[begin + 1] == '.')) {
+			struct vnode *directory = NULL;
+			int error;
+
+			/* Validate the component before '.' or '..' erases it. The
+			 * accumulated prefix contains no dot components, so this lookup
+			 * cannot recurse through this check again. */
+			output[position] = '\0';
+			error = vfs_lookup_as(output, uid, gid, &directory);
+			if (error != 0)
+				return error;
+			if (directory->type != VNODE_DIRECTORY)
+				error = -VFS_ENOTDIR;
+			else if (!vfs_access(directory, uid, gid, VFS_ACCESS_EXEC))
+				error = -VFS_EACCES;
+			vnode_put(directory);
+			if (error != 0)
+				return error;
+			if (length == 1)
+				continue;
+		}
 		if (length == 2 && path[begin] == '.' && path[begin + 1] == '.') {
 			while (position > 1 && output[position - 1] != '/')
 				position--;
@@ -100,6 +121,13 @@ int
 vfs_resolve_path(const char *base_path, const char *path, char *output,
 	size_t capacity)
 {
+	return vfs_resolve_path_as(base_path, path, output, capacity, 0, 0);
+}
+
+int
+vfs_resolve_path_as(const char *base_path, const char *path, char *output,
+	size_t capacity, uint32_t uid, uint32_t gid)
+{
 	char combined[VFS_PATH_MAX];
 	char canonical[VFS_PATH_MAX];
 	size_t base_length;
@@ -111,7 +139,7 @@ vfs_resolve_path(const char *base_path, const char *path, char *output,
 	if (path[0] == '\0')
 		return -VFS_ENOENT;
 	if (path[0] == '/')
-		error = canonicalize_path(path, canonical);
+		error = canonicalize_path(path, canonical, uid, gid);
 	else {
 		if (base_path == NULL || base_path[0] != '/')
 			return -VFS_EINVAL;
@@ -124,7 +152,7 @@ vfs_resolve_path(const char *base_path, const char *path, char *output,
 		if (base_length > 1U)
 			combined[base_length++] = '/';
 		memcpy(combined + base_length, path, path_length + 1U);
-		error = canonicalize_path(combined, canonical);
+		error = canonicalize_path(combined, canonical, uid, gid);
 	}
 	if (error != 0)
 		return error;
@@ -203,7 +231,7 @@ vfs_mount(const char *path, struct vnode *root)
 
 	if (!initialized || root == NULL || root->type != VNODE_DIRECTORY)
 		return -VFS_EINVAL;
-	error = canonicalize_path(path, canonical);
+	error = canonicalize_path(path, canonical, 0, 0);
 	if (error != 0)
 		return error;
 	for (existing = mounts; existing != NULL; existing = existing->next) {
@@ -274,7 +302,7 @@ vfs_lookup_as(const char *path, uint32_t uid, uint32_t gid,
 	if (!initialized || result == NULL)
 		return -VFS_EINVAL;
 	*result = NULL;
-	error = canonicalize_path(path, canonical);
+	error = canonicalize_path(path, canonical, uid, gid);
 	if (error != 0)
 		return error;
 	mount = find_mount(canonical);
@@ -367,7 +395,7 @@ vfs_lookup_at_as(const char *base_path, const char *path,
 		return -VFS_ENOENT;
 	if (base_path == NULL)
 		return -VFS_EINVAL;
-	error = canonicalize_path(base_path, base);
+	error = canonicalize_path(base_path, base, uid, gid);
 	if (error != 0)
 		return error;
 	base_length = strlen(base);
@@ -379,7 +407,7 @@ vfs_lookup_at_as(const char *base_path, const char *path,
 	if (base_length > 1U)
 		combined[base_length++] = '/';
 	memcpy(combined + base_length, path, path_length + 1U);
-	error = canonicalize_path(combined, canonical);
+	error = canonicalize_path(combined, canonical, uid, gid);
 	if (error != 0)
 		return error;
 	return vfs_lookup_as(canonical, uid, gid, result);
@@ -407,7 +435,7 @@ vfs_create_path_as(const char *path, enum vnode_type type, uint32_t mode,
 	    (type != VNODE_REGULAR && type != VNODE_DIRECTORY))
 		return -VFS_EINVAL;
 	*result = NULL;
-	error = canonicalize_path(path, canonical);
+	error = canonicalize_path(path, canonical, uid, gid);
 	if (error != 0)
 		return error;
 	if (strcmp(canonical, "/") == 0)
@@ -465,7 +493,7 @@ vfs_remove_path_as(const char *path, bool directory, uint32_t uid,
 	int error;
 	if (!initialized || path == NULL)
 		return -VFS_EINVAL;
-	error = canonicalize_path(path, canonical);
+	error = canonicalize_path(path, canonical, uid, gid);
 	if (error != 0) return error;
 	if (strcmp(canonical, "/") == 0) return -VFS_EBUSY;
 	for (mount = mounts; mount != NULL; mount = mount->next)
@@ -799,7 +827,7 @@ vfs_open_as(const char *path, uint32_t flags, uint32_t mode,
 	    (flags & VFS_O_ACCMODE) == VFS_O_RDONLY))
 		return -VFS_EINVAL;
 	*result = NULL;
-	error = canonicalize_path(path, canonical);
+	error = canonicalize_path(path, canonical, uid, gid);
 	if (error != 0)
 		return error;
 	error = vfs_lookup_as(canonical, uid, gid, &node);

@@ -90,6 +90,8 @@ int vfs_lookup_as(const char *path, uint32_t uid, uint32_t gid,
 	struct vnode **result);
 int vfs_resolve_path(const char *base_path, const char *path,
 	char *output, size_t capacity);
+int vfs_resolve_path_as(const char *base_path, const char *path,
+	char *output, size_t capacity, uint32_t uid, uint32_t gid);
 int vfs_lookup_at(const char *base_path, const char *path,
 	struct vnode **result);
 int vfs_lookup_at_as(const char *base_path, const char *path,

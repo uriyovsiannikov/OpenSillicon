@@ -857,11 +857,12 @@ process_chdir(const char *path)
 		return -PROCESS_ERROR_EINVAL;
 	if (path[0] == '\0')
 		return -PROCESS_ERROR_ENOENT;
-	error = vfs_resolve_path(current_process->current_directory, path,
-	    canonical, sizeof(canonical));
+	credentials = current_process->credentials;
+	error = vfs_resolve_path_as(current_process->current_directory, path,
+	    canonical, sizeof(canonical), credentials.effective_uid,
+	    credentials.effective_gid);
 	if (error != 0)
 		return error;
-	credentials = current_process->credentials;
 	error = vfs_lookup_as(canonical, credentials.effective_uid,
 	    credentials.effective_gid, &directory);
 	if (error != 0)
@@ -905,8 +906,9 @@ process_resolve_path(const char *path, char *output, size_t capacity)
 {
 	if (current_process == NULL)
 		return -PROCESS_ERROR_EINVAL;
-	return vfs_resolve_path(current_process->current_directory, path,
-	    output, capacity);
+	return vfs_resolve_path_as(current_process->current_directory, path,
+	    output, capacity, current_process->credentials.effective_uid,
+	    current_process->credentials.effective_gid);
 }
 
 int

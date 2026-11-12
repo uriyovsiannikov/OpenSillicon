@@ -1187,6 +1187,7 @@ syscall_interrupt(struct interrupt_frame *frame)
 	case SYSCALL_ACCESS:
 		{
 			char path[VFS_PATH_MAX], canonical[VFS_PATH_MAX];
+			char base[VFS_PATH_MAX];
 			struct os_credentials credentials;
 			struct vnode *node = NULL;
 			unsigned int requested;
@@ -1196,11 +1197,17 @@ syscall_interrupt(struct interrupt_frame *frame)
 				break;
 			}
 			result = copy_user_string(frame->rdi, path, sizeof(path));
-			if (result == 0)
-				result = process_resolve_path(path, canonical,
-				    sizeof(canonical));
 			if (result == 0 && !process_current_credentials(&credentials))
 				result = -ERRNO_ESRCH;
+			if (result == 0 && path[0] != '/') {
+				result = process_getcwd(base, sizeof(base));
+				if (result > 0)
+					result = 0;
+			}
+			if (result == 0)
+				result = vfs_resolve_path_as(path[0] == '/' ? "/" : base,
+				    path, canonical, sizeof(canonical),
+				    credentials.real_uid, credentials.real_gid);
 			if (result == 0)
 				result = vfs_lookup_as(canonical, credentials.real_uid,
 				    credentials.real_gid, &node);
