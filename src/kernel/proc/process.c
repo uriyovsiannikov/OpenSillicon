@@ -1352,43 +1352,57 @@ process_test_user_fault_capture(uint64_t *vector, uint64_t *error_code)
 }
 #endif
 
+/* The caller retains and authorizes the inode; this kernel read does not
+ * create a user-readable descriptor or resolve the pathname a second time. */
+static int
+read_executable_image(struct vnode *node, void **result, size_t *image_size)
+{
+	size_t offset = 0;
+	void *image;
+	if (node->size == 0 || node->size > SIZE_MAX || node->operations->read == NULL)
+		return -(int)PROCESS_ERROR_ENOEXEC;
+	*image_size = (size_t)node->size;
+	image = kheap_alloc(*image_size);
+	if (image == NULL)
+		return -(int)PROCESS_ERROR_ENOMEM;
+	while (offset < *image_size) {
+		size_t amount = 0;
+		int error = node->operations->read(node, offset,
+		    (uint8_t *)image + offset, *image_size - offset, &amount);
+		if (error != 0 || amount == 0 || amount > *image_size - offset) {
+			(void)kheap_free(image);
+			return error != 0 ? error : -(int)PROCESS_ERROR_EIO;
+		}
+		offset += amount;
+	}
+	*result = image;
+	return 0;
+}
+
 uint64_t
 process_run_path(const char *path, bool startup_stack)
 {
-	struct vfs_stat status;
-	struct fd_object *file = NULL;
+	struct vnode *executable = NULL;
 	void *image;
-	size_t offset = 0;
+	size_t image_size;
 	int error;
 	uint64_t result;
 
 	if (!process_table_owned_here() || path == NULL ||
-	    vfs_stat_path(path, &status) != 0 ||
-	    status.type != VNODE_REGULAR || (status.mode & 0111U) == 0 ||
-	    status.size == 0 || status.size > SIZE_MAX ||
-	    vfs_open(path, VFS_O_RDONLY, 0, &file) != 0)
+	    vfs_lookup(path, &executable) != 0)
 		return UINT64_MAX;
-	image = kheap_alloc((size_t)status.size);
-	if (image == NULL) {
-		fd_object_put(file);
+	if (executable->type != VNODE_REGULAR ||
+	    !vfs_access(executable, 0, 0, VFS_ACCESS_EXEC)) {
+		vnode_put(executable);
 		return UINT64_MAX;
 	}
-	while (offset < status.size) {
-		size_t amount = 0;
-
-		error = fd_object_read(file, (uint8_t *)image + offset,
-		    (size_t)(status.size - offset), &amount);
-		if (error != 0 || amount == 0) {
-			(void)kheap_free(image);
-			fd_object_put(file);
-			return UINT64_MAX;
-		}
-		offset += amount;
-	}
-	fd_object_put(file);
+	error = read_executable_image(executable, &image, &image_size);
+	vnode_put(executable);
+	if (error != 0)
+		return UINT64_MAX;
 	/* Path-based launches always receive the standard argc/envp/auxv stack. */
 	(void)startup_stack;
-	result = process_run_elf_internal(image, (size_t)status.size, true);
+	result = process_run_elf_internal(image, image_size, true);
 	(void)kheap_free(image);
 	return result;
 }
@@ -1671,14 +1685,12 @@ struct interrupt_frame *
 process_exec_path_argv(struct interrupt_frame *frame, const char *path,
 	size_t argc, const char *const argv[], uint64_t *error)
 {
-	struct vfs_stat status;
+	size_t image_size;
 	struct vnode *executable = NULL;
 	struct os_credentials credentials;
-	struct fd_object *file = NULL;
 	char canonical[VFS_PATH_MAX];
 	void *image;
 	struct interrupt_frame *result;
-	size_t offset = 0;
 	int rc;
 
 	if (current_process == NULL || path == NULL) {
@@ -1697,52 +1709,20 @@ process_exec_path_argv(struct interrupt_frame *frame, const char *path,
 		*error = (uint64_t)-rc;
 		return frame;
 	}
-	status = (struct vfs_stat){
-		.size = executable->size,
-		.mode = executable->mode,
-		.type = (uint32_t)executable->type,
-		.uid = executable->uid,
-		.gid = executable->gid
-	};
-	if (status.type != VNODE_REGULAR || !vfs_access(executable,
+	if (executable->type != VNODE_REGULAR || !vfs_access(executable,
 	    credentials.effective_uid, credentials.effective_gid,
 	    VFS_ACCESS_EXEC)) {
 		vnode_put(executable);
 		*error = PROCESS_ERROR_EACCES;
 		return frame;
 	}
+	rc = read_executable_image(executable, &image, &image_size);
 	vnode_put(executable);
-	if (status.size == 0 || status.size > SIZE_MAX) {
-		*error = PROCESS_ERROR_ENOEXEC;
-		return frame;
-	}
-	rc = vfs_open_as(canonical, VFS_O_RDONLY, 0,
-	    credentials.effective_uid, credentials.effective_gid, &file);
 	if (rc != 0) {
 		*error = (uint64_t)-rc;
 		return frame;
 	}
-	image = kheap_alloc((size_t)status.size);
-	if (image == NULL) {
-		fd_object_put(file);
-		*error = PROCESS_ERROR_ENOMEM;
-		return frame;
-	}
-	while (offset < status.size) {
-		size_t amount = 0;
-
-		rc = fd_object_read(file, (uint8_t *)image + offset,
-		    (size_t)(status.size - offset), &amount);
-		if (rc != 0 || amount == 0) {
-			(void)kheap_free(image);
-			fd_object_put(file);
-			*error = rc == 0 ? PROCESS_ERROR_EIO : (uint64_t)-rc;
-			return frame;
-		}
-		offset += amount;
-	}
-	fd_object_put(file);
-	result = replace_process_image(frame, image, (size_t)status.size,
+	result = replace_process_image(frame, image, image_size,
 	    PROCESS_ERROR_ENOEXEC, error, argc, argv);
 	(void)kheap_free(image);
 	return result;

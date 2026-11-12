@@ -317,7 +317,18 @@ exec_saved_id_checks(void)
 	CHECK(fd >= 0);
 	CHECK(u_write((uint64_t)fd, "bad", 3) == 3);
 	CHECK(u_close((uint64_t)fd) == 0);
-	for (unsigned int memory = 0; memory < 2; memory++) {
+	fd = u_open_mode("/tmp/execute-only", U_O_CREAT | U_O_EXCL | U_O_WRONLY, 0111);
+	CHECK(fd >= 0);
+	for (offset = 0; offset < status.size;) {
+		size_t length = (size_t)(status.size - offset);
+		if (length > 512) length = 512;
+		CHECK(u_write((uint64_t)fd, exec_image + offset, length) == (long)length);
+		offset += length;
+	}
+	CHECK(u_close((uint64_t)fd) == 0);
+	fd = u_open_mode("/tmp/no-execute", U_O_CREAT | U_O_EXCL | U_O_WRONLY, 0644);
+	CHECK(fd >= 0 && u_close((uint64_t)fd) == 0);
+	for (unsigned int memory = 0; memory < 3; memory++) {
 		long child = u_fork();
 		CHECK(child >= 0);
 		if (child == 0) {
@@ -325,14 +336,18 @@ exec_saved_id_checks(void)
 			CHECK(call(SYSCALL_SETRESGID, 100, 200, 0) == 0);
 			CHECK(call(SYSCALL_SETRESUID, 100, 200, 0) == 0);
 			CHECK(u_exec_path("/missing-executable") == -2);
+			CHECK(u_open("/tmp/execute-only", U_O_RDONLY) == -13);
+			CHECK(u_exec_path("/tmp/execute-only/") == -20);
+			CHECK(u_exec_path("/tmp/no-execute") == -13);
+			CHECK(u_exec_path("/tmp") == -13);
 			CHECK(u_exec_path("/tmp/invalid-elf") == -8);
 			CHECK(call(SYSCALL_EXEC, (uintptr_t)"bad", 3, 0) == -22);
 			CHECK(u_getcredentials(&c) == 0);
 			CHECK(c.saved_uid == 0 && c.saved_gid == 0);
-			if (memory)
+			if (memory == 1)
 				(void)call(SYSCALL_EXEC, (uintptr_t)exec_image, status.size, 0);
 			else
-				(void)u_exec_path("/bin/sh");
+				(void)u_exec_path(memory == 2 ? "/tmp/execute-only" : "/bin/sh");
 			CHECK(0);
 		}
 		uint8_t child_status = 255;
