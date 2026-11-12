@@ -1601,6 +1601,11 @@ replace_process_image(struct interrupt_frame *frame, const void *image,
 		return frame;
 	}
 	fd_table_close_on_exec(&process->descriptors);
+	/* The new image may only regain the identities effective at exec time.
+	 * Commit this after loading and activation succeed, so a failed exec
+	 * preserves the caller's saved IDs. */
+	process->credentials.saved_uid = process->credentials.effective_uid;
+	process->credentials.saved_gid = process->credentials.effective_gid;
 	process->loaded_image = replacement;
 	process->address_space = &replacement->address_space;
 	process->tls = process_tls_from_plan(&replacement->plan);

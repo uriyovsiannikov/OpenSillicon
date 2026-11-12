@@ -25,6 +25,51 @@ check(int success, unsigned int line)
 #define CHECK(condition) check((condition), __LINE__)
 
 static uint64_t reowned_fd;
+static uint8_t exec_image[256 * 1024];
+
+static void
+exec_saved_id_checks(void)
+{
+	struct u_stat status;
+	CHECK(u_stat_path("/bin/sh", &status) == 0);
+	CHECK(status.size != 0 && status.size <= sizeof(exec_image));
+	long fd = u_open("/bin/sh", U_O_RDONLY);
+	CHECK(fd >= 0);
+	uint64_t offset = 0;
+	while (offset < status.size) {
+		size_t length = (size_t)(status.size - offset);
+		if (length > 512) length = 512;
+		long amount = u_read((uint64_t)fd, exec_image + offset, length);
+		CHECK(amount > 0);
+		offset += (uint64_t)amount;
+	}
+	CHECK(u_close((uint64_t)fd) == 0);
+	fd = u_open_mode("/tmp/invalid-elf", U_O_CREAT | U_O_EXCL | U_O_WRONLY, 0755);
+	CHECK(fd >= 0);
+	CHECK(u_write((uint64_t)fd, "bad", 3) == 3);
+	CHECK(u_close((uint64_t)fd) == 0);
+	for (unsigned int memory = 0; memory < 2; memory++) {
+		long child = u_fork();
+		CHECK(child >= 0);
+		if (child == 0) {
+			struct os_credentials c;
+			CHECK(call(SYSCALL_SETRESGID, 100, 200, 0) == 0);
+			CHECK(call(SYSCALL_SETRESUID, 100, 200, 0) == 0);
+			CHECK(u_exec_path("/missing-executable") == -2);
+			CHECK(u_exec_path("/tmp/invalid-elf") == -8);
+			CHECK(call(SYSCALL_EXEC, (uintptr_t)"bad", 3, 0) == -22);
+			CHECK(u_getcredentials(&c) == 0);
+			CHECK(c.saved_uid == 0 && c.saved_gid == 0);
+			if (memory)
+				(void)call(SYSCALL_EXEC, (uintptr_t)exec_image, status.size, 0);
+			else
+				(void)u_exec_path("/bin/sh");
+			CHECK(0);
+		}
+		uint8_t child_status = 255;
+		CHECK(u_waitpid((uint64_t)child, &child_status) == child && child_status == 0);
+	}
+}
 
 static void
 reserved_id_checks(void)
@@ -210,7 +255,19 @@ uint64_t
 user_main(uint64_t argc, char **argv, const uint64_t *startup_stack)
 {
 	(void)argc; (void)argv; (void)startup_stack;
+	struct os_credentials initial;
+	CHECK(u_getcredentials(&initial) == 0);
+	if (initial.effective_uid == 200) {
+		/* This is the replacement image in exec_saved_id_checks(). */
+		CHECK(initial.real_uid == 100 && initial.saved_uid == 200);
+		CHECK(initial.real_gid == 100 && initial.effective_gid == 200 &&
+		    initial.saved_gid == 200);
+		CHECK(call(SYSCALL_SETEUID, 0, 0, 0) == -1);
+		CHECK(call(SYSCALL_SETEGID, 0, 0, 0) == -1);
+		u_exit(0);
+	}
 	reserved_id_checks();
+	exec_saved_id_checks();
 	inet_bind_checks(1);
 	open_unlink_lifetime();
 	CHECK(u_mkdir("/closed", 0700) == 0);
