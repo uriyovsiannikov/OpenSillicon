@@ -3,6 +3,7 @@
 #include "arch/x86_64/fpu.h"
 #include "arch/x86_64/gdt.h"
 #include "arch/x86_64/user.h"
+#include "kernel/credentials.h"
 #include "kernel/elf.h"
 #include "kernel/heap.h"
 #include "kernel/log.h"
@@ -704,59 +705,31 @@ process_current_credentials(struct os_credentials *credentials)
 int
 process_set_uid(uint32_t id, bool effective_only)
 {
-	struct os_credentials *credentials;
 	uint64_t flags;
+	bool allowed;
 	if (current_process == NULL)
 		return -PROCESS_ERROR_ESRCH;
 	__asm__ volatile ("pushfq; popq %0; cli" : "=r" (flags) : : "memory");
-	credentials = &current_process->credentials;
-	if (credentials->effective_uid == 0) {
-		credentials->effective_uid = id;
-		if (!effective_only) {
-			credentials->real_uid = id;
-			credentials->saved_uid = id;
-		}
-	} else if (id == credentials->real_uid || id == credentials->saved_uid) {
-		credentials->effective_uid = id;
-		if (!effective_only)
-			credentials->real_uid = id;
-	} else {
-		if ((flags & (1ULL << 9)) != 0)
-			__asm__ volatile ("sti" : : : "memory");
-		return -(int)PROCESS_ERROR_EPERM;
-	}
+	allowed = credentials_set_uid(&current_process->credentials, id,
+	    effective_only);
 	if ((flags & (1ULL << 9)) != 0)
 		__asm__ volatile ("sti" : : : "memory");
-	return 0;
+	return allowed ? 0 : -(int)PROCESS_ERROR_EPERM;
 }
 
 int
 process_set_gid(uint32_t id, bool effective_only)
 {
-	struct os_credentials *credentials;
 	uint64_t flags;
+	bool allowed;
 	if (current_process == NULL)
 		return -PROCESS_ERROR_ESRCH;
 	__asm__ volatile ("pushfq; popq %0; cli" : "=r" (flags) : : "memory");
-	credentials = &current_process->credentials;
-	if (credentials->effective_uid == 0) {
-		credentials->effective_gid = id;
-		if (!effective_only) {
-			credentials->real_gid = id;
-			credentials->saved_gid = id;
-		}
-	} else if (id == credentials->real_gid || id == credentials->saved_gid) {
-		credentials->effective_gid = id;
-		if (!effective_only)
-			credentials->real_gid = id;
-	} else {
-		if ((flags & (1ULL << 9)) != 0)
-			__asm__ volatile ("sti" : : : "memory");
-		return -(int)PROCESS_ERROR_EPERM;
-	}
+	allowed = credentials_set_gid(&current_process->credentials, id,
+	    effective_only);
 	if ((flags & (1ULL << 9)) != 0)
 		__asm__ volatile ("sti" : : : "memory");
-	return 0;
+	return allowed ? 0 : -(int)PROCESS_ERROR_EPERM;
 }
 
 static int
