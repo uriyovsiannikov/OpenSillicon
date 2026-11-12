@@ -27,6 +27,30 @@ check(int success, unsigned int line)
 static uint64_t reowned_fd;
 
 static void
+reserved_id_checks(void)
+{
+	const uint64_t operations[] = {
+		SYSCALL_SETUID, SYSCALL_SETEUID, SYSCALL_SETGID, SYSCALL_SETEGID
+	};
+	for (unsigned int i = 0; i < sizeof(operations) / sizeof(operations[0]); i++) {
+		long child = u_fork();
+		CHECK(child >= 0);
+		if (child == 0) {
+			struct os_credentials c;
+			CHECK(call(operations[i], UINT32_MAX, 0, 0) == -22);
+			CHECK(u_getcredentials(&c) == 0);
+			CHECK(c.real_uid == 0 && c.effective_uid == 0 && c.saved_uid == 0);
+			CHECK(c.real_gid == 0 && c.effective_gid == 0 && c.saved_gid == 0);
+			u_exit(0);
+		}
+		uint8_t status = 255;
+		CHECK(u_waitpid((uint64_t)child, &status) == child && status == 0);
+	}
+	CHECK(call(SYSCALL_SETRESUID, UINT32_MAX, UINT32_MAX, UINT32_MAX) == 0);
+	CHECK(call(SYSCALL_SETRESGID, UINT32_MAX, UINT32_MAX, UINT32_MAX) == 0);
+}
+
+static void
 inet_bind_checks(int privileged)
 {
 	const uint16_t ports[] = {1, 1023, 1024, 0};
@@ -186,6 +210,7 @@ uint64_t
 user_main(uint64_t argc, char **argv, const uint64_t *startup_stack)
 {
 	(void)argc; (void)argv; (void)startup_stack;
+	reserved_id_checks();
 	inet_bind_checks(1);
 	open_unlink_lifetime();
 	CHECK(u_mkdir("/closed", 0700) == 0);

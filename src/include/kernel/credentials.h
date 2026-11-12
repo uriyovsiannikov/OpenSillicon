@@ -9,6 +9,8 @@ static inline bool
 credentials_set_uid(struct os_credentials *credentials, uint32_t id,
     bool effective_only)
 {
+	if (id == UINT32_MAX)
+		return false;
 	bool privileged = credentials->effective_uid == 0;
 	if (!privileged && id != credentials->real_uid &&
 	    id != credentials->saved_uid &&
@@ -26,6 +28,8 @@ static inline bool
 credentials_set_gid(struct os_credentials *credentials, uint32_t id,
     bool effective_only)
 {
+	if (id == UINT32_MAX)
+		return false;
 	bool privileged = credentials->effective_uid == 0;
 	if (!privileged && id != credentials->real_gid &&
 	    id != credentials->saved_gid &&

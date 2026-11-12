@@ -50,6 +50,8 @@ int main(void)
 		check_transition(group, true, 400, false, false, 0, 0, 0);
 		check_transition(group, false, 400, true, true, 400, 400, 400);
 		check_transition(group, true, 400, true, true, 100, 400, 300);
+		check_transition(group, false, UINT32_MAX, true, false, 0, 0, 0);
+		check_transition(group, true, UINT32_MAX, true, false, 0, 0, 0);
 	}
 	/* Becoming effective UID 0 must not retroactively authorize an all-ID
 	 * change in the same operation. */
