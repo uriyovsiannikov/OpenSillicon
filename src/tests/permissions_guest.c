@@ -28,6 +28,28 @@ static uint64_t reowned_fd;
 static uint8_t exec_image[256 * 1024];
 
 static void
+descriptor_limit_checks(void)
+{
+	uint64_t held[32];
+	unsigned int count = 0;
+	struct u_stat status;
+	long fd = u_open_mode("/tmp/fd-limit", U_O_CREAT | U_O_EXCL | U_O_WRONLY, 0600);
+	CHECK(fd >= 0 && u_write((uint64_t)fd, "KEEP", 4) == 4);
+	CHECK(u_close((uint64_t)fd) == 0);
+	while ((fd = u_open("/tmp/fd-limit", U_O_RDONLY)) >= 0) {
+		CHECK(count < sizeof(held) / sizeof(held[0]));
+		held[count++] = (uint64_t)fd;
+	}
+	CHECK(fd == -24 && count > 0);
+	CHECK(u_open_mode("/tmp/fd-limit-new", U_O_CREAT | U_O_EXCL | U_O_WRONLY, 0600) == -24);
+	CHECK(u_stat_path("/tmp/fd-limit-new", &status) == -2);
+	CHECK(u_open("/tmp/fd-limit", U_O_TRUNC | U_O_WRONLY) == -24);
+	CHECK(u_stat_path("/tmp/fd-limit", &status) == 0 && status.size == 4);
+	while (count > 0)
+		CHECK(u_close(held[--count]) == 0);
+}
+
+static void
 directory_open_checks(void)
 {
 	CHECK(u_mkdir("/tmp/open-directory", 0777) == 0);
@@ -651,6 +673,7 @@ user_main(uint64_t argc, char **argv, const uint64_t *startup_stack)
 		u_exit(0);
 	}
 	reserved_id_checks();
+	descriptor_limit_checks();
 	directory_open_checks();
 	cloexec_checks();
 	res_id_transaction_checks();

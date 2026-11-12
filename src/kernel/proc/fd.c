@@ -198,20 +198,30 @@ fd_table_destroy(struct fd_table *table)
 }
 
 int
-fd_install(struct fd_table *table, struct fd_object *object)
+fd_find_free_descriptor(struct fd_table *table)
 {
 	unsigned int i;
 
-	if (table == NULL || object == NULL)
+	if (table == NULL)
 		return -FD_ERROR_EINVAL;
-	for (i = 3; i < FD_TABLE_CAPACITY; i++) {
-		if (table->entries[i] == NULL) {
-			table->entries[i] = object;
-			table->descriptor_flags[i] = 0;
+	for (i = 3; i < FD_TABLE_CAPACITY; i++)
+		if (table->entries[i] == NULL)
 			return (int)i;
-		}
-	}
 	return -FD_ERROR_EMFILE;
+}
+
+int
+fd_install(struct fd_table *table, struct fd_object *object)
+{
+	int descriptor;
+	if (object == NULL)
+		return -FD_ERROR_EINVAL;
+	descriptor = fd_find_free_descriptor(table);
+	if (descriptor < 0)
+		return descriptor;
+	table->entries[descriptor] = object;
+	table->descriptor_flags[descriptor] = 0;
+	return descriptor;
 }
 
 int

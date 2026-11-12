@@ -2589,6 +2589,14 @@ syscall_interrupt(struct interrupt_frame *frame)
 				syscall_error(frame, ERRNO_ESRCH);
 				break;
 			}
+			/* The process owns its FD table throughout this syscall. Check
+			 * capacity before VFS can create or truncate the requested file. */
+			table = current_fd_table();
+			result = fd_find_free_descriptor(table);
+			if (result < 0) {
+				syscall_error(frame, errno_from_kernel(result));
+				break;
+			}
 			result = vfs_open_as(canonical, (uint32_t)frame->rsi,
 			    (uint32_t)frame->rdx & ~process_get_umask(),
 			    credentials.effective_uid,
@@ -2597,7 +2605,6 @@ syscall_interrupt(struct interrupt_frame *frame)
 				syscall_error(frame, errno_from_kernel(result));
 				break;
 			}
-			table = current_fd_table();
 			result = fd_install(table, file);
 			if (result < 0) {
 				fd_object_put(file);

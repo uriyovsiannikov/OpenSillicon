@@ -75,6 +75,7 @@ bool fd_table_clone(struct fd_table *destination,
 	const struct fd_table *source);
 void fd_table_destroy(struct fd_table *table);
 int fd_install(struct fd_table *table, struct fd_object *object);
+int fd_find_free_descriptor(struct fd_table *table);
 int fd_install_pair(struct fd_table *table, struct fd_object *first,
 	struct fd_object *second, int *first_descriptor,
 	int *second_descriptor);
