@@ -1035,31 +1035,47 @@ vfs_open_as(const char *path, uint32_t flags, uint32_t mode,
 	error = canonicalize_path(path, canonical, uid, gid);
 	if (error != 0)
 		return error;
+	/* Allocate the open-file resources before any create/truncate side
+	 * effect. Once attached, the context owns the lookup's vnode reference. */
+	context = kheap_alloc(sizeof(*context));
+	if (context == NULL)
+		return -VFS_ENOMEM;
+	context->node = NULL;
+	context->flags = flags;
+	memcpy(context->path, canonical, strlen(canonical) + 1U);
+	file = fd_object_create(&vfs_file_operations, context);
+	if (file == NULL) {
+		(void)kheap_free(context);
+		return -VFS_ENOMEM;
+	}
+	file->status_flags = flags & (VFS_O_ACCMODE | VFS_O_NONBLOCK);
 	error = vfs_lookup_as(canonical, uid, gid, &node);
+	context->node = node;
 	if (error == 0 && (flags & (VFS_O_CREAT | VFS_O_EXCL)) ==
 	    (VFS_O_CREAT | VFS_O_EXCL)) {
-		vnode_put(node);
-		return -VFS_EEXIST;
+		error = -VFS_EEXIST;
+		goto fail;
 	}
 	if (error == -VFS_ENOENT && (flags & VFS_O_CREAT) != 0) {
 		error = vfs_create_path_as(path, VNODE_REGULAR, mode, uid, gid,
 		    &node);
+		context->node = node;
 		created = error == 0;
 	}
 	if (error != 0)
-		return error;
+		goto fail;
 	if (node->type == VNODE_SOCKET) {
-		vnode_put(node);
-		return -VFS_ENXIO;
+		error = -VFS_ENXIO;
+		goto fail;
 	}
 	if (node->type == VNODE_DIRECTORY &&
 	    (flags & VFS_O_ACCMODE) != VFS_O_RDONLY) {
-		vnode_put(node);
-		return -VFS_EISDIR;
+		error = -VFS_EISDIR;
+		goto fail;
 	}
 	if ((flags & VFS_O_DIRECTORY) != 0 && node->type != VNODE_DIRECTORY) {
-		vnode_put(node);
-		return -VFS_ENOTDIR;
+		error = -VFS_ENOTDIR;
+		goto fail;
 	}
 	{
 		unsigned int requested = 0;
@@ -1069,51 +1085,34 @@ vfs_open_as(const char *path, uint32_t flags, uint32_t mode,
 		if ((flags & VFS_O_ACCMODE) == VFS_O_WRONLY ||
 		    (flags & VFS_O_ACCMODE) == VFS_O_RDWR)
 			requested |= VFS_ACCESS_WRITE;
-		/* The caller is authorized by the parent-directory check performed
-		 * during creation. Do not reject the descriptor it just created
-		 * because the requested mode is more restrictive than its access. */
+		/* The parent-directory check authorizes the descriptor of a new
+		 * file even when the creation mode itself grants no further access. */
 		if (!created && !vfs_access(node, uid, gid, requested)) {
-			vnode_put(node);
-			return -VFS_EACCES;
+			error = -VFS_EACCES;
+			goto fail;
 		}
 	}
 	if ((flags & VFS_O_ACCMODE) != VFS_O_RDONLY &&
 	    node->operations->write == NULL) {
-		vnode_put(node);
-		return -VFS_EROFS;
+		error = -VFS_EROFS;
+		goto fail;
 	}
 	if ((flags & VFS_O_TRUNC) != 0) {
 		if (node->type == VNODE_DIRECTORY || node->operations->truncate == NULL) {
-			bool is_directory = node->type == VNODE_DIRECTORY;
-
-			vnode_put(node);
-			return is_directory ? -VFS_EISDIR : -VFS_EROFS;
+			error = node->type == VNODE_DIRECTORY ? -VFS_EISDIR : -VFS_EROFS;
+			goto fail;
 		}
 		error = prepare_node_write(node, uid);
 		if (error == 0)
 			error = node->operations->truncate(node, 0);
-		if (error != 0) {
-			vnode_put(node);
-			return error;
-		}
+		if (error != 0)
+			goto fail;
 	}
-	context = kheap_alloc(sizeof(*context));
-	if (context == NULL) {
-		vnode_put(node);
-		return -VFS_ENOMEM;
-	}
-	context->node = node;
-	context->flags = flags;
-	memcpy(context->path, canonical, strlen(canonical) + 1U);
-	file = fd_object_create(&vfs_file_operations, context);
-	if (file == NULL) {
-		vnode_put(node);
-		(void)kheap_free(context);
-		return -VFS_ENOMEM;
-	}
-	file->status_flags = flags & (VFS_O_ACCMODE | VFS_O_NONBLOCK);
 	*result = file;
 	return 0;
+fail:
+	fd_object_put(file);
+	return error;
 }
 
 int

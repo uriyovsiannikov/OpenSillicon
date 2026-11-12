@@ -8,8 +8,13 @@
 #include "kernel/vfs.h"
 
 static size_t live_allocations;
+static size_t allocations_before_failure = SIZE_MAX;
 void *kheap_alloc(size_t size)
 {
+	if (allocations_before_failure == 0)
+		return NULL;
+	if (allocations_before_failure != SIZE_MAX)
+		allocations_before_failure--;
 	void *allocation = malloc(size);
 	if (allocation != NULL) live_allocations++;
 	return allocation;
@@ -58,6 +63,38 @@ sticky_removal(void)
 	create("/locked", VNODE_DIRECTORY, 01755, 100);
 	create("/locked/file", VNODE_REGULAR, 0666, 200);
 	assert(vfs_remove_path_as("/locked/file", false, 200, 200) == -13);
+}
+
+static void
+open_allocation_failures(void)
+{
+	struct vnode *node;
+	struct fd_object *file;
+	size_t amount = 0;
+	char bytes[4];
+	create("/oom-open", VNODE_REGULAR, 06777, 100);
+	assert(vfs_lookup("/oom-open", &node) == 0);
+	assert(node->operations->write(node, 0, "KEEP", 4, &amount) == 0 && amount == 4);
+	size_t before = live_allocations;
+	for (size_t failure = 0; failure < 2; failure++) {
+		allocations_before_failure = failure;
+		assert(vfs_open_as("/oom-open", VFS_O_WRONLY | VFS_O_TRUNC, 0,
+		    100, 100, &file) == -12);
+		allocations_before_failure = SIZE_MAX;
+		assert(file == NULL && node->mode == 06777 && node->size == 4);
+		assert(node->operations->read(node, 0, bytes, sizeof(bytes), &amount) == 0);
+		assert(amount == 4 && memcmp(bytes, "KEEP", 4) == 0);
+		assert(live_allocations == before);
+		allocations_before_failure = failure;
+		assert(vfs_open_as("/tmp/oom-missing", VFS_O_WRONLY | VFS_O_CREAT,
+		    0600, 100, 100, &file) == -12);
+		allocations_before_failure = SIZE_MAX;
+		assert(file == NULL);
+		struct vnode *missing;
+		assert(vfs_lookup("/tmp/oom-missing", &missing) == -2);
+		assert(live_allocations == before);
+	}
+	vnode_put(node);
 }
 
 static void
@@ -292,6 +329,7 @@ int main(void)
 	assert(vfs_mount("/", root) == 0);
 	vnode_put(root);
 	sticky_removal();
+	open_allocation_failures();
 	directory_open_modes();
 	directory_anchors();
 	setid_writes();
