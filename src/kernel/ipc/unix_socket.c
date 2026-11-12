@@ -268,14 +268,15 @@ static const struct fd_operations socket_operations = {
 int
 unix_socket_create(struct fd_table *table, int domain, int type, int protocol)
 {
-	struct os_credentials credentials = {0};
+	struct os_credentials credentials;
 	if (table == NULL)
 		return -EINVAL;
 	if (domain != (int)UNIX_SOCKET_AF_UNIX)
 		return -EAFNOSUPPORT;
 	if (type != (int)UNIX_SOCKET_STREAM || protocol != 0)
 		return -EPROTONOSUPPORT;
-	(void)process_current_credentials(&credentials);
+	if (!process_current_credentials(&credentials))
+		return -ESRCH;
 	uint64_t flags = state_guard_enter();
 	struct unix_socket_state *state = socket_allocate();
 	if (state != NULL) {
@@ -343,12 +344,22 @@ int
 unix_socket_listen(struct fd_object *object, int backlog)
 {
 	struct unix_socket_state *state = socket_state(object);
+	struct os_credentials credentials;
 	if (state == NULL)
 		return -ENOTSOCK;
-	if (!state->bound || state->closed)
+	if (!process_current_credentials(&credentials))
+		return -ESRCH;
+	uint64_t flags = state_guard_enter();
+	if (!state->bound || state->closed) {
+		state_guard_leave(flags);
 		return -EINVAL;
+	}
 	(void)backlog;
+	state->owner_pid = process_current_pid();
+	state->owner_uid = credentials.effective_uid;
+	state->owner_gid = credentials.effective_gid;
 	state->listener = true;
+	state_guard_leave(flags);
 	return 0;
 }
 
@@ -358,7 +369,7 @@ unix_socket_connect(struct fd_object *object,
 {
 	struct unix_socket_state *client = socket_state(object);
 	struct unix_socket_state *listener = NULL;
-	struct os_credentials credentials = {0};
+	struct os_credentials credentials;
 	if (client == NULL)
 		return -ENOTSOCK;
 	if (address == NULL || address->family != UNIX_SOCKET_AF_UNIX ||
@@ -367,7 +378,8 @@ unix_socket_connect(struct fd_object *object,
 	size_t path_length = length - sizeof(address->family);
 	if (path_length == 1 && address->path[0] == 0)
 		return -EINVAL;
-	(void)process_current_credentials(&credentials);
+	if (!process_current_credentials(&credentials))
+		return -ESRCH;
 	uint64_t flags = state_guard_enter();
 	for (size_t i = 0; i < UNIX_SOCKET_LIMIT; i++) {
 		struct unix_socket_state *candidate = &sockets[i];
@@ -400,6 +412,7 @@ unix_socket_connect(struct fd_object *object,
 		state_guard_leave(flags);
 		return -ENOBUFS;
 	}
+	client->owner_pid = process_current_pid();
 	client->owner_uid = credentials.effective_uid;
 	client->owner_gid = credentials.effective_gid;
 	server->peer = client;
