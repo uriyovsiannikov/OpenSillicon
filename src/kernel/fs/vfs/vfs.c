@@ -1053,7 +1053,6 @@ vfs_open_as(const char *path, uint32_t flags, uint32_t mode,
 		return -VFS_ENXIO;
 	}
 	if (node->type == VNODE_DIRECTORY &&
-	    (flags & VFS_O_DIRECTORY) == 0 &&
 	    (flags & VFS_O_ACCMODE) != VFS_O_RDONLY) {
 		vnode_put(node);
 		return -VFS_EISDIR;

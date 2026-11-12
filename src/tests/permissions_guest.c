@@ -28,6 +28,34 @@ static uint64_t reowned_fd;
 static uint8_t exec_image[256 * 1024];
 
 static void
+directory_open_checks(void)
+{
+	CHECK(u_mkdir("/tmp/open-directory", 0777) == 0);
+	CHECK(call(SYSCALL_CHMOD, (uintptr_t)"/tmp/open-directory", 0777, 0) == 0);
+	for (unsigned int unprivileged = 0; unprivileged < 2; unprivileged++) {
+		long child = u_fork();
+		CHECK(child >= 0);
+		if (child == 0) {
+			if (unprivileged)
+				CHECK(u_setgid(300) == 0 && u_setuid(300) == 0);
+			const uint32_t modes[] = {
+				U_O_WRONLY, U_O_RDWR, U_O_DIRECTORY | U_O_WRONLY,
+				U_O_DIRECTORY | U_O_RDWR,
+				U_O_DIRECTORY | U_O_WRONLY | U_O_TRUNC
+			};
+			for (unsigned int i = 0; i < sizeof(modes) / sizeof(modes[0]); i++)
+				CHECK(u_open("/tmp/open-directory", modes[i]) == -21);
+			long fd = u_open("/tmp/open-directory", U_O_DIRECTORY | U_O_RDONLY);
+			CHECK(fd >= 0 && u_close((uint64_t)fd) == 0);
+			u_exit(0);
+		}
+		uint8_t status = 255;
+		CHECK(u_waitpid((uint64_t)child, &status) == child && status == 0);
+	}
+	CHECK(u_unlink("/tmp/open-directory", 1) == 0);
+}
+
+static void
 cloexec_after_exec(void)
 {
 	char byte = 0;
@@ -617,6 +645,7 @@ user_main(uint64_t argc, char **argv, const uint64_t *startup_stack)
 		u_exit(0);
 	}
 	reserved_id_checks();
+	directory_open_checks();
 	cloexec_checks();
 	res_id_transaction_checks();
 	signal_permission_checks();

@@ -61,6 +61,29 @@ sticky_removal(void)
 }
 
 static void
+directory_open_modes(void)
+{
+	struct fd_object *file = NULL;
+	const uint32_t flags[] = {
+		VFS_O_WRONLY, VFS_O_RDWR, VFS_O_DIRECTORY | VFS_O_WRONLY,
+		VFS_O_DIRECTORY | VFS_O_RDWR,
+		VFS_O_DIRECTORY | VFS_O_WRONLY | VFS_O_TRUNC
+	};
+	create("/open-directory", VNODE_DIRECTORY, 0777, 100);
+	for (unsigned int i = 0; i < sizeof(flags) / sizeof(flags[0]); i++) {
+		assert(vfs_open_as("/open-directory", flags[i], 0, 100, 100, &file) == -21);
+		assert(file == NULL);
+		assert(vfs_open_as("/open-directory", flags[i], 0, 0, 0, &file) == -21);
+		assert(file == NULL);
+	}
+	assert(vfs_open_as("/open-directory", VFS_O_DIRECTORY, 0, 100, 100, &file) == 0);
+	fd_object_put(file);
+	create("/open-regular", VNODE_REGULAR, 0666, 100);
+	assert(vfs_open_as("/open-regular", VFS_O_DIRECTORY | VFS_O_WRONLY,
+	    0, 100, 100, &file) == -20);
+}
+
+static void
 directory_anchors(void)
 {
 	size_t before = live_allocations;
@@ -269,6 +292,7 @@ int main(void)
 	assert(vfs_mount("/", root) == 0);
 	vnode_put(root);
 	sticky_removal();
+	directory_open_modes();
 	directory_anchors();
 	setid_writes();
 	dot_removal();
