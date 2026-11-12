@@ -12,6 +12,7 @@
 #define ENOMEM 12
 #define EFAULT 14
 #define EINVAL 22
+#define EISDIR 21
 #define EEXIST 17
 #define EAGAIN 11
 #define EMFILE 24

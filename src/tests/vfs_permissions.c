@@ -44,6 +44,22 @@ sticky_removal(void)
 }
 
 static void
+dot_removal(void)
+{
+	struct vnode *node = NULL;
+	create("/dotdir", VNODE_DIRECTORY, 0755, 0);
+	assert(vfs_remove_path_as("/dotdir/.", true, 0, 0) == -22);
+	assert(vfs_remove_path_as("/dotdir/.//", true, 0, 0) == -22);
+	assert(vfs_remove_path_as("/dotdir/..", true, 0, 0) == -22);
+	assert(vfs_remove_path_as("/dotdir/.", false, 0, 0) == -21);
+	assert(vfs_lookup("/dotdir", &node) == 0);
+	vnode_put(node);
+	assert(vfs_remove_path_as("/dotdir", true, 0, 0) == 0);
+	create("/...", VNODE_DIRECTORY, 0755, 0);
+	assert(vfs_remove_path_as("/...", true, 0, 0) == 0);
+}
+
+static void
 trailing_slashes(void)
 {
 	struct vnode *node = NULL;
@@ -156,6 +172,7 @@ int main(void)
 	assert(vfs_mount("/", root) == 0);
 	vnode_put(root);
 	sticky_removal();
+	dot_removal();
 	trailing_slashes();
 	setgid_creation();
 	dot_components();

@@ -103,6 +103,8 @@ int vfs_create_path_as(const char *path, enum vnode_type type, uint32_t mode,
 	uint32_t uid, uint32_t gid, struct vnode **result);
 int vfs_remove_path_as(const char *path, bool directory, uint32_t uid,
 	uint32_t gid);
+/* Check before canonicalization, which erases the final '.' or '..'. */
+bool vfs_path_has_dot_basename(const char *path);
 int vfs_stat_path(const char *path, struct vfs_stat *status);
 int vfs_stat_path_as(const char *path, uint32_t uid, uint32_t gid,
 	struct vfs_stat *status);

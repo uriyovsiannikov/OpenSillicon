@@ -512,6 +512,22 @@ vfs_create_path(const char *path, enum vnode_type type, uint32_t mode,
 	return vfs_create_path_as(path, type, mode, 0, 0, result);
 }
 
+bool
+vfs_path_has_dot_basename(const char *path)
+{
+	size_t end, begin;
+	if (path == NULL)
+		return false;
+	end = strlen(path);
+	while (end > 0 && path[end - 1] == '/')
+		end--;
+	begin = end;
+	while (begin > 0 && path[begin - 1] != '/')
+		begin--;
+	return (end - begin == 1 && path[begin] == '.') ||
+	    (end - begin == 2 && path[begin] == '.' && path[begin + 1] == '.');
+}
+
 int
 vfs_remove_path_as(const char *path, bool directory, uint32_t uid,
 	uint32_t gid)
@@ -524,6 +540,8 @@ vfs_remove_path_as(const char *path, bool directory, uint32_t uid,
 	int error;
 	if (!initialized || path == NULL)
 		return -VFS_EINVAL;
+	if (vfs_path_has_dot_basename(path))
+		return directory ? -VFS_EINVAL : -VFS_EISDIR;
 	error = canonicalize_path(path, canonical, uid, gid);
 	if (error != 0) return error;
 	if (strcmp(canonical, "/") == 0) return -VFS_EBUSY;

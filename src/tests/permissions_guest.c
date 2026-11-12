@@ -28,6 +28,22 @@ static uint64_t reowned_fd;
 static uint8_t exec_image[256 * 1024];
 
 static void
+dot_removal_checks(void)
+{
+	struct u_stat status;
+	CHECK(u_mkdir("/tmp/dotdir", 0755) == 0);
+	CHECK(u_unlink("/tmp/dotdir/.", 1) == -22);
+	CHECK(u_unlink("/tmp/dotdir/.//", 1) == -22);
+	CHECK(u_unlink("/tmp/dotdir/.", 0) == -21);
+	CHECK(u_chdir("/tmp/dotdir") == 0);
+	CHECK(u_unlink(".", 1) == -22);
+	CHECK(u_unlink("..", 1) == -22);
+	CHECK(u_chdir("/") == 0);
+	CHECK(u_stat_path("/tmp/dotdir", &status) == 0);
+	CHECK(u_unlink("/tmp/dotdir", 1) == 0);
+}
+
+static void
 trailing_slash_checks(void)
 {
 	struct u_stat status;
@@ -319,6 +335,7 @@ user_main(uint64_t argc, char **argv, const uint64_t *startup_stack)
 		u_exit(0);
 	}
 	reserved_id_checks();
+	dot_removal_checks();
 	trailing_slash_checks();
 	console_input_checks();
 	exec_saved_id_checks();

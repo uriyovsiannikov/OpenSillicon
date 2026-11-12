@@ -1179,6 +1179,8 @@ syscall_interrupt(struct interrupt_frame *frame)
 				break;
 			}
 			result = copy_user_string(frame->rdi, path, sizeof(path));
+			if (result == 0 && vfs_path_has_dot_basename(path))
+				result = frame->rsi != 0 ? -EINVAL : -EISDIR;
 			if (result == 0) result = process_resolve_path(path, canonical,
 			    sizeof(canonical));
 			if (result == 0 && !process_current_credentials(&credentials))
