@@ -28,6 +28,37 @@ static uint64_t reowned_fd;
 static uint8_t exec_image[256 * 1024];
 
 static void
+console_input_checks(void)
+{
+	int enabled = 0, acquire = 1;
+	CHECK(u_ioctl(1, 0x4f530003U, &enabled) == 0);
+	CHECK(u_ioctl(0, 0x4f530004U, &acquire) == 0);
+	long child = u_fork();
+	CHECK(child >= 0);
+	if (child == 0) {
+		char byte;
+		struct {
+			uint32_t input, output, control, local;
+			uint8_t chars[32];
+			uint32_t input_speed, output_speed;
+		} termios = {0};
+		CHECK(u_setgid(300) == 0 && u_setuid(300) == 0);
+		CHECK(u_ioctl(0, 0x4f530004U, &acquire) == -1);
+		CHECK(u_ioctl(0, U_TIOCSRAW, 0) == -1);
+		CHECK(u_ioctl(0, U_TIOCCANON, 0) == -1);
+		CHECK(u_ioctl(0, 0x5402U, &termios) == -1);
+		CHECK(u_read(0, &byte, 1) == -1);
+		u_exit(0);
+	}
+	uint8_t status = 255;
+	CHECK(u_waitpid((uint64_t)child, &status) == child && status == 0);
+	CHECK(u_ioctl(0, U_TIOCSRAW, 0) == 0);
+	CHECK(u_ioctl(0, U_TIOCCANON, 0) == 0);
+	enabled = 1;
+	CHECK(u_ioctl(1, 0x4f530003U, &enabled) == 0);
+}
+
+static void
 exec_saved_id_checks(void)
 {
 	struct u_stat status;
@@ -267,6 +298,7 @@ user_main(uint64_t argc, char **argv, const uint64_t *startup_stack)
 		u_exit(0);
 	}
 	reserved_id_checks();
+	console_input_checks();
 	exec_saved_id_checks();
 	inet_bind_checks(1);
 	open_unlink_lifetime();

@@ -5,11 +5,27 @@
 #include "kernel/process.h"
 #include "kernel/tty.h"
 #include "kernel/vmm.h"
+#include "kernel/terminal.h"
 
 static uint64_t pid = 300;
 static uint32_t uid = 300;
 static bool have_credentials = true;
 static size_t copies;
+static size_t input_reads, mode_changes;
+uint64_t timer_ticks(void) { return 0; }
+bool ps2_keyboard_available(void) { return true; }
+bool ps2_keyboard_poll(struct terminal_key_event *event) { (void)event; return false; }
+void terminal_key_event(struct terminal_key_event event) { (void)event; }
+bool terminal_raw_mode(void) { return false; }
+void terminal_set_raw_mode(bool enabled) { (void)enabled; mode_changes++; }
+int terminal_read(char *buffer, size_t length, size_t *read_length)
+{
+	assert(length > 0);
+	input_reads++;
+	buffer[0] = 'A';
+	*read_length = 1;
+	return 0;
+}
 uint64_t process_current_pid(void) { return pid; }
 bool process_current_credentials(struct os_credentials *credentials)
 {
@@ -38,6 +54,18 @@ bool terminal_switch(unsigned int terminal) { (void)terminal; return true; }
 unsigned int terminal_active(void) { return 0; }
 
 static void
+input(bool allowed)
+{
+	char byte;
+	size_t length = 100, before = input_reads, modes_before = mode_changes;
+	assert(tty_read(&byte, 1, &length) == (allowed ? 0 : -1));
+	assert(length == (allowed ? 1U : 0U));
+	assert(input_reads == before + (allowed ? 1U : 0U));
+	assert(tty_set_raw_mode(true) == (allowed ? 0 : -1));
+	assert(mode_changes == modes_before + (allowed ? 1U : 0U));
+}
+
+static void
 present(bool allowed)
 {
 	uint32_t source[4] = {1, 2, 3, 4};
@@ -59,21 +87,30 @@ int main(void)
 	};
 	assert(framebuffer_device_init(&fb));
 	present(false);
+	input(true);
 	assert(pixels[0] == 0);
 	uid = 0;
 	present(true);
 	uid = 300;
 	assert(tty_console_framebuffer_set(false, pid));
 	present(true);
+	input(false);
+	uid = 0;
+	input(true);
+	uid = 300;
 	pid = 301;
 	present(false);
+	input(false);
 	assert(tty_console_input_set(true, pid, 300));
 	present(true);
+	input(true);
 	have_credentials = false;
 	present(false);
+	input(false);
 	have_credentials = true;
 	tty_console_framebuffer_owner_exit(300);
 	present(false);
+	input(true);
 	uid = 0;
 	present(true);
 	puts("Framebuffer permission tests passed");

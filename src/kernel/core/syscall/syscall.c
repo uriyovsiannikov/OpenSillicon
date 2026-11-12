@@ -1948,8 +1948,7 @@ syscall_interrupt(struct interrupt_frame *frame)
 				if (pty_is_object(object))
 					result = pty_termios(object, &attributes, set);
 				else if (set)
-					result = tty_set_raw_mode((attributes.local_flags & 2U) == 0) ?
-					    0 : -ERRNO_ENOTTY;
+					result = tty_set_raw_mode((attributes.local_flags & 2U) == 0);
 				else {
 					/* The native console exposes canonical/echo or raw input;
 					 * PTYs retain their more complete termios implementation. */
@@ -1985,8 +1984,9 @@ syscall_interrupt(struct interrupt_frame *frame)
 					else frame->rax = 0;
 					break;
 				}
-				if (!tty_set_raw_mode(frame->rsi == TIOCSRAW_REQUEST))
-					syscall_error(frame, ERRNO_ENOTTY);
+				int result = tty_set_raw_mode(frame->rsi == TIOCSRAW_REQUEST);
+				if (result != 0)
+					syscall_error(frame, errno_from_kernel(result));
 				else
 					frame->rax = 0;
 				break;

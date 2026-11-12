@@ -2,6 +2,7 @@
 
 #include "arch/x86_64/ps2_keyboard.h"
 #include "kernel/framebuffer.h"
+#include "kernel/process.h"
 #include "kernel/terminal.h"
 #include "kernel/timer.h"
 #include "kernel/tty.h"
@@ -16,6 +17,17 @@ static uint64_t framebuffer_output_owner;
 static uint64_t console_input_owner;
 static unsigned int tty_columns;
 static unsigned int tty_rows;
+
+static bool
+console_input_permitted(void)
+{
+	struct os_credentials credentials;
+	if (framebuffer_output_owner == 0)
+		return true;
+	return process_current_credentials(&credentials) &&
+	    (credentials.effective_uid == 0 ||
+	    tty_console_input_owned(process_current_pid()));
+}
 
 bool
 tty_init(const struct limine_framebuffer *framebuffer)
@@ -79,6 +91,10 @@ tty_read(void *buffer, size_t length, size_t *read_length)
 	if (length == 0)
 		return 0;
 	for (;;) {
+		/* Recheck after every wake: a graphics session can acquire input
+		 * while an ordinary console reader is waiting for a key. */
+		if (!console_input_permitted())
+			return -1;
 		error = terminal_read(buffer, length, read_length);
 		if (error == 0)
 			return 0;
@@ -181,13 +197,15 @@ tty_console_framebuffer_owner_exit(uint64_t owner_pid)
 	}
 }
 
-bool
+int
 tty_set_raw_mode(bool enabled)
 {
+	if (!console_input_permitted())
+		return -1;
 	if (!ps2_keyboard_available())
-		return false;
+		return -25;
 	terminal_set_raw_mode(enabled);
-	return true;
+	return 0;
 }
 
 bool
