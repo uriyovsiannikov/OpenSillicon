@@ -51,7 +51,7 @@ struct silliconfs {
 	struct silliconfs_device device;
 	struct sfs_superblock super;
 	uint32_t references;
-	uint32_t *inode_vnode_refs;
+	struct sfs_node **inode_vnodes;
 	uint8_t *inode_unlinked;
 };
 
@@ -1160,6 +1160,16 @@ make_node(struct silliconfs *filesystem, uint32_t number,
 
 	if (error != 0)
 		return error;
+	/* Every live reference to an inode must see the same ownership and mode.
+	 * In particular, chown through a path must revoke fchmod on old FDs. */
+	node = filesystem->inode_vnodes[number];
+	if (node != NULL) {
+		if (!vnode_get(&node->vnode))
+			return -SFS_EOVERFLOW;
+		sync_vnode(node, &inode);
+		*result = &node->vnode;
+		return 0;
+	}
 	node = kheap_alloc(sizeof(*node));
 	if (node == NULL)
 		return -SFS_ENOMEM;
@@ -1167,12 +1177,8 @@ make_node(struct silliconfs *filesystem, uint32_t number,
 		(void)kheap_free(node);
 		return -SFS_EOVERFLOW;
 	}
-	if (filesystem->inode_vnode_refs[number] == UINT32_MAX) {
-		(void)kheap_free(node);
-		return -SFS_EOVERFLOW;
-	}
 	filesystem->references++;
-	filesystem->inode_vnode_refs[number]++;
+	filesystem->inode_vnodes[number] = node;
 	node->filesystem = filesystem;
 	node->inode_number = number;
 	node->vnode = (struct vnode){
@@ -1193,17 +1199,15 @@ sfs_destroy(struct vnode *vnode)
 	struct silliconfs *filesystem = node->filesystem;
 	uint32_t number = node->inode_number;
 
+	filesystem->inode_vnodes[number] = NULL;
 	(void)kheap_free(node);
-	if (filesystem->inode_vnode_refs[number] != 0)
-		filesystem->inode_vnode_refs[number]--;
-	if (filesystem->inode_vnode_refs[number] == 0 &&
-	    filesystem->inode_unlinked[number]) {
+	if (filesystem->inode_unlinked[number]) {
 		(void)release_inode_storage(filesystem, number);
 		filesystem->inode_unlinked[number] = 0;
 	}
 	if (--filesystem->references == 0)
 	{
-		(void)kheap_free(filesystem->inode_vnode_refs);
+		(void)kheap_free(filesystem->inode_vnodes);
 		(void)kheap_free(filesystem->inode_unlinked);
 		(void)kheap_free(filesystem);
 	}
@@ -1331,7 +1335,7 @@ sfs_remove(struct vnode *directory_node, const char *name, size_t name_length,
 	}
 	if (error != 0) return error;
 	fs->inode_unlinked[child_number] = 1;
-	if (fs->inode_vnode_refs[child_number] == 0) {
+	if (fs->inode_vnodes[child_number] == NULL) {
 		fs->inode_unlinked[child_number] = 0;
 		return release_inode_storage(fs, child_number);
 	}
@@ -1732,29 +1736,29 @@ silliconfs_mount(const struct silliconfs_device *device, struct vnode **root)
 	error = load_superblock(filesystem);
 	if (error == 0) {
 		size_t refs_size = ((size_t)filesystem->super.inode_count + 1U) *
-		    sizeof(*filesystem->inode_vnode_refs);
+		    sizeof(*filesystem->inode_vnodes);
 		size_t unlinked_size = (size_t)filesystem->super.inode_count + 1U;
-		filesystem->inode_vnode_refs = kheap_alloc(refs_size);
+		filesystem->inode_vnodes = kheap_alloc(refs_size);
 		filesystem->inode_unlinked = kheap_alloc(unlinked_size);
-		if (filesystem->inode_vnode_refs == NULL ||
+		if (filesystem->inode_vnodes == NULL ||
 		    filesystem->inode_unlinked == NULL)
 			error = -SFS_ENOMEM;
 		else {
-			memset(filesystem->inode_vnode_refs, 0, refs_size);
+			memset(filesystem->inode_vnodes, 0, refs_size);
 			memset(filesystem->inode_unlinked, 0, unlinked_size);
 		}
 	}
 	if (error == 0)
 		error = validate_filesystem(filesystem);
 	if (error != 0) {
-		(void)kheap_free(filesystem->inode_vnode_refs);
+		(void)kheap_free(filesystem->inode_vnodes);
 		(void)kheap_free(filesystem->inode_unlinked);
 		(void)kheap_free(filesystem);
 		return error;
 	}
 	error = make_node(filesystem, SFS_ROOT_INODE, &root_node);
 	if (error != 0) {
-		(void)kheap_free(filesystem->inode_vnode_refs);
+		(void)kheap_free(filesystem->inode_vnodes);
 		(void)kheap_free(filesystem->inode_unlinked);
 		(void)kheap_free(filesystem);
 		return error;

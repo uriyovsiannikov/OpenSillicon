@@ -21,12 +21,34 @@ check(int success, unsigned int line)
 }
 #define CHECK(condition) check((condition), __LINE__)
 
+static uint64_t reowned_fd;
+
 static void
 create_file(const char *path)
 {
 	long fd = u_open_mode(path, U_O_CREAT | U_O_EXCL | U_O_WRONLY, 0644);
 	CHECK(fd >= 0);
 	CHECK(u_close((uint64_t)fd) == 0);
+}
+
+static void
+open_unlink_lifetime(void)
+{
+	char byte = 0;
+	struct u_stat status;
+	long writer = u_open_mode("/tmp/lifetime", U_O_CREAT | U_O_RDWR, 0600);
+	CHECK(writer >= 0);
+	long reader = u_open("/tmp/lifetime", U_O_RDONLY);
+	CHECK(reader >= 0);
+	CHECK(u_unlink("/tmp/lifetime", 0) == 0);
+	create_file("/tmp/lifetime");
+	CHECK(u_write((uint64_t)writer, "X", 1) == 1);
+	CHECK(u_read((uint64_t)reader, &byte, 1) == 1 && byte == 'X');
+	CHECK(u_stat_path("/tmp/lifetime", &status) == 0 && status.size == 0);
+	CHECK(u_close((uint64_t)writer) == 0);
+	CHECK(u_close((uint64_t)reader) == 0);
+	create_file("/tmp/after-close");
+	CHECK(u_stat_path("/tmp/after-close", &status) == 0 && status.size == 0);
 }
 
 static void
@@ -47,6 +69,8 @@ unprivileged_checks(void)
 	CHECK(u_getcredentials(&c) == 0);
 	CHECK(c.real_uid == 100 && c.effective_uid == 300 && c.saved_uid == 300);
 	CHECK(c.real_gid == 100 && c.effective_gid == 300 && c.saved_gid == 300);
+	/* A chown through another lookup revokes fchmod on an existing FD. */
+	CHECK(call(SYSCALL_FCHMOD, reowned_fd, 0777, 0) == -13);
 	CHECK(u_setuid(400) == -1);
 	CHECK(u_setgid(400) == -1);
 	CHECK(u_unlink("/tmp/root-file", 0) == -1);
@@ -72,6 +96,7 @@ uint64_t
 user_main(uint64_t argc, char **argv, const uint64_t *startup_stack)
 {
 	(void)argc; (void)argv; (void)startup_stack;
+	open_unlink_lifetime();
 	CHECK(u_mkdir("/closed", 0700) == 0);
 	CHECK(call(SYSCALL_CHOWN, (uintptr_t)"/closed", 100, 100) == 0);
 	CHECK(u_mkdir("/group", 0777) == 0);
@@ -79,6 +104,12 @@ user_main(uint64_t argc, char **argv, const uint64_t *startup_stack)
 	CHECK(call(SYSCALL_CHMOD, (uintptr_t)"/group", 02777, 0) == 0);
 	create_file("/public");
 	create_file("/tmp/root-file");
+	create_file("/tmp/reowned");
+	CHECK(call(SYSCALL_CHOWN, (uintptr_t)"/tmp/reowned", 300, 300) == 0);
+	long descriptor = u_open("/tmp/reowned", U_O_RDONLY);
+	CHECK(descriptor >= 0);
+	reowned_fd = (uint64_t)descriptor;
+	CHECK(call(SYSCALL_CHOWN, (uintptr_t)"/tmp/reowned", 0, 0) == 0);
 	CHECK(u_mkdir("/tmp/root-dir", 0755) == 0);
 	long child = u_fork();
 	CHECK(child >= 0);
@@ -86,6 +117,7 @@ user_main(uint64_t argc, char **argv, const uint64_t *startup_stack)
 	uint8_t status = 255;
 	CHECK(u_waitpid((uint64_t)child, &status) == child);
 	CHECK(status == 0);
+	CHECK(u_close(reowned_fd) == 0);
 	CHECK(u_unlink("/tmp/root-file", 0) == 0);
 	CHECK(u_unlink("/tmp/root-dir", 1) == 0);
 	u_puts("PERMISSIONS GUEST PASS\n");
