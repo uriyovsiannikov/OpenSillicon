@@ -41,7 +41,7 @@ trailing_slash_checks(void)
 	CHECK(u_stat_path("/tmp/slash-missing", &status) == -2);
 	CHECK(u_mkdir("/tmp/slash-dir/", 0755) == 0);
 	CHECK(u_chdir("/tmp/slash-dir/") == 0);
-	CHECK(u_getcwd(cwd, sizeof(cwd)) > 0 && u_streq(cwd, "/tmp/slash-dir"));
+	CHECK(u_getcwd(cwd, sizeof(cwd)) == 0 && u_streq(cwd, "/tmp/slash-dir"));
 	CHECK(u_chdir("/") == 0);
 	CHECK(u_unlink("/tmp/slash-dir/", 1) == 0);
 	CHECK(u_unlink("/dev/", 1) == -16);
