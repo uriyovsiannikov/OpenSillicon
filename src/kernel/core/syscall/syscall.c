@@ -2637,7 +2637,8 @@ syscall_interrupt(struct interrupt_frame *frame)
 				break;
 			}
 			case NATIVE_F_SETFD: {
-				int result = fd_set_descriptor_flags(current_fd_table(),
+				int result = frame->rdx > UINT32_MAX ? -EINVAL :
+				    fd_set_descriptor_flags(current_fd_table(),
 				    frame->rdi, (uint32_t)frame->rdx);
 				if (result != 0)
 					syscall_error(frame, errno_from_kernel(result));

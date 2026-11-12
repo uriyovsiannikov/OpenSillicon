@@ -28,6 +28,68 @@ static uint64_t reowned_fd;
 static uint8_t exec_image[256 * 1024];
 
 static void
+cloexec_after_exec(void)
+{
+	char byte = 0;
+	for (uint64_t fd = 3; fd < 32; fd++)
+		CHECK(call(SYSCALL_FCNTL, fd, 1, 0) == (fd == 30 || fd == 31 ? 0 : -9));
+	CHECK(u_open("/tmp/cloexec-secret", U_O_RDONLY) == -13);
+	CHECK(u_read(30, &byte, 1) == 1 && byte == 'S');
+	/* Status flags are shared by dup/fork, but cannot upgrade access mode. */
+	CHECK(call(SYSCALL_FCNTL, 30, 4, 0x800U | U_O_RDWR) == 0);
+	CHECK(call(SYSCALL_FCNTL, 30, 3, 0) == 0x800U);
+	CHECK(u_write(30, "X", 1) == -9);
+	u_exit(0);
+}
+
+static void
+cloexec_checks(void)
+{
+	long fd = u_open_mode("/tmp/cloexec-secret", U_O_CREAT | U_O_EXCL | U_O_WRONLY, 0600);
+	CHECK(fd >= 0 && u_write((uint64_t)fd, "S", 1) == 1);
+	CHECK(u_close((uint64_t)fd) == 0);
+	fd = u_open_mode("/tmp/cloexec-bad", U_O_CREAT | U_O_EXCL | U_O_WRONLY, 0755);
+	CHECK(fd >= 0 && u_write((uint64_t)fd, "bad", 3) == 3);
+	CHECK(u_close((uint64_t)fd) == 0);
+	fd = u_open("/tmp/cloexec-secret", U_O_RDONLY);
+	CHECK(fd >= 0);
+	CHECK(call(SYSCALL_FCNTL, (uint64_t)fd, 2, 1) == 0);
+	long duplicate = call(SYSCALL_DUP, (uint64_t)fd, 0, 0);
+	CHECK(duplicate >= 0 && call(SYSCALL_FCNTL, (uint64_t)duplicate, 1, 0) == 0);
+	CHECK(call(SYSCALL_FCNTL, (uint64_t)duplicate, 2, 1) == 0);
+	CHECK(call(SYSCALL_DUP2, (uint64_t)fd, 29, 0) == 29);
+	CHECK(call(SYSCALL_FCNTL, 29, 2, 1) == 0);
+	CHECK(call(SYSCALL_FCNTL, 29, 2, 1ULL << 32) == -22);
+	CHECK(call(SYSCALL_FCNTL, 29, 1, 0) == 1);
+	CHECK(call(SYSCALL_DUP2, (uint64_t)fd, 30, 0) == 30);
+	CHECK(call(SYSCALL_FCNTL, 30, 1, 0) == 0);
+	CHECK(call(SYSCALL_DUP2, (uint64_t)fd, 31, 0) == 31);
+	CHECK(call(SYSCALL_FCNTL, 31, 2, 1) == 0);
+	CHECK(call(SYSCALL_DUP2, 31, 31, 0) == 31);
+	CHECK(call(SYSCALL_FCNTL, 31, 1, 0) == 1);
+	long child = u_fork();
+	CHECK(child >= 0);
+	if (child == 0) {
+		CHECK(u_setgid(300) == 0 && u_setuid(300) == 0);
+		CHECK(call(SYSCALL_FCNTL, 29, 1, 0) == 1);
+		CHECK(call(SYSCALL_FCNTL, 31, 2, 0) == 0);
+		CHECK(u_exec_path("/missing-cloexec-program") == -2);
+		CHECK(u_exec_path("/tmp/cloexec-bad") == -8);
+		CHECK(call(SYSCALL_FCNTL, 29, 1, 0) == 1);
+		const char *arguments[] = {"sh", "--fd-exec-check"};
+		(void)u_exec_path_argv("/bin/sh", 2, arguments);
+		CHECK(0);
+	}
+	uint8_t status = 255;
+	CHECK(u_waitpid((uint64_t)child, &status) == child && status == 0);
+	CHECK(call(SYSCALL_FCNTL, 29, 1, 0) == 1);
+	CHECK(call(SYSCALL_FCNTL, 31, 1, 0) == 1);
+	CHECK(call(SYSCALL_FCNTL, (uint64_t)fd, 3, 0) == 0x800U);
+	CHECK(u_close((uint64_t)fd) == 0 && u_close((uint64_t)duplicate) == 0);
+	CHECK(u_close(29) == 0 && u_close(30) == 0 && u_close(31) == 0);
+}
+
+static void
 signal_permission_checks(void)
 {
 	uint32_t ready[2], gate[2];
@@ -541,6 +603,10 @@ user_main(uint64_t argc, char **argv, const uint64_t *startup_stack)
 	(void)argc; (void)argv; (void)startup_stack;
 	struct os_credentials initial;
 	CHECK(u_getcredentials(&initial) == 0);
+	if (argc == 2 && u_streq(argv[1], "--fd-exec-check")) {
+		CHECK(initial.effective_uid == 300);
+		cloexec_after_exec();
+	}
 	if (initial.effective_uid == 200) {
 		/* This is the replacement image in exec_saved_id_checks(). */
 		CHECK(initial.real_uid == 100 && initial.saved_uid == 200);
@@ -551,6 +617,7 @@ user_main(uint64_t argc, char **argv, const uint64_t *startup_stack)
 		u_exit(0);
 	}
 	reserved_id_checks();
+	cloexec_checks();
 	res_id_transaction_checks();
 	signal_permission_checks();
 	directory_fd_checks();
