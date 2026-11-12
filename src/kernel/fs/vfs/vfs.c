@@ -462,8 +462,25 @@ vfs_remove_path_as(const char *path, bool directory, uint32_t uid,
 	else if (!vfs_access(parent, uid, gid,
 	    VFS_ACCESS_WRITE | VFS_ACCESS_EXEC))
 		error = -VFS_EACCES;
-	else
-		error = parent->operations->remove(parent, name, strlen(name), directory);
+	else {
+		/* A writable sticky directory still protects other users' entries. */
+		if ((parent->mode & 01000U) != 0 && uid != 0 &&
+		    uid != parent->uid) {
+			struct vnode *target = NULL;
+			if (parent->operations->lookup == NULL)
+				error = -VFS_EIO;
+			else
+				error = parent->operations->lookup(parent, name,
+				    strlen(name), &target);
+			if (error == 0)
+				error = target == NULL ? -VFS_EIO :
+				    uid == target->uid ? 0 : -VFS_EPERM;
+			vnode_put(target);
+		}
+		if (error == 0)
+			error = parent->operations->remove(parent, name,
+			    strlen(name), directory);
+	}
 	vnode_put(parent);
 	return error;
 }
