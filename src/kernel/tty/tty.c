@@ -154,6 +154,14 @@ tty_console_input_set(bool acquire, uint64_t owner_pid, uint64_t parent_pid)
 }
 
 bool
+tty_console_graphics_owned(uint64_t owner_pid)
+{
+	return owner_pid != 0 && !framebuffer_output_enabled &&
+	    framebuffer_output_owner != 0 &&
+	    (owner_pid == framebuffer_output_owner || owner_pid == console_input_owner);
+}
+
+bool
 tty_console_input_owned(uint64_t owner_pid)
 {
 	return owner_pid != 0 && console_input_owner == owner_pid &&

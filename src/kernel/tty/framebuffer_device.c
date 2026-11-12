@@ -2,6 +2,8 @@
 #include <stdint.h>
 
 #include "kernel/framebuffer_device.h"
+#include "kernel/process.h"
+#include "kernel/tty.h"
 #include "kernel/vmm.h"
 
 #define FRAMEBUFFER_DEVICE_EINVAL 22
@@ -10,6 +12,16 @@
 
 static const struct limine_framebuffer *active_framebuffer;
 static uint64_t active_framebuffer_size;
+
+static bool
+may_present(void)
+{
+	struct os_credentials credentials;
+
+	return process_current_credentials(&credentials) &&
+	    (credentials.effective_uid == 0 ||
+	    tty_console_graphics_owned(process_current_pid()));
+}
 
 bool
 framebuffer_device_init(const struct limine_framebuffer *framebuffer)
@@ -61,6 +73,8 @@ framebuffer_device_present(uint64_t user_address, size_t length)
 	struct address_space *space = vmm_active_address_space();
 	size_t offset = 0;
 
+	if (!may_present())
+		return -1;
 	if (active_framebuffer == NULL || space == NULL)
 		return -FRAMEBUFFER_DEVICE_ENODEV;
 	if (length != active_framebuffer_size || user_address == 0 ||
@@ -91,6 +105,8 @@ framebuffer_device_present_rect(const struct os_framebuffer_rect *rect)
 	struct address_space *space = vmm_active_address_space();
 	uint64_t x_offset, row_bytes, source_span;
 
+	if (!may_present())
+		return -1;
 	if (active_framebuffer == NULL || space == NULL)
 		return -FRAMEBUFFER_DEVICE_ENODEV;
 	if (rect == NULL || rect->width == 0 || rect->height == 0 ||
