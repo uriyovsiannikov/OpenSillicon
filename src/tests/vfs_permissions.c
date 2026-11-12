@@ -42,6 +42,29 @@ sticky_removal(void)
 	assert(vfs_remove_path_as("/locked/file", false, 200, 200) == -13);
 }
 
+static void
+mount_ancestors(void)
+{
+	struct vnode *mounted = ramfs_create_root();
+	struct vnode *node = NULL;
+	assert(mounted != NULL);
+	create("/private", VNODE_DIRECTORY, 0700, 100);
+	create("/private/mnt", VNODE_DIRECTORY, 0755, 0);
+	assert(vfs_mount("/private/mnt", mounted) == 0);
+	vnode_put(mounted);
+	create("/private/mnt/file", VNODE_REGULAR, 0644, 0);
+	assert(vfs_lookup_as("/private/mnt/file", 200, 200, &node) == -13);
+	assert(node == NULL);
+	assert(vfs_lookup_as("/private/mnt", 200, 200, &node) == -13);
+	assert(vfs_lookup_as("/private/mnt/file", 100, 100, &node) == 0);
+	vnode_put(node);
+	assert(vfs_lookup_as("/private/mnt/file", 0, 0, &node) == 0);
+	vnode_put(node);
+	assert(vfs_chmod_as("/private", 0755, 100, 100) == 0);
+	assert(vfs_lookup_as("/private/mnt/file", 200, 200, &node) == 0);
+	vnode_put(node);
+}
+
 int main(void)
 {
 	struct vnode *root;
@@ -51,6 +74,7 @@ int main(void)
 	assert(vfs_mount("/", root) == 0);
 	vnode_put(root);
 	sticky_removal();
+	mount_ancestors();
 	puts("VFS permission tests passed");
 	return 0;
 }

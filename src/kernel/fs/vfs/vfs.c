@@ -280,6 +280,29 @@ vfs_lookup_as(const char *path, uint32_t uid, uint32_t gid,
 	mount = find_mount(canonical);
 	if (mount == NULL)
 		return -VFS_ENOENT;
+	/* The mount shortcut must not bypass search rights in its ancestors. */
+	if (mount->path_length > 1) {
+		char parent_path[VFS_PATH_MAX];
+		char *slash;
+		struct vnode *parent = NULL;
+
+		memcpy(parent_path, mount->path, mount->path_length + 1);
+		slash = strrchr(parent_path, '/');
+		if (slash == parent_path)
+			slash[1] = '\0';
+		else
+			*slash = '\0';
+		error = vfs_lookup_as(parent_path, uid, gid, &parent);
+		if (error != 0)
+			return error;
+		if (parent->type != VNODE_DIRECTORY)
+			error = -VFS_ENOTDIR;
+		else if (!vfs_access(parent, uid, gid, VFS_ACCESS_EXEC))
+			error = -VFS_EACCES;
+		vnode_put(parent);
+		if (error != 0)
+			return error;
+	}
 	if (!vnode_get(mount->root))
 		return -VFS_EINVAL;
 	current = mount->root;
