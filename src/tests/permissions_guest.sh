@@ -16,13 +16,8 @@ python3 src/tools/packers/mksilliconfs.py src/build/permissions-guest/root.img \
 src/build/populate_root src/build/permissions-guest/root.img \
     src/build/permissions-guest/guest.elf src/build/permissions-guest/guest.elf \
     --module src/build/modules/e1000.ko
-# QEMU should power off after PASS. A timeout or a failing assertion fails the test.
-timeout 45s "${QEMU:-qemu-system-x86_64}" -machine q35 -m 256M \
-    -bios "${OVMF_CODE:-/usr/share/OVMF/OVMF_CODE.fd}" \
-    -cdrom src/build/opensillicon.iso \
-    -drive file=src/build/permissions-guest/root.img,if=none,id=rootdisk,format=raw \
-    -device ide-hd,drive=rootdisk,bus=ide.0 -nic user,model=e1000 \
-    -serial file:src/build/permissions-guest/serial.log -display none -no-reboot
+# The runner supplies a localhost TCP client and enforces the boot timeout.
+python3 src/tests/run_permissions_qemu.py
 grep -q 'PERMISSIONS GUEST PASS' src/build/permissions-guest/serial.log
 if grep -q 'PERMISSIONS GUEST FAIL' src/build/permissions-guest/serial.log; then
     cat src/build/permissions-guest/serial.log

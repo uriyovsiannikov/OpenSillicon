@@ -1,6 +1,7 @@
 #include "include/os.h"
 #include "abi/syscall.h"
 #include "kernel/unix_socket.h"
+#include "abi/select.h"
 
 static long
 call(uint64_t number, uint64_t first, uint64_t second, uint64_t third)
@@ -26,6 +27,62 @@ check(int success, unsigned int line)
 
 static uint64_t reowned_fd;
 static uint8_t exec_image[256 * 1024];
+
+static void
+tcp_accept_limit_checks(void)
+{
+	struct u_ipv4_config config;
+	unsigned int tries;
+	for (tries = 0; tries < 1000; tries++) {
+		if (u_network_ipv4_config(&config) == 0 && config.address[0] != 0)
+			break;
+		CHECK(u_sleep_ticks(1) == 0);
+	}
+	CHECK(tries < 1000);
+	struct u_tcp_endpoint endpoint = {.port = 23456};
+	long server = u_tcp_socket(2, 1, 0);
+	CHECK(server >= 0 && u_tcp_bind((uint64_t)server, &endpoint) == 0);
+	CHECK(u_tcp_listen((uint64_t)server, 2) == 0);
+	uint64_t held[32];
+	unsigned int count = 0;
+	long duplicate;
+	while ((duplicate = call(SYSCALL_DUP, (uint64_t)server, 0, 0)) >= 0) {
+		CHECK(count < sizeof(held) / sizeof(held[0]));
+		held[count++] = (uint64_t)duplicate;
+	}
+	CHECK(duplicate == -24 && count > 0);
+	u_puts("TCP ACCEPT READY\n");
+	struct os_fd_set readable = {0};
+	readable.words[0] = 1ULL << (uint64_t)server;
+	uint64_t number = SYSCALL_SELECT;
+	unsigned char failed;
+	register uint64_t except __asm__("r10") = 0;
+	register uint64_t timeout __asm__("r8") = 0;
+	__asm__ volatile ("int $128; setc %1" : "+a" (number), "=qm" (failed) :
+	    "D" ((uint64_t)server + 1), "S" ((uintptr_t)&readable), "d" (0ULL),
+	    "r" (except), "r" (timeout) : "rcx", "r11", "memory");
+	CHECK(!failed && number == 1);
+	CHECK(u_tcp_accept((uint64_t)server, 0) == -24);
+	CHECK(u_close(held[--count]) == 0);
+	long accepted = u_tcp_accept((uint64_t)server, &endpoint);
+	CHECK(accepted >= 0);
+	char bytes[7];
+	size_t received = 0;
+	while (received < sizeof(bytes)) {
+		long amount = u_read((uint64_t)accepted, bytes + received, sizeof(bytes) - received);
+		CHECK(amount > 0);
+		received += (size_t)amount;
+	}
+	for (unsigned int i = 0; i < sizeof(bytes); i++) CHECK(bytes[i] == "TCPKEEP"[i]);
+	CHECK(u_write((uint64_t)accepted, "OK", 2) == 2);
+	CHECK(u_close((uint64_t)accepted) == 0);
+	while (count > 0) CHECK(u_close(held[--count]) == 0);
+	CHECK(call(SYSCALL_FCNTL, (uint64_t)server, 4, 0x800U) == 0);
+	for (unsigned int i = 0; i < 20; i++) CHECK(u_tcp_accept((uint64_t)server, 0) == -11);
+	long probe = u_tcp_socket(2, 1, 0);
+	CHECK(probe >= 0 && u_close((uint64_t)probe) == 0);
+	CHECK(u_close((uint64_t)server) == 0);
+}
 
 static void
 unix_accept_limit_checks(void)
@@ -728,6 +785,7 @@ user_main(uint64_t argc, char **argv, const uint64_t *startup_stack)
 		u_exit(0);
 	}
 	reserved_id_checks();
+	tcp_accept_limit_checks();
 	unix_accept_limit_checks();
 	descriptor_limit_checks();
 	directory_open_checks();

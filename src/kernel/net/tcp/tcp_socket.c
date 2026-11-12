@@ -397,15 +397,16 @@ tcp_socket_accept(struct fd_table *table, struct fd_object *listener,
 		return -EINVAL;
 	if (table == NULL)
 		return -EINVAL;
-	socket = socketAccept(parent->socket, &address, &port);
-	if (socket == NULL)
-		return -EAGAIN;
+	descriptor = fd_find_free_descriptor(table);
+	if (descriptor < 0)
+		return descriptor;
+	/* Reserve wrapper resources before Cyclone removes a queued peer. */
 	flags = state_guard_enter();
 	for (size_t i = 0; i < TCP_SOCKET_LIMIT; i++) {
 		if (!tcp_sockets[i].allocated) {
 			child = &tcp_sockets[i];
 			*child = (struct tcp_socket_state){
-				.allocated = true, .socket = socket,
+				.allocated = true,
 				.no_delay = parent->no_delay,
 				.reuse_address = parent->reuse_address,
 				.keep_alive = parent->keep_alive
@@ -414,16 +415,11 @@ tcp_socket_accept(struct fd_table *table, struct fd_object *listener,
 		}
 	}
 	state_guard_leave(flags);
-	if (child == NULL) {
-		socketClose(socket);
+	if (child == NULL)
 		return -EMFILE;
-	}
 	object = fd_object_create(&tcp_socket_operations, child);
 	if (object == NULL) {
-		socketClose(socket);
-		flags = state_guard_enter();
-		*child = (struct tcp_socket_state){0};
-		state_guard_leave(flags);
+		tcp_socket_close(child);
 		return -ENOMEM;
 	}
 	descriptor = fd_install(table, object);
@@ -431,6 +427,14 @@ tcp_socket_accept(struct fd_table *table, struct fd_object *listener,
 		fd_object_put(object);
 		return descriptor;
 	}
+	socket = socketAccept(parent->socket, &address, &port);
+	if (socket == NULL) {
+		(void)fd_close(table, (uint64_t)descriptor);
+		return -EAGAIN;
+	}
+	flags = state_guard_enter();
+	child->socket = socket;
+	state_guard_leave(flags);
 	if (peer != NULL) {
 		peer->address[0] = (uint8_t)address.ipv4Addr;
 		peer->address[1] = (uint8_t)(address.ipv4Addr >> 8);
