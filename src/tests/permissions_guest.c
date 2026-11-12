@@ -126,8 +126,11 @@ cloexec_checks(void)
 		CHECK(u_exec_path("/missing-cloexec-program") == -2);
 		CHECK(u_exec_path("/tmp/cloexec-bad") == -8);
 		CHECK(call(SYSCALL_FCNTL, 29, 1, 0) == 1);
-		const char *arguments[] = {"sh", "--fd-exec-check"};
-		(void)u_exec_path_argv("/bin/sh", 2, arguments);
+		const char *arguments[] = {"sh", "--fd-exec-check", 0};
+		long exec_error = u_exec_path_argv("/bin/sh", 2, arguments);
+		u_puts("CLOEXEC exec error: ");
+		u_put_u64((uint64_t)-exec_error);
+		u_puts("\n");
 		CHECK(0);
 	}
 	uint8_t status = 255;
