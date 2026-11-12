@@ -27,4 +27,5 @@ if grep -q 'PERMISSIONS GUEST FAIL' src/build/permissions-guest/serial.log; then
     cat src/build/permissions-guest/serial.log
     exit 1
 fi
+sh src/tests/socket_disk.sh src/build/permissions-guest/root.img
 printf '%s\n' 'QEMU permission syscall tests passed'

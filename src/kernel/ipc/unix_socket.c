@@ -1,12 +1,14 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "kernel/errno.h"
 #include "kernel/heap.h"
 #include "kernel/process.h"
 #include "kernel/spinlock.h"
 #include "kernel/unix_socket.h"
+#include "kernel/vfs.h"
 #include "abi/unix_socket.h"
 
 #define UNIX_SOCKET_LIMIT 32U
@@ -21,6 +23,7 @@ struct unix_socket_state {
 	bool read_shutdown;
 	bool write_shutdown;
 	struct unix_socket_state *peer;
+	struct vnode *bound_node;
 	uint64_t owner_pid;
 	uint64_t peer_pid;
 	uint32_t owner_uid;
@@ -241,6 +244,8 @@ socket_close(void *context)
 	uint64_t flags = state_guard_enter();
 	state->closed = true;
 	state->bound = false;
+	struct vnode *bound_node = state->bound_node;
+	state->bound_node = NULL;
 	if (state->peer != NULL) {
 		process_wake_channel(&state->peer->read_wait);
 		process_wake_channel(&state->peer->write_wait);
@@ -256,6 +261,7 @@ socket_close(void *context)
 	}
 	socket_release_if_closed(state);
 	state_guard_leave(flags);
+	vnode_put(bound_node);
 }
 
 static const struct fd_operations socket_operations = {
@@ -301,40 +307,74 @@ unix_socket_create(struct fd_table *table, int domain, int type, int protocol)
 	return descriptor;
 }
 
+/* Abstract names retain their exact byte length. Pathnames stop at the first
+ * NUL and go through normal cwd, directory search and inode checks. */
+static int
+resolve_address(const struct unix_socket_address *address, size_t length,
+    size_t *name_length, char canonical[VFS_PATH_MAX])
+{
+	char path[UNIX_SOCKET_PATH_MAX + 1];
+	if (address == NULL || address->family != UNIX_SOCKET_AF_UNIX ||
+	    length < sizeof(address->family) + 1 || length > sizeof(*address))
+		return -EINVAL;
+	*name_length = length - sizeof(address->family);
+	if (address->path[0] == 0)
+		return *name_length == 1 ? -EINVAL : 0;
+	size_t i = 0;
+	while (i < *name_length && address->path[i] != 0) {
+		path[i] = (char)address->path[i];
+		i++;
+	}
+	if (i == UNIX_SOCKET_PATH_MAX)
+		return -ENAMETOOLONG;
+	path[i] = 0;
+	return process_resolve_path(path, canonical, VFS_PATH_MAX);
+}
+
 int
 unix_socket_bind(struct fd_object *object,
 	const struct unix_socket_address *address, size_t length)
 {
 	struct unix_socket_state *state = socket_state(object);
+	struct os_credentials credentials;
+	char canonical[VFS_PATH_MAX];
+	size_t path_length;
+	int error;
 	if (state == NULL)
 		return -ENOTSOCK;
-	if (address == NULL || address->family != UNIX_SOCKET_AF_UNIX ||
-	    length < sizeof(address->family) + 1 ||
-	    length > sizeof(*address))
-		return -EINVAL;
-	size_t path_length = length - sizeof(address->family);
-	if (path_length == 1 && address->path[0] == 0)
-		return -EINVAL;
-	if (state->bound || state->listener)
-		return -EINVAL;
+	error = resolve_address(address, length, &path_length, canonical);
+	if (error != 0)
+		return error;
+	if (!process_current_credentials(&credentials))
+		return -ESRCH;
+	uint32_t mode = 0777U & ~process_get_umask();
 	uint64_t flags = state_guard_enter();
-	for (size_t i = 0; i < UNIX_SOCKET_LIMIT; i++) {
-		struct unix_socket_state *other = &sockets[i];
-		if (other != state && other->used && other->bound &&
-		    !other->closed && other->path_length == path_length) {
-			bool equal = true;
-			for (size_t j = 0; j < path_length; j++)
-				if (other->path[j] != address->path[j])
-					equal = false;
-			if (equal) {
+	if (state->bound || state->listener || state->connected || state->closed) {
+		state_guard_leave(flags);
+		return -EINVAL;
+	}
+	if (address->path[0] != 0) {
+		error = vfs_create_path_as(canonical, VNODE_SOCKET, mode,
+		    credentials.effective_uid, credentials.effective_gid,
+		    &state->bound_node);
+		if (error != 0) {
+			state_guard_leave(flags);
+			return error == -EEXIST ? -EADDRINUSE : error;
+		}
+	} else {
+		for (size_t i = 0; i < UNIX_SOCKET_LIMIT; i++) {
+			struct unix_socket_state *other = &sockets[i];
+			if (other != state && other->used && other->bound &&
+			    !other->closed && other->bound_node == NULL &&
+			    other->path_length == path_length &&
+			    memcmp(other->path, address->path, path_length) == 0) {
 				state_guard_leave(flags);
 				return -EADDRINUSE;
 			}
 		}
+		memcpy(state->path, address->path, path_length);
+		state->path_length = path_length;
 	}
-	for (size_t i = 0; i < path_length; i++)
-		state->path[i] = address->path[i];
-	state->path_length = path_length;
 	state->bound = true;
 	state_guard_leave(flags);
 	return 0;
@@ -370,31 +410,45 @@ unix_socket_connect(struct fd_object *object,
 	struct unix_socket_state *client = socket_state(object);
 	struct unix_socket_state *listener = NULL;
 	struct os_credentials credentials;
+	struct vnode *node = NULL;
+	char canonical[VFS_PATH_MAX];
+	size_t path_length;
+	int error;
 	if (client == NULL)
 		return -ENOTSOCK;
-	if (address == NULL || address->family != UNIX_SOCKET_AF_UNIX ||
-	    length < sizeof(address->family) + 1 || length > sizeof(*address))
-		return -EINVAL;
-	size_t path_length = length - sizeof(address->family);
-	if (path_length == 1 && address->path[0] == 0)
-		return -EINVAL;
+	error = resolve_address(address, length, &path_length, canonical);
+	if (error != 0)
+		return error;
 	if (!process_current_credentials(&credentials))
 		return -ESRCH;
+	if (address->path[0] != 0) {
+		error = vfs_lookup_as(canonical, credentials.effective_uid,
+		    credentials.effective_gid, &node);
+		if (error != 0)
+			return error;
+		if (node->type != VNODE_SOCKET)
+			error = -ECONNREFUSED;
+		else if (!vfs_access(node, credentials.effective_uid,
+		    credentials.effective_gid, VFS_ACCESS_WRITE))
+			error = -EACCES;
+		if (error != 0) {
+			vnode_put(node);
+			return error;
+		}
+	}
 	uint64_t flags = state_guard_enter();
 	for (size_t i = 0; i < UNIX_SOCKET_LIMIT; i++) {
 		struct unix_socket_state *candidate = &sockets[i];
 		if (!candidate->used || !candidate->bound || !candidate->listener ||
-		    candidate->closed || candidate->path_length != path_length)
+		    candidate->closed || candidate->bound_node != node)
 			continue;
-		bool equal = true;
-		for (size_t j = 0; j < path_length; j++)
-			if (candidate->path[j] != address->path[j])
-				equal = false;
-		if (equal) {
-			listener = candidate;
-			break;
-		}
+		if (node == NULL && (candidate->path_length != path_length ||
+		    memcmp(candidate->path, address->path, path_length) != 0))
+			continue;
+		listener = candidate;
+		break;
 	}
+	vnode_put(node);
 	if (listener == NULL) {
 		state_guard_leave(flags);
 		return -ECONNREFUSED;

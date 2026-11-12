@@ -23,7 +23,22 @@
 #define SFS_MODE_TYPE 0170000U
 #define SFS_MODE_REGULAR 0100000U
 #define SFS_MODE_DIRECTORY 0040000U
+#define SFS_MODE_SOCKET 0140000U
 #define SFS_DIR_HEADER 8U
+
+static uint16_t
+sfs_type_mode(enum vnode_type type)
+{
+	return type == VNODE_DIRECTORY ? SFS_MODE_DIRECTORY :
+	    type == VNODE_SOCKET ? SFS_MODE_SOCKET : SFS_MODE_REGULAR;
+}
+
+static enum vnode_type
+sfs_vnode_type(uint16_t mode)
+{
+	return (mode & SFS_MODE_TYPE) == SFS_MODE_DIRECTORY ? VNODE_DIRECTORY :
+	    (mode & SFS_MODE_TYPE) == SFS_MODE_SOCKET ? VNODE_SOCKET : VNODE_REGULAR;
+}
 
 struct sfs_superblock {
 	uint32_t total_blocks;
@@ -342,7 +357,9 @@ read_inode(struct silliconfs *filesystem, uint32_t number,
 	if (get_le32(record + 12) != 0 || !zero_bytes(record + 76, 52) ||
 	    inode->flags != 0 || inode->size > SILLICONFS_MAX_FILE_SIZE ||
 	    ((inode->mode & SFS_MODE_TYPE) != SFS_MODE_REGULAR &&
-	    (inode->mode & SFS_MODE_TYPE) != SFS_MODE_DIRECTORY) ||
+	    (inode->mode & SFS_MODE_TYPE) != SFS_MODE_DIRECTORY &&
+	    (inode->mode & SFS_MODE_TYPE) != SFS_MODE_SOCKET) ||
+	    ((inode->mode & SFS_MODE_TYPE) == SFS_MODE_SOCKET && inode->size != 0) ||
 	    (inode->mode & ~(SFS_MODE_TYPE | 07777U)) != 0 ||
 	    ((inode->mode & SFS_MODE_TYPE) == SFS_MODE_DIRECTORY &&
 	    (inode->size == 0 || inode->size % SILLICONFS_BLOCK_SIZE != 0)))
@@ -842,7 +859,8 @@ validate_directory(struct silliconfs *filesystem, uint32_t number,
 		    record_length % 4 != 0 || record_length > block_end - position ||
 		    !zero_bytes(record + SFS_DIR_HEADER + name_length,
 		    record_length - SFS_DIR_HEADER - name_length) ||
-		    (type != VNODE_REGULAR && type != VNODE_DIRECTORY)) {
+		    (type != VNODE_REGULAR && type != VNODE_DIRECTORY &&
+		    type != VNODE_SOCKET)) {
 			error = -SFS_EIO;
 			goto done;
 		}
@@ -855,7 +873,7 @@ validate_directory(struct silliconfs *filesystem, uint32_t number,
 		}
 		if (read_inode(filesystem, target, &target_inode) != 0 ||
 		    (target_inode.mode & SFS_MODE_TYPE) !=
-		    (type == VNODE_DIRECTORY ? SFS_MODE_DIRECTORY : SFS_MODE_REGULAR)) {
+		    sfs_type_mode((enum vnode_type)type)) {
 			error = -SFS_EIO;
 			goto done;
 		}
@@ -1142,8 +1160,7 @@ sfs_chown(struct vnode *vnode, uint32_t uid, uint32_t gid)
 static void
 sync_vnode(struct sfs_node *node, const struct sfs_inode *inode)
 {
-	node->vnode.type = (inode->mode & SFS_MODE_TYPE) == SFS_MODE_DIRECTORY ?
-	    VNODE_DIRECTORY : VNODE_REGULAR;
+	node->vnode.type = sfs_vnode_type(inode->mode);
 	node->vnode.mode = inode->mode & 07777U;
 	node->vnode.uid = inode->uid;
 	node->vnode.gid = inode->gid;
@@ -1484,7 +1501,8 @@ sfs_create(struct vnode *directory_node, const char *name, size_t name_length,
 	if (directory_node->type != VNODE_DIRECTORY)
 		return -SFS_ENOTDIR;
 	if (name == NULL || name_length == 0 || name_length > VFS_NAME_MAX ||
-	    result == NULL || (type != VNODE_REGULAR && type != VNODE_DIRECTORY) ||
+	    result == NULL || (type != VNODE_REGULAR && type != VNODE_DIRECTORY &&
+	    type != VNODE_SOCKET) ||
 	    name_is((const uint8_t *)name, (uint8_t)name_length, ".") ||
 	    name_is((const uint8_t *)name, (uint8_t)name_length, ".."))
 		return -SFS_EINVAL;
@@ -1510,7 +1528,7 @@ sfs_create(struct vnode *directory_node, const char *name, size_t name_length,
 		    parent_node->inode_number, mode, uid, gid, &child);
 	} else {
 		child = (struct sfs_inode){
-			.mode = SFS_MODE_REGULAR | (mode & 07777U),
+			.mode = sfs_type_mode(type) | (mode & 07777U),
 			.uid = uid,
 			.gid = gid
 		};
@@ -1523,7 +1541,7 @@ sfs_create(struct vnode *directory_node, const char *name, size_t name_length,
 		goto rollback;
 	error = append_directory_entry(filesystem, parent_node->inode_number,
 	    &parent, name, name_length, child_number,
-	    type == VNODE_DIRECTORY ? VNODE_DIRECTORY : VNODE_REGULAR);
+	    type);
 	if (error != 0) {
 		vnode_put(child_node);
 		goto rollback;
@@ -1705,8 +1723,7 @@ sfs_readdir(struct vnode *vnode, uint64_t index, struct vfs_dirent *entry)
 				entry->inode = number;
 				entry->size = target.size;
 				entry->mode = target.mode & 07777U;
-				entry->type = (target.mode & SFS_MODE_TYPE) ==
-				    SFS_MODE_DIRECTORY ? VNODE_DIRECTORY : VNODE_REGULAR;
+				entry->type = sfs_vnode_type(target.mode);
 				memcpy(entry->name, record + SFS_DIR_HEADER, name_length);
 				return 1;
 			}

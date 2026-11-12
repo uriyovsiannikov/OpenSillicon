@@ -17,6 +17,7 @@
 #define VFS_ENAMETOOLONG 36
 #define VFS_ENOENT 2
 #define VFS_ENOMEM 12
+#define VFS_ENXIO 6
 #define VFS_ENOTDIR 20
 #define VFS_ESPIPE 29
 #define VFS_EROFS 30
@@ -433,7 +434,8 @@ vfs_create_path_as(const char *path, enum vnode_type type, uint32_t mode,
 	int error;
 
 	if (!initialized || result == NULL ||
-	    (type != VNODE_REGULAR && type != VNODE_DIRECTORY))
+	    (type != VNODE_REGULAR && type != VNODE_DIRECTORY &&
+	    type != VNODE_SOCKET))
 		return -VFS_EINVAL;
 	*result = NULL;
 	error = canonicalize_path(path, canonical, uid, gid);
@@ -848,6 +850,10 @@ vfs_open_as(const char *path, uint32_t flags, uint32_t mode,
 	}
 	if (error != 0)
 		return error;
+	if (node->type == VNODE_SOCKET) {
+		vnode_put(node);
+		return -VFS_ENXIO;
+	}
 	if (node->type == VNODE_DIRECTORY &&
 	    (flags & VFS_O_DIRECTORY) == 0 &&
 	    (flags & VFS_O_ACCMODE) != VFS_O_RDONLY) {

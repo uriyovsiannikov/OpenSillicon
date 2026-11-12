@@ -3,6 +3,8 @@
 
 /* Linux/POSIX numeric errno values used by the current kernel interfaces. */
 #define ESRCH 3
+#define EACCES 13
+#define ENAMETOOLONG 36
 #define EIO 5
 #define E2BIG 7
 #define EBADF 9

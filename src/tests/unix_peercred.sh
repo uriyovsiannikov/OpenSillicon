@@ -6,5 +6,6 @@ trap 'rm -f "$test_binary"' EXIT HUP INT TERM
 ${CC:-cc} -std=c11 -Wall -Wextra -Werror -ffunction-sections -fdata-sections \
     -DKERNEL_SPINLOCK_HOST_TEST -Isrc/include -Isrc/limine src/tests/unix_peercred.c \
     src/kernel/ipc/unix_socket.c src/kernel/proc/fd.c \
+    src/kernel/fs/vfs/vfs.c src/kernel/fs/ramfs/ramfs.c \
     -Wl,--gc-sections -o "$test_binary"
 "$test_binary"

@@ -61,6 +61,7 @@
 #define NATIVE_S_IFREG 0100000U
 #define NATIVE_S_IFDIR 0040000U
 #define NATIVE_S_IFCHR 0020000U
+#define NATIVE_S_IFSOCK 0140000U
 #define NATIVE_AT_FDCWD (-100)
 #define NATIVE_AT_SYMLINK_NOFOLLOW 0x100U
 #define NATIVE_F_GETFD 1U
@@ -124,6 +125,8 @@ native_kstat_from_metadata(struct native_kstat *value,
 		value->st_mode |= NATIVE_S_IFREG;
 	else if (metadata->type == VNODE_DIRECTORY)
 		value->st_mode |= NATIVE_S_IFDIR;
+	else if (metadata->type == VNODE_SOCKET)
+		value->st_mode |= NATIVE_S_IFSOCK;
 	else if (metadata->type == VNODE_DEVICE)
 		value->st_mode |= NATIVE_S_IFCHR;
 	else
@@ -620,6 +623,7 @@ _Static_assert(offsetof(struct native_dirent_record, name) == 19,
 #define NATIVE_DT_DIR 4U
 #define NATIVE_DT_REG 8U
 #define NATIVE_DT_CHR 2U
+#define NATIVE_DT_SOCK 12U
 #define SYSCALL_GETDENTS_MAX 4096U
 #define SYSCALL_EIO 5U
 #define SYSCALL_EBADF 9U
@@ -686,6 +690,8 @@ syscall_getdents(struct interrupt_frame *frame)
 			type = NATIVE_DT_DIR;
 		else if (entry.type == VNODE_REGULAR)
 			type = NATIVE_DT_REG;
+		else if (entry.type == VNODE_SOCKET)
+			type = NATIVE_DT_SOCK;
 		else if (entry.type == VNODE_DEVICE)
 			type = NATIVE_DT_CHR;
 		else {

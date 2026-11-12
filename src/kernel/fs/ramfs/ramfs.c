@@ -177,7 +177,8 @@ ramfs_create(struct vnode *directory, const char *name, size_t name_length,
 	if (directory->type != VNODE_DIRECTORY)
 		return -RAMFS_ENOTDIR;
 	if (name == NULL || name_length == 0 || name_length > VFS_NAME_MAX ||
-	    result == NULL || (type != VNODE_REGULAR && type != VNODE_DIRECTORY))
+	    result == NULL || (type != VNODE_REGULAR && type != VNODE_DIRECTORY &&
+	    type != VNODE_SOCKET))
 		return -RAMFS_EINVAL;
 	for (size_t i = 0; i < name_length; i++) {
 		if (name[i] == '/')

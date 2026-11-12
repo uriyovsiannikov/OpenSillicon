@@ -1,5 +1,6 @@
 #include "include/os.h"
 #include "abi/syscall.h"
+#include "kernel/unix_socket.h"
 
 static long
 call(uint64_t number, uint64_t first, uint64_t second, uint64_t third)
@@ -22,6 +23,71 @@ check(int success, unsigned int line)
 #define CHECK(condition) check((condition), __LINE__)
 
 static uint64_t reowned_fd;
+
+static void
+pathname_socket_checks(void)
+{
+	struct u_stat status;
+	struct unix_socket_address denied = {
+		.family = 1, .path = "/closed/service"
+	};
+	long fd = call(SYSCALL_UNIX_SOCKET, 1, 1, 0);
+	CHECK(fd >= 0);
+	CHECK(call(SYSCALL_UNIX_BIND, (uint64_t)fd, (uintptr_t)&denied,
+	    2 + sizeof("/closed/service")) == -13);
+	struct unix_socket_address protected = {
+		.family = 1, .path = "/tmp/protected-socket"
+	};
+	CHECK(call(SYSCALL_UNIX_CONNECT, (uint64_t)fd, (uintptr_t)&protected,
+	    2 + sizeof("/tmp/protected-socket")) == -13);
+	CHECK(u_close((uint64_t)fd) == 0);
+	CHECK(call(SYSCALL_UMASK, 0077, 0, 0) >= 0);
+	struct unix_socket_address own = {.family = 1, .path = "/tmp/own-socket"};
+	fd = call(SYSCALL_UNIX_SOCKET, 1, 1, 0);
+	CHECK(fd >= 0);
+	CHECK(call(SYSCALL_UNIX_BIND, (uint64_t)fd, (uintptr_t)&own,
+	    2 + sizeof("/tmp/own-socket")) == 0);
+	CHECK(u_stat_path("/tmp/own-socket", &status) == 0);
+	CHECK(status.type == 4 && status.mode == 0700 && status.uid == 300);
+	CHECK(u_open("/tmp/own-socket", U_O_RDONLY) == -6);
+	CHECK(call(SYSCALL_UNIX_LISTEN, (uint64_t)fd, 1, 0) == 0);
+	long client = call(SYSCALL_UNIX_SOCKET, 1, 1, 0);
+	CHECK(client >= 0);
+	struct unix_socket_address alias = {
+		.family = 1, .path = "/tmp/./own-socket"
+	};
+	CHECK(call(SYSCALL_UNIX_CONNECT, (uint64_t)client, (uintptr_t)&alias,
+	    2 + sizeof("/tmp/./own-socket")) == 0);
+	long accepted = call(SYSCALL_UNIX_ACCEPT, (uint64_t)fd, 0, 0);
+	CHECK(accepted >= 0);
+	CHECK(u_close((uint64_t)accepted) == 0);
+	CHECK(u_close((uint64_t)client) == 0);
+	CHECK(u_unlink("/tmp/own-socket", 0) == 0);
+	client = call(SYSCALL_UNIX_SOCKET, 1, 1, 0);
+	CHECK(client >= 0);
+	CHECK(call(SYSCALL_UNIX_CONNECT, (uint64_t)client, (uintptr_t)&own,
+	    2 + sizeof("/tmp/own-socket")) == -2);
+	long replacement = call(SYSCALL_UNIX_SOCKET, 1, 1, 0);
+	CHECK(replacement >= 0);
+	CHECK(call(SYSCALL_UNIX_BIND, (uint64_t)replacement, (uintptr_t)&own,
+	    2 + sizeof("/tmp/own-socket")) == 0);
+	CHECK(call(SYSCALL_UNIX_LISTEN, (uint64_t)replacement, 1, 0) == 0);
+	CHECK(call(SYSCALL_UNIX_CONNECT, (uint64_t)client, (uintptr_t)&own,
+	    2 + sizeof("/tmp/own-socket")) == 0);
+	accepted = call(SYSCALL_UNIX_ACCEPT, (uint64_t)replacement, 0, 0);
+	CHECK(accepted >= 0);
+	CHECK(u_close((uint64_t)accepted) == 0);
+	CHECK(u_close((uint64_t)client) == 0);
+	CHECK(u_close((uint64_t)replacement) == 0);
+	CHECK(u_close((uint64_t)fd) == 0);
+	fd = call(SYSCALL_UNIX_SOCKET, 1, 1, 0);
+	CHECK(fd >= 0);
+	CHECK(call(SYSCALL_UNIX_BIND, (uint64_t)fd, (uintptr_t)&own,
+	    2 + sizeof("/tmp/own-socket")) == -98);
+	CHECK(u_close((uint64_t)fd) == 0);
+	CHECK(u_unlink("/tmp/own-socket", 0) == 0);
+	CHECK(call(SYSCALL_UMASK, 0022, 0, 0) >= 0);
+}
 
 static void
 create_file(const char *path)
@@ -73,6 +139,7 @@ unprivileged_checks(void)
 	CHECK(call(SYSCALL_FCHMOD, reowned_fd, 0777, 0) == -13);
 	CHECK(u_setuid(400) == -1);
 	CHECK(u_setgid(400) == -1);
+	pathname_socket_checks();
 	CHECK(u_unlink("/tmp/root-file", 0) == -1);
 	CHECK(u_unlink("/tmp/root-dir", 1) == -1);
 	CHECK(u_framebuffer_present((const void *)1, 16) == -1);
@@ -104,6 +171,15 @@ user_main(uint64_t argc, char **argv, const uint64_t *startup_stack)
 	CHECK(call(SYSCALL_CHMOD, (uintptr_t)"/group", 02777, 0) == 0);
 	create_file("/public");
 	create_file("/tmp/root-file");
+	struct unix_socket_address protected = {
+		.family = 1, .path = "/tmp/protected-socket"
+	};
+	long socket = call(SYSCALL_UNIX_SOCKET, 1, 1, 0);
+	CHECK(socket >= 0);
+	CHECK(call(SYSCALL_UNIX_BIND, (uint64_t)socket, (uintptr_t)&protected,
+	    2 + sizeof("/tmp/protected-socket")) == 0);
+	CHECK(call(SYSCALL_CHMOD, (uintptr_t)"/tmp/protected-socket", 0600, 0) == 0);
+	CHECK(call(SYSCALL_UNIX_LISTEN, (uint64_t)socket, 1, 0) == 0);
 	create_file("/tmp/reowned");
 	CHECK(call(SYSCALL_CHOWN, (uintptr_t)"/tmp/reowned", 300, 300) == 0);
 	long descriptor = u_open("/tmp/reowned", U_O_RDONLY);
@@ -118,6 +194,7 @@ user_main(uint64_t argc, char **argv, const uint64_t *startup_stack)
 	CHECK(u_waitpid((uint64_t)child, &status) == child);
 	CHECK(status == 0);
 	CHECK(u_close(reowned_fd) == 0);
+	CHECK(u_close((uint64_t)socket) == 0);
 	CHECK(u_unlink("/tmp/root-file", 0) == 0);
 	CHECK(u_unlink("/tmp/root-dir", 1) == 0);
 	u_puts("PERMISSIONS GUEST PASS\n");
