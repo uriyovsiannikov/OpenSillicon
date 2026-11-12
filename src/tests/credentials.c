@@ -37,8 +37,42 @@ check_transition(bool group, bool effective_only, uint32_t id,
 	assert(memcmp(&after, &before, sizeof(after)) == 0);
 }
 
+static void
+res_id_matrix(void)
+{
+	const uint32_t ids[] = {0, 100, 200, 300, 400, UINT32_MAX};
+	for (unsigned int group = 0; group < 2; group++)
+	for (unsigned int privileged = 0; privileged < 2; privileged++)
+	for (unsigned int r = 0; r < 6; r++)
+	for (unsigned int e = 0; e < 6; e++)
+	for (unsigned int s = 0; s < 6; s++) {
+		uint32_t real = ids[r], effective = ids[e], saved = ids[s];
+		bool allowed = privileged ||
+		    (real != 0 && real != 400 && effective != 0 && effective != 400 &&
+		    saved != 0 && saved != 400);
+		struct os_credentials before = {
+			.real_uid = 100, .effective_uid = privileged ? 0 : 200,
+			.saved_uid = 300, .real_gid = 100, .effective_gid = 200,
+			.saved_gid = 300
+		};
+		struct os_credentials after = before, expected = before;
+		assert(credentials_set_res_ids(&after, group, real, effective, saved) == allowed);
+		if (allowed && group) {
+			expected.real_gid = real == UINT32_MAX ? before.real_gid : real;
+			expected.effective_gid = effective == UINT32_MAX ? before.effective_gid : effective;
+			expected.saved_gid = saved == UINT32_MAX ? before.saved_gid : saved;
+		} else if (allowed) {
+			expected.real_uid = real == UINT32_MAX ? before.real_uid : real;
+			expected.effective_uid = effective == UINT32_MAX ? before.effective_uid : effective;
+			expected.saved_uid = saved == UINT32_MAX ? before.saved_uid : saved;
+		}
+		assert(memcmp(&after, &expected, sizeof(after)) == 0);
+	}
+}
+
 int main(void)
 {
+	res_id_matrix();
 	for (unsigned int group = 0; group < 2; group++) {
 		/* Unprivileged setuid/setgid affect only the effective identity. */
 		check_transition(group, false, 100, false, true, 100, 100, 300);

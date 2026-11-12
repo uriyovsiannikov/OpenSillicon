@@ -27,6 +27,38 @@ check(int success, unsigned int line)
 static uint64_t reowned_fd;
 static uint8_t exec_image[256 * 1024];
 
+static void
+res_id_transaction_checks(void)
+{
+	long child = u_fork();
+	CHECK(child >= 0);
+	if (child == 0) {
+		struct os_credentials c;
+		CHECK(call(SYSCALL_SETRESGID, 100, 0, 300) == 0);
+		CHECK(call(SYSCALL_SETRESUID, 100, 200, 300) == 0);
+		for (unsigned int group = 0; group < 2; group++) {
+			uint64_t operation = group ? SYSCALL_SETRESGID : SYSCALL_SETRESUID;
+			for (unsigned int position = 0; position < 3; position++) {
+				uint32_t ids[3] = {100, group ? 0 : 200, 300};
+				ids[position] = 400;
+				CHECK(call(operation, ids[0], ids[1], ids[2]) == -1);
+				CHECK(u_getcredentials(&c) == 0);
+				CHECK(c.real_uid == 100 && c.effective_uid == 200 && c.saved_uid == 300);
+				CHECK(c.real_gid == 100 && c.effective_gid == 0 && c.saved_gid == 300);
+			}
+		}
+		CHECK(call(SYSCALL_SETRESUID, 300, 100, 200) == 0);
+		CHECK(call(SYSCALL_SETRESGID, 300, 100, 0) == 0);
+		CHECK(call(SYSCALL_SETRESUID, UINT32_MAX, 300, UINT32_MAX) == 0);
+		CHECK(u_getcredentials(&c) == 0);
+		CHECK(c.real_uid == 300 && c.effective_uid == 300 && c.saved_uid == 200);
+		CHECK(c.real_gid == 300 && c.effective_gid == 100 && c.saved_gid == 0);
+		u_exit(0);
+	}
+	uint8_t status = 255;
+	CHECK(u_waitpid((uint64_t)child, &status) == child && status == 0);
+}
+
 static long
 stat_at(uint64_t fd, const char *path, uint64_t *inode)
 {
@@ -450,6 +482,7 @@ user_main(uint64_t argc, char **argv, const uint64_t *startup_stack)
 		u_exit(0);
 	}
 	reserved_id_checks();
+	res_id_transaction_checks();
 	directory_fd_checks();
 	setid_write_checks();
 	dot_removal_checks();

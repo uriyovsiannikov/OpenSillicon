@@ -737,42 +737,18 @@ process_set_gid(uint32_t id, bool effective_only)
 }
 
 static int
-process_set_res_ids(uint32_t *current, uint32_t real, uint32_t effective,
+process_set_res_ids(bool group, uint32_t real, uint32_t effective,
 	uint32_t saved)
 {
-	const uint32_t unchanged = UINT32_MAX;
-	uint32_t old_real, old_effective, old_saved;
-	bool privileged;
-	uint32_t requested[3] = { real, effective, saved };
-	uint32_t available[3];
 	uint64_t flags;
+	bool allowed;
 
 	__asm__ volatile ("pushfq; popq %0; cli" : "=r" (flags) : : "memory");
-	old_real = current[0];
-	old_effective = current[1];
-	old_saved = current[2];
-	privileged = current_process->credentials.effective_uid == 0;
-	available[0] = old_real;
-	available[1] = old_effective;
-	available[2] = old_saved;
-	if (!privileged) {
-		for (size_t i = 0; i < 3; i++) {
-			bool allowed = requested[i] == unchanged;
-			for (size_t j = 0; j < 3; j++)
-				allowed |= requested[i] == available[j];
-			if (!allowed) {
-				if ((flags & (1ULL << 9)) != 0)
-					__asm__ volatile ("sti" : : : "memory");
-				return -(int)PROCESS_ERROR_EPERM;
-			}
-		}
-	}
-	if (real != unchanged) current[0] = real;
-	if (effective != unchanged) current[1] = effective;
-	if (saved != unchanged) current[2] = saved;
+	allowed = credentials_set_res_ids(&current_process->credentials, group,
+	    real, effective, saved);
 	if ((flags & (1ULL << 9)) != 0)
 		__asm__ volatile ("sti" : : : "memory");
-	return 0;
+	return allowed ? 0 : -(int)PROCESS_ERROR_EPERM;
 }
 
 int
@@ -780,7 +756,7 @@ process_set_res_uid(uint32_t real, uint32_t effective, uint32_t saved)
 {
 	if (current_process == NULL)
 		return -(int)PROCESS_ERROR_ESRCH;
-	return process_set_res_ids(&current_process->credentials.real_uid,
+	return process_set_res_ids(false,
 	    real, effective, saved);
 }
 
@@ -789,7 +765,7 @@ process_set_res_gid(uint32_t real, uint32_t effective, uint32_t saved)
 {
 	if (current_process == NULL)
 		return -(int)PROCESS_ERROR_ESRCH;
-	return process_set_res_ids(&current_process->credentials.real_gid,
+	return process_set_res_ids(true,
 	    real, effective, saved);
 }
 
