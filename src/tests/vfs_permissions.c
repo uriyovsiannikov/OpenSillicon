@@ -4,10 +4,13 @@
 #include <string.h>
 
 #include "kernel/heap.h"
+#include "kernel/fd.h"
 #include "kernel/vfs.h"
 
 void *kheap_alloc(size_t size) { return malloc(size); }
 bool kheap_free(void *allocation) { free(allocation); return true; }
+void klog(const char *message) { fputs(message, stderr); abort(); }
+_Noreturn void kernel_halt(void) { abort(); }
 
 static void
 create(const char *path, enum vnode_type type, uint32_t mode, uint32_t uid)
@@ -41,6 +44,34 @@ sticky_removal(void)
 	create("/locked", VNODE_DIRECTORY, 01755, 100);
 	create("/locked/file", VNODE_REGULAR, 0666, 200);
 	assert(vfs_remove_path_as("/locked/file", false, 200, 200) == -13);
+}
+
+static void
+setid_writes(void)
+{
+	struct vnode *node = NULL;
+	struct fd_object *file = NULL;
+	size_t amount = 100;
+	create("/setid-write", VNODE_REGULAR, 06777, 0);
+	assert(vfs_lookup("/setid-write", &node) == 0);
+	assert(vfs_open_as("/setid-write", VFS_O_WRONLY, 0, 0, 0, &file) == 0);
+	assert(fd_object_write_as(file, "R", 1, &amount, 0) == 0 && amount == 1);
+	assert(node->mode == 06777);
+	assert(fd_object_write_as(file, "", 0, &amount, 100) == 0 && amount == 0);
+	assert(node->mode == 06777);
+	assert(fd_object_write_as(file, "U", 1, &amount, 100) == 0 && amount == 1);
+	assert(node->mode == 0777);
+	fd_object_put(file);
+	assert(vfs_chmod_as("/setid-write", 06777, 0, 0) == 0);
+	assert(vfs_open_as("/setid-write", VFS_O_RDONLY, 0, 100, 100, &file) == 0);
+	assert(fd_object_write_as(file, "X", 1, &amount, 100) == -9);
+	assert(node->mode == 06777);
+	fd_object_put(file);
+	assert(vfs_open_as("/setid-write", VFS_O_WRONLY | VFS_O_TRUNC, 0,
+	    100, 100, &file) == 0);
+	assert(node->mode == 0777 && node->size == 0);
+	fd_object_put(file);
+	vnode_put(node);
 }
 
 static void
@@ -172,6 +203,7 @@ int main(void)
 	assert(vfs_mount("/", root) == 0);
 	vnode_put(root);
 	sticky_removal();
+	setid_writes();
 	dot_removal();
 	trailing_slashes();
 	setgid_creation();

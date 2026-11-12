@@ -28,6 +28,7 @@ struct fd_operations {
 	    size_t *read_length);
 	int (*write)(void *context, uint64_t offset, const void *buffer,
 	    size_t length, size_t *write_length);
+	int (*prepare_write)(void *context, uint32_t uid);
 	int (*readdir)(void *context, uint64_t index, struct vfs_dirent *entry);
 	int (*seek)(void *context, uint64_t current, int64_t offset,
 	    int whence, uint64_t *result);
@@ -62,6 +63,9 @@ int fd_object_read(struct fd_object *object, void *buffer, size_t length,
 	size_t *read_length);
 int fd_object_write(struct fd_object *object, const void *buffer,
 	size_t length, size_t *write_length);
+/* User writes pass the current effective UID; the plain API is trusted root I/O. */
+int fd_object_write_as(struct fd_object *object, const void *buffer,
+	size_t length, size_t *write_length, uint32_t uid);
 void fd_table_init_standard(struct fd_table *table);
 void fd_console_framebuffer_enable(bool enable);
 bool fd_table_clone(struct fd_table *destination,
@@ -91,6 +95,8 @@ int fd_read(struct fd_table *table, uint64_t descriptor, void *buffer,
 	size_t length, size_t *read_length);
 int fd_write(struct fd_table *table, uint64_t descriptor, const void *buffer,
 	size_t length, size_t *write_length);
+int fd_write_as(struct fd_table *table, uint64_t descriptor, const void *buffer,
+	size_t length, size_t *write_length, uint32_t uid);
 int fd_readdir(struct fd_table *table, uint64_t descriptor,
 	struct vfs_dirent *entry);
 int fd_object_seek(struct fd_object *object, int64_t offset, int whence,

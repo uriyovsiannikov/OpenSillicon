@@ -4,6 +4,6 @@ cd "$(dirname "$0")/../.."
 test_binary=$(mktemp)
 trap 'rm -f "$test_binary"' EXIT HUP INT TERM
 ${CC:-cc} -std=c11 -Wall -Wextra -Werror -ffunction-sections -fdata-sections \
-    -Isrc/include src/tests/vfs_permissions.c src/kernel/fs/vfs/vfs.c \
-    src/kernel/fs/ramfs/ramfs.c -Wl,--gc-sections -o "$test_binary"
+    -Isrc/include -Isrc/limine src/tests/vfs_permissions.c src/kernel/fs/vfs/vfs.c \
+    src/kernel/fs/ramfs/ramfs.c src/kernel/proc/fd.c -Wl,--gc-sections -o "$test_binary"
 "$test_binary"

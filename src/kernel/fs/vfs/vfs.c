@@ -716,6 +716,29 @@ file_read(void *context, uint64_t offset, void *buffer, size_t length,
 }
 
 static int
+prepare_node_write(struct vnode *node, uint32_t uid)
+{
+	if (uid == 0 || node->type != VNODE_REGULAR || (node->mode & 06000U) == 0)
+		return 0;
+	if (node->operations->chmod == NULL)
+		return -VFS_EROFS;
+	/* A writable descriptor permits data changes, not retaining the owner's
+	 * set-ID authority on content supplied by another process. */
+	return node->operations->chmod(node, node->mode & ~06000U);
+}
+
+static int
+file_prepare_write(void *context, uint32_t uid)
+{
+	struct vfs_file_context *file = context;
+	if ((file->flags & VFS_O_ACCMODE) == VFS_O_RDONLY)
+		return -VFS_EBADF;
+	if (file->node->operations->write == NULL)
+		return -VFS_EROFS;
+	return prepare_node_write(file->node, uid);
+}
+
+static int
 file_write(void *context, uint64_t offset, const void *buffer, size_t length,
 	size_t *write_length)
 {
@@ -854,6 +877,7 @@ file_close(void *context)
 static const struct fd_operations vfs_file_operations = {
 	.read = file_read,
 	.write = file_write,
+	.prepare_write = file_prepare_write,
 	.readdir = file_readdir,
 	.seek = file_seek,
 	.stat = file_stat,
@@ -942,7 +966,9 @@ vfs_open_as(const char *path, uint32_t flags, uint32_t mode,
 			vnode_put(node);
 			return is_directory ? -VFS_EISDIR : -VFS_EROFS;
 		}
-		error = node->operations->truncate(node, 0);
+		error = prepare_node_write(node, uid);
+		if (error == 0)
+			error = node->operations->truncate(node, 0);
 		if (error != 0) {
 			vnode_put(node);
 			return error;

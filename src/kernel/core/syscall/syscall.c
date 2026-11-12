@@ -419,6 +419,7 @@ static struct interrupt_frame *
 syscall_writev(struct interrupt_frame *frame)
 {
 	struct syscall_iovec vectors[SYSCALL_MAX_IOV];
+	struct os_credentials credentials;
 	char buffer[SYSCALL_IOV_CHUNK];
 	struct fd_table *table = current_fd_table();
 	struct fd_object *object = fd_object_for_descriptor(table, frame->rdi);
@@ -431,6 +432,10 @@ syscall_writev(struct interrupt_frame *frame)
 	if (object == NULL || object->operations == NULL ||
 	    object->operations->write == NULL) {
 		syscall_error(frame, 9);
+		return frame;
+	}
+	if (!process_current_credentials(&credentials)) {
+		syscall_error(frame, ERRNO_ESRCH);
 		return frame;
 	}
 	result = load_iovecs(frame, vectors, &total);
@@ -469,8 +474,8 @@ syscall_writev(struct interrupt_frame *frame)
 					    pipe_wait_channel(object, PIPE_WRITE_WAIT));
 				}
 			} else {
-				result = fd_write(table, frame->rdi, buffer, chunk,
-				    &amount);
+				result = fd_write_as(table, frame->rdi, buffer, chunk,
+				    &amount, credentials.effective_uid);
 				if (result == -(int)ERRNO_EAGAIN &&
 				    (unix_socket_is_object(object) || pty_is_object(object) ||
 				    tcp_socket_is_object(object))) {
@@ -999,6 +1004,7 @@ syscall_interrupt(struct interrupt_frame *frame)
 			char buffer[SYSCALL_MAX_IO];
 			struct address_space *space = vmm_active_address_space();
 			struct fd_object *object;
+			struct os_credentials credentials;
 			int result;
 
 			if (frame->rdx != 0 &&
@@ -1009,6 +1015,10 @@ syscall_interrupt(struct interrupt_frame *frame)
 			}
 			table = current_fd_table();
 			object = fd_object_for_descriptor(table, frame->rdi);
+			if (!process_current_credentials(&credentials)) {
+				syscall_error(frame, ERRNO_ESRCH);
+				break;
+			}
 			if (pipe_is_write_endpoint(object)) {
 				result = pipe_write_try(object, buffer,
 				    (size_t)frame->rdx, &amount);
@@ -1027,8 +1037,8 @@ syscall_interrupt(struct interrupt_frame *frame)
 				frame->rax = amount;
 				break;
 			}
-			result = fd_write(table, frame->rdi, buffer,
-			    (size_t)frame->rdx, &amount);
+			result = fd_write_as(table, frame->rdi, buffer,
+			    (size_t)frame->rdx, &amount, credentials.effective_uid);
 			if (result == -(int)ERRNO_EAGAIN &&
 			    (unix_socket_is_object(object) || pty_is_object(object) ||
 			    tcp_socket_is_object(object)) &&

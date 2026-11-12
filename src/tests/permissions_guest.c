@@ -28,6 +28,48 @@ static uint64_t reowned_fd;
 static uint8_t exec_image[256 * 1024];
 
 static void
+setid_write_checks(void)
+{
+	const char *path = "/tmp/setid-write";
+	struct u_stat status;
+	long writer = u_open_mode(path, U_O_CREAT | U_O_RDWR, 06777);
+	CHECK(writer >= 0);
+	long reader = u_open(path, U_O_RDONLY);
+	CHECK(reader >= 0);
+	CHECK(u_write((uint64_t)writer, "R", 1) == 1);
+	CHECK(u_stat_path(path, &status) == 0 && status.mode == 06755);
+	for (unsigned int operation = 0; operation < 6; operation++) {
+		CHECK(call(SYSCALL_CHMOD, (uintptr_t)path, 06777, 0) == 0);
+		long child = u_fork();
+		CHECK(child >= 0);
+		if (child == 0) {
+			CHECK(u_setgid(300) == 0 && u_setuid(300) == 0);
+			if (operation == 0)
+				CHECK(u_write((uint64_t)writer, "U", 1) == 1);
+			else if (operation == 1) {
+				struct { uint64_t base, length; } vector = {(uintptr_t)"V", 1};
+				CHECK(call(SYSCALL_WRITEV, (uint64_t)writer, (uintptr_t)&vector, 1) == 1);
+			} else if (operation == 2) {
+				long fd = u_open(path, U_O_WRONLY | U_O_TRUNC);
+				CHECK(fd >= 0 && u_close((uint64_t)fd) == 0);
+			} else if (operation == 3)
+				CHECK(u_write((uint64_t)writer, "", 0) == 0);
+			else if (operation == 4)
+				CHECK(u_write((uint64_t)writer, (const void *)1, 1) == -14);
+			else
+				CHECK(u_write((uint64_t)reader, "X", 1) == -9);
+			CHECK(u_stat_path(path, &status) == 0);
+			CHECK(status.mode == (operation < 3 ? 0777U : 06777U));
+			u_exit(0);
+		}
+		uint8_t child_status = 255;
+		CHECK(u_waitpid((uint64_t)child, &child_status) == child && child_status == 0);
+	}
+	CHECK(u_close((uint64_t)reader) == 0);
+	CHECK(u_close((uint64_t)writer) == 0);
+}
+
+static void
 dot_removal_checks(void)
 {
 	struct u_stat status;
@@ -335,6 +377,7 @@ user_main(uint64_t argc, char **argv, const uint64_t *startup_stack)
 		u_exit(0);
 	}
 	reserved_id_checks();
+	setid_write_checks();
 	dot_removal_checks();
 	trailing_slash_checks();
 	console_input_checks();

@@ -435,6 +435,13 @@ int
 fd_object_write(struct fd_object *object, const void *buffer, size_t length,
 	size_t *write_length)
 {
+	return fd_object_write_as(object, buffer, length, write_length, 0);
+}
+
+int
+fd_object_write_as(struct fd_object *object, const void *buffer, size_t length,
+	size_t *write_length, uint32_t uid)
+{
 	uint64_t offset;
 	size_t amount = 0;
 	int error;
@@ -445,6 +452,11 @@ fd_object_write(struct fd_object *object, const void *buffer, size_t length,
 		return -9;
 	if (write_length == NULL || (buffer == NULL && length != 0))
 		return -FD_ERROR_EINVAL;
+	if (length != 0 && object->operations->prepare_write != NULL) {
+		error = object->operations->prepare_write(object->context, uid);
+		if (error != 0)
+			return error;
+	}
 	offset = object->offset;
 	error = object->operations->write(object->context, offset, buffer, length,
 	    &amount);
@@ -463,6 +475,14 @@ fd_write(struct fd_table *table, uint64_t descriptor, const void *buffer,
 {
 	return fd_object_write(get_object(table, descriptor), buffer, length,
 	    write_length);
+}
+
+int
+fd_write_as(struct fd_table *table, uint64_t descriptor, const void *buffer,
+	size_t length, size_t *write_length, uint32_t uid)
+{
+	return fd_object_write_as(get_object(table, descriptor), buffer, length,
+	    write_length, uid);
 }
 
 int
