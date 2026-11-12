@@ -24,6 +24,7 @@ struct initramfs_node {
 	struct vnode vnode;
 	struct initramfs_node *children;
 	struct initramfs_node *next;
+	struct initramfs_node *parent;
 	const uint8_t *data;
 	char name[VFS_NAME_MAX + 1];
 	bool explicit_entry;
@@ -182,6 +183,7 @@ insert_entry(struct initramfs_node *root, const char *path, size_t path_length,
 				if (child == NULL)
 					return -INITRD_ENOMEM;
 				(*node_count)++;
+				child->parent = directory;
 				child->next = directory->children;
 				directory->children = child;
 			}
@@ -209,6 +211,7 @@ insert_entry(struct initramfs_node *root, const char *path, size_t path_length,
 		(*node_count)++;
 		child->data = data;
 		child->vnode.size = size;
+		child->parent = directory;
 		child->next = directory->children;
 		directory->children = child;
 		return 0;
@@ -337,6 +340,16 @@ initramfs_lookup(struct vnode *directory, const char *name, size_t name_length,
 	if (name == NULL || name_length == 0 || name_length > VFS_NAME_MAX ||
 	    result == NULL)
 		return -INITRD_EINVAL;
+	if ((name_length == 1 && name[0] == '.') ||
+	    (name_length == 2 && name[0] == '.' && name[1] == '.')) {
+		struct initramfs_node *node = initramfs_from_vnode(directory);
+		struct vnode *target = name_length == 1 || node->parent == NULL ?
+		    directory : &node->parent->vnode;
+		if (!vnode_get(target))
+			return -INITRD_EINVAL;
+		*result = target;
+		return 0;
+	}
 	for (child = initramfs_from_vnode(directory)->children; child != NULL;
 	    child = child->next) {
 		if (strlen(child->name) == name_length &&
@@ -409,6 +422,7 @@ initramfs_destroy(struct vnode *node)
 		struct initramfs_node *next = child->next;
 
 		child->next = NULL;
+		child->parent = NULL;
 		vnode_put(&child->vnode);
 		child = next;
 	}

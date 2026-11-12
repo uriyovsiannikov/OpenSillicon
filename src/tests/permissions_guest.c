@@ -272,6 +272,12 @@ directory_fd_checks(void)
 	CHECK(fd >= 0 && stat_at((uint64_t)fd, 0, &original) == 0);
 	CHECK(stat_at((uint64_t)fd, "dev/..", &found) == 0 && found == original);
 	CHECK(stat_at((uint64_t)fd, "init/..", &found) == 0 && found == original);
+	CHECK(stat_at((uint64_t)fd, "init/etc/../bin/not_elf", &found) == 0);
+	long init_fd = u_open("/init/etc", U_O_RDONLY | U_O_DIRECTORY);
+	CHECK(init_fd >= 0);
+	CHECK(stat_at((uint64_t)init_fd, "../bin/not_elf", &found) == 0);
+	CHECK(stat_at((uint64_t)init_fd, "../../dev/..", &found) == 0 && found == original);
+	CHECK(u_close((uint64_t)init_fd) == 0);
 	CHECK(stat_at((uint64_t)fd, "dev/../proc/self", &found) == 0);
 	CHECK(u_close((uint64_t)fd) == 0);
 }
