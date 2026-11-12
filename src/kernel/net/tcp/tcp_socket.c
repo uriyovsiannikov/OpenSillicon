@@ -5,6 +5,7 @@
 #include "kernel/cyclone_net.h"
 #include "kernel/errno.h"
 #include "kernel/fd.h"
+#include "kernel/process.h"
 #include "kernel/tcp_socket.h"
 
 #include "core/net.h"
@@ -299,6 +300,13 @@ tcp_socket_bind(struct fd_object *object,
 		return -ENOTSOCK;
 	if (endpoint == NULL)
 		return -EINVAL;
+	if (endpoint->port != 0 && endpoint->port < 1024U) {
+		struct os_credentials credentials;
+		if (!process_current_credentials(&credentials))
+			return -ESRCH;
+		if (credentials.effective_uid != 0)
+			return -EACCES;
+	}
 	if ((endpoint->address[0] | endpoint->address[1] |
 	    endpoint->address[2] | endpoint->address[3]) != 0 &&
 	    !cyclone_net_is_local(endpoint->address))

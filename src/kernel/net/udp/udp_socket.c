@@ -8,6 +8,7 @@
 #include "kernel/netbuf.h"
 #include "kernel/netdev.h"
 #include "kernel/network_service.h"
+#include "kernel/process.h"
 #include "kernel/timer.h"
 #include "kernel/udp_socket.h"
 
@@ -350,6 +351,13 @@ udp_socket_bind(struct fd_object *object,
 		return -EINVAL;
 	}
 	state_guard_leave(flags);
+	if (endpoint->port != 0 && endpoint->port < 1024U) {
+		struct os_credentials credentials;
+		if (!process_current_credentials(&credentials))
+			return -ESRCH;
+		if (credentials.effective_uid != 0)
+			return -EACCES;
+	}
 	return bind_socket(state, endpoint);
 }
 

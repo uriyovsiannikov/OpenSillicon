@@ -18,11 +18,33 @@ check(int success, unsigned int line)
 	u_puts("PERMISSIONS GUEST FAIL at line ");
 	u_put_u64(line);
 	u_puts("\n");
+	/* The supervising root process can stop QEMU after a failed child. */
+	(void)u_power_control(POWER_CONTROL_POWEROFF);
 	u_exit(1);
 }
 #define CHECK(condition) check((condition), __LINE__)
 
 static uint64_t reowned_fd;
+
+static void
+inet_bind_checks(int privileged)
+{
+	const uint16_t ports[] = {1, 1023, 1024, 0};
+	for (unsigned int i = 0; i < sizeof(ports) / sizeof(ports[0]); i++) {
+		struct u_tcp_endpoint tcp = {.port = ports[i]};
+		struct u_udp_endpoint udp = {.port = ports[i]};
+		long expected = !privileged && ports[i] != 0 && ports[i] < 1024 ?
+		    -13 : 0;
+		long fd = u_tcp_socket(2, 1, 0);
+		CHECK(fd >= 0);
+		CHECK(u_tcp_bind((uint64_t)fd, &tcp) == expected);
+		CHECK(u_close((uint64_t)fd) == 0);
+		fd = u_udp_socket(2, 2, 0);
+		CHECK(fd >= 0);
+		CHECK(u_udp_bind((uint64_t)fd, &udp) == expected);
+		CHECK(u_close((uint64_t)fd) == 0);
+	}
+}
 
 static void
 pathname_socket_checks(void)
@@ -139,6 +161,7 @@ unprivileged_checks(void)
 	CHECK(call(SYSCALL_FCHMOD, reowned_fd, 0777, 0) == -13);
 	CHECK(u_setuid(400) == -1);
 	CHECK(u_setgid(400) == -1);
+	inet_bind_checks(0);
 	pathname_socket_checks();
 	CHECK(u_unlink("/tmp/root-file", 0) == -1);
 	CHECK(u_unlink("/tmp/root-dir", 1) == -1);
@@ -163,6 +186,7 @@ uint64_t
 user_main(uint64_t argc, char **argv, const uint64_t *startup_stack)
 {
 	(void)argc; (void)argv; (void)startup_stack;
+	inet_bind_checks(1);
 	open_unlink_lifetime();
 	CHECK(u_mkdir("/closed", 0700) == 0);
 	CHECK(call(SYSCALL_CHOWN, (uintptr_t)"/closed", 100, 100) == 0);
