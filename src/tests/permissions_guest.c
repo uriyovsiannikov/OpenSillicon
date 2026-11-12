@@ -28,6 +28,60 @@ static uint64_t reowned_fd;
 static uint8_t exec_image[256 * 1024];
 
 static void
+signal_permission_checks(void)
+{
+	uint32_t ready[2], gate[2];
+	char byte = 0;
+	CHECK(u_pipe(ready) == 0 && u_pipe(gate) == 0);
+	long target = u_fork();
+	CHECK(target >= 0);
+	if (target == 0) {
+		CHECK(call(SYSCALL_SETRESUID, 100, 200, 300) == 0);
+		CHECK(u_write(ready[1], "R", 1) == 1);
+		(void)u_read(gate[0], &byte, 1);
+		CHECK(0);
+	}
+	CHECK(u_read(ready[0], &byte, 1) == 1 && byte == 'R');
+	const struct {
+		uint32_t real, effective, saved;
+		long expected;
+	} cases[] = {
+		{400, 400, 100, -1}, /* Sender's saved UID alone is not authority. */
+		{400, 200, 400, -1}, /* Target's effective UID alone is not sufficient. */
+		{100, 400, 400, 0},
+		{300, 400, 400, 0},
+		{400, 100, 400, 0},
+		{400, 300, 400, 0},
+		{400, 0, 400, 0},
+		{0, 400, 400, -1} /* Privileged bypass requires effective UID 0. */
+	};
+	for (unsigned int i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+		long sender = u_fork();
+		CHECK(sender >= 0);
+		if (sender == 0) {
+			CHECK(call(SYSCALL_SETRESUID, cases[i].real, cases[i].effective,
+			    cases[i].saved) == 0);
+			CHECK(u_kill((uint64_t)target, 0) == cases[i].expected);
+			if (cases[i].expected != 0)
+				CHECK(u_kill((uint64_t)target, U_SIGKILL) == -1);
+			u_exit(0);
+		}
+		uint8_t status = 255;
+		CHECK(u_waitpid((uint64_t)sender, &status) == sender && status == 0);
+		CHECK(u_kill((uint64_t)target, 0) == 0);
+	}
+	CHECK(u_kill((uint64_t)target, (1ULL << 32) + U_SIGKILL) == -22);
+	CHECK(u_kill((uint64_t)target, 32) == -22);
+	CHECK(u_kill(0, 0) == -22);
+	CHECK(u_kill((uint64_t)target, U_SIGKILL) == 0);
+	uint8_t status = 0;
+	CHECK(u_waitpid((uint64_t)target, &status) == target && status == 128 + U_SIGKILL);
+	CHECK(u_kill((uint64_t)target, 0) == -3);
+	CHECK(u_close(ready[0]) == 0 && u_close(ready[1]) == 0);
+	CHECK(u_close(gate[0]) == 0 && u_close(gate[1]) == 0);
+}
+
+static void
 res_id_transaction_checks(void)
 {
 	long child = u_fork();
@@ -483,6 +537,7 @@ user_main(uint64_t argc, char **argv, const uint64_t *startup_stack)
 	}
 	reserved_id_checks();
 	res_id_transaction_checks();
+	signal_permission_checks();
 	directory_fd_checks();
 	setid_write_checks();
 	dot_removal_checks();
